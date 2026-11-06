@@ -1,0 +1,223 @@
+/* ==========================================================================
+   Darkroom: the design tokens of the "My…Reel" app family (MySnipReel, MyMotionReel).
+   Spec and rules: docs/DESIGN_SYSTEM.md. This file is portable: copy it as-is into a sibling app and
+   map its host library (Modus here) onto it. Never use a raw colour, size or radius in a page stylesheet:
+   pick a token, or add one here first.
+
+   Layers
+     1. Primitives  (--my-<name>)        the brand inks. Only tokens.css and brand.css read them.
+     2. Semantics   (--my-<role>)        what pages use: accent, surface, text, status…
+     3. Scales      (--my-text-*, --my-space-*, --my-radius-*, --my-shadow-*, --my-icon-*, --my-motion-*)
+   ========================================================================== */
+
+:root {
+  /* ---- 1. Primitives: Arctic blue + vintage (docs/BRAND.md) ---- */
+  --my-ink: #1e3a4c;
+  --my-arctic: #2f6f86;
+  --my-arctic-deep: #275d70;
+  --my-arctic-light: #3f879c;
+  --my-ice: #9cc9d3;
+  --my-ice-light: #b8dbe2;
+  --my-ice-deep: #86b9c4;
+  --my-ice-wash: #e4f1f3; /* outline-button hover on light */
+  --my-mustard: #e8bc5e;
+  --my-mustard-light: #efcb80;
+  --my-mustard-deep: #d4a445;
+  --my-rust: #d2775a;
+  --my-rust-deep: #8a4330;
+  --my-cream: #f3e9d7;
+  --my-red: #da212c;
+  --my-green: #1e8a44;
+  --my-red-light: #f05a63;
+  --my-red-deep: #a5141d;
+  --my-red-bright: #ef3c47; /* red on dark floating surfaces */
+
+  /* Slate: the one neutral ramp (aligned with the Modus greys so library components match) */
+  --my-slate-50: #f1f1f6;
+  --my-slate-100: #e6e8ec;
+  --my-slate-200: #cbcdd6;
+  --my-slate-300: #b9bcc5;
+  --my-slate-400: #a3a6b1;
+  --my-slate-500: #8a8f99;
+  --my-slate-600: #6a6e79;
+  --my-slate-700: #464b52;
+  --my-slate-800: #252a2e;
+  --my-slate-850: #232a32;
+  --my-slate-900: #171c22;
+
+  /* ---- 2. Semantics (light theme) ---- */
+  /* Action: buttons, links, focus, selection. */
+  --my-accent: var(--my-arctic);
+  --my-accent-hover: var(--my-arctic-deep);
+  --my-accent-press: var(--my-ink);
+  --my-accent-text: var(--my-arctic); /* accent used as text or icon colour on a surface */
+  --my-on-accent: #ffffff;
+  --my-accent-tint: rgb(47 111 134 / 0.1); /* hover wash */
+  --my-accent-tint-strong: rgb(47 111 134 / 0.18); /* pressed / selected wash */
+  --my-accent-line: rgb(47 111 134 / 0.3);
+  --my-focus: var(--my-accent);
+
+  /* Attention: "look here". Capture outlines, highlights, the playhead, warnings. Never body text. */
+  --my-highlight: var(--my-mustard);
+  --my-highlight-tint: rgb(232 188 94 / 0.16);
+  --my-highlight-tint-strong: rgb(232 188 94 / 0.4);
+  --my-on-highlight: var(--my-ink);
+
+  /* Live: something is recording right now. The only pulsing colour. */
+  --my-live: var(--my-red);
+  --my-live-tint: rgb(218 33 44 / 0.2);
+
+  /* Status (keep their universal meaning, never decorative) */
+  --my-success: var(--my-green);
+  --my-success-text: #1a7a3c;
+  --my-danger: var(--my-red);
+  --my-danger-text: var(--my-red);
+  --my-warning: var(--my-mustard);
+  --my-warning-text: #8a6416;
+  --my-info: var(--my-accent);
+
+  /* Chrome: the ink app bars that frame every window */
+  --my-chrome: var(--my-ink);
+  --my-on-chrome: var(--my-cream);
+  --my-on-chrome-muted: rgb(243 233 215 / 0.6);
+  --my-on-chrome-line: rgb(243 233 215 / 0.4);
+  --my-chrome-top: #28506a; /* Ink lit from above: top of the app bar gradient */
+  --my-chrome-surface: linear-gradient(180deg, var(--my-chrome-top), var(--my-chrome));
+  --my-on-chrome-hover: rgb(243 233 215 / 0.14);
+  --my-titlebar-height: 44px; /* app bar = window title bar (TITLEBAR_HEIGHT in shared/design-tokens.ts) */
+
+  /* Floating over the user's desktop (HUD, countdown, overlay toolbar, dock): always dark, any theme */
+  --my-scrim: rgb(30 58 76 / 0.92);
+  --my-scrim-text: #ffffff;
+  --my-checker: #e6e6e6; /* transparency checkerboard, with white */
+  --my-backdrop: rgb(0 0 0 / 0.45); /* dims the desktop around a selection, modal backdrops */
+  --my-float-bg: var(--my-slate-900); /* HUD panel */
+  --my-float-raised: var(--my-slate-850); /* buttons and menus inside it */
+  --my-float-text: var(--my-slate-100);
+  --my-float-text-muted: var(--my-slate-300);
+  --my-float-text-faint: var(--my-slate-500);
+  --my-float-accent: var(--my-ice);
+  --my-float-live: var(--my-red-bright);
+  --my-float-live-text: #ff6b73;
+  --my-float-success: #5cc283;
+
+  /* Surfaces and text: fed by the host library so its components and ours agree */
+  --my-bg: var(--modus-wc-color-base-page, #f1f1f6);
+  --my-surface: var(--modus-wc-color-base-100, #ffffff);
+  --my-surface-2: var(--modus-wc-color-base-200, #f1f1f6);
+  --my-border: var(--modus-wc-color-base-300, #cbcdd6);
+  --my-text: var(--modus-wc-color-base-content, #252a2e);
+  --my-text-secondary: var(--my-slate-700); /* icons and labels on light floating toolbars */
+  --my-text-muted: var(--my-slate-600);
+  --my-text-faint: var(--my-slate-500); /* placeholders, disabled: never for information */
+
+  /* ---- 3a. Typography ---- */
+  --my-font-ui: 'Open Sans', 'Segoe UI', system-ui, sans-serif;
+  --my-font-mono: 'Roboto Mono', 'Cascadia Mono', ui-monospace, Consolas, monospace; /* timecodes, sizes, paths */
+
+  /* Type scale: 7 steps, dense desktop tool. Pick by role, not by look (see DESIGN_SYSTEM.md §3). */
+  --my-text-overline: 10px; /* UPPERCASE overlines only (letter-spacing 0.05em): reads like 11–12 px */
+  --my-text-xs: 11px; /* caption: badges, kbd, timestamps, dock labels */
+  --my-text-sm: 12px; /* meta: field labels, hints, secondary lines, toasts */
+  --my-text-md: 13px; /* dense UI: toolbars, lists, panels, menus */
+  --my-text-base: 14px; /* body: forms, dialogs, help text (the html default) */
+  --my-text-lg: 16px; /* title: section and dialog titles, wordmark */
+  --my-text-xl: 20px; /* page title, big numbers in the HUD */
+  --my-text-2xl: 26px; /* hero: help page title, empty states */
+  --my-text-display: 88px; /* countdown digits only */
+
+  --my-weight-regular: 400;
+  --my-weight-semibold: 600; /* labels, buttons, titles */
+  --my-weight-bold: 700; /* wordmark, display numbers: nothing else */
+
+  --my-leading-tight: 1.2; /* titles, single-line controls */
+  --my-leading-ui: 1.4; /* UI text */
+  --my-leading-prose: 1.6; /* help and long text */
+
+  /* ---- 3b. Space: 4 px grid (2 px is the hairline exception) ---- */
+  --my-space-0: 2px;
+  --my-space-1: 4px;
+  --my-space-2: 8px;
+  --my-space-3: 12px;
+  --my-space-4: 16px;
+  --my-space-5: 24px;
+  --my-space-6: 32px;
+  --my-space-7: 48px;
+
+  /* ---- 3c. Shape ---- */
+  --my-radius-xs: 4px; /* inputs, swatches, chips, kbd */
+  --my-radius-sm: 6px; /* buttons, icon buttons, menu items, thumbnails */
+  --my-radius-md: 8px; /* cards, panels, popovers, toasts */
+  --my-radius-lg: 12px; /* dialogs, floating toolbars (HUD, dock), sheets */
+  --my-radius-pill: 999px; /* pills, toggles, timers */
+  --my-radius-round: 50%; /* record button, avatars, dots */
+
+  --my-control-sm: 28px;
+  --my-control-md: 36px; /* default button and icon button height */
+  --my-control-lg: 44px;
+
+  /* ---- 3d. Elevation: three levels, nothing in between ---- */
+  --my-shadow-1: 0 1px 2px rgb(0 0 0 / 0.12), 0 1px 1px rgb(0 0 0 / 0.06); /* cards resting on a surface */
+  --my-shadow-2: 0 4px 12px rgb(0 0 0 / 0.18); /* menus, popovers, toasts */
+  --my-shadow-3: 0 10px 30px rgb(0 0 0 / 0.35); /* floating over the desktop: HUD, dock, countdown */
+  --my-glow-accent: 0 6px 18px rgb(30 58 76 / 0.35); /* the big capture button only */
+  --my-glow-live: 0 6px 18px rgb(160 20 30 / 0.35); /* the big record button only */
+  /* Depth: light from above. A 1 px top highlight on raised surfaces, a soft drop under the app bar. */
+  --my-bevel-light: inset 0 1px 0 rgb(255 255 255 / 0.7); /* top highlight of a raised light surface, any theme */
+  --my-bevel: var(--my-bevel-light); /* raised surface of the current theme: cards, panels, buttons */
+  --my-bevel-dark: inset 0 1px 0 rgb(255 255 255 / 0.1); /* raised dark surface: app bar, dock, HUD */
+  --my-shadow-chrome: var(--my-bevel-dark), 0 1px 0 rgb(0 0 0 / 0.25), 0 2px 8px rgb(0 0 0 / 0.18); /* app bar over content */
+  --my-shadow-card: var(--my-bevel), var(--my-shadow-1), 0 4px 14px rgb(30 58 76 / 0.06); /* resting card, a touch of lift */
+  --my-edge-dark: inset 0 -2px 0 rgb(0 0 0 / 0.28); /* thickness under a dark raised surface (dock tab) */
+  --my-edge-light: inset 0 -2px 0 rgb(30 58 76 / 0.08); /* thickness under a light raised surface (dock panel) */
+  --my-sphere: inset 0 2px 3px rgb(255 255 255 / 0.3), inset 0 -4px 8px rgb(0 0 0 / 0.28); /* round hero buttons */
+  --my-raised-light: linear-gradient(180deg, #ffffff, var(--my-slate-50)); /* dock panel, light */
+  --my-raised-dark: linear-gradient(180deg, var(--my-slate-700) -60%, var(--my-slate-800) 50%, var(--my-slate-900)); /* dark */
+  --my-drop: 0 1px 2px rgb(0 0 0 / 0.35); /* drop-shadow() filter: logo on the app bar */
+  --my-ring: 0 0 0 3px var(--my-accent-tint-strong); /* focus halo on large targets */
+
+  /* ---- 3e. Icons (Phosphor glyphs, regular weight; see §4) ---- */
+  --my-icon-sm: 16px; /* inline with 12–14 px text, dense lists */
+  --my-icon-md: 20px; /* default: toolbars, buttons */
+  --my-icon-lg: 28px; /* primary tiles, list leading icons */
+  --my-icon-xl: 40px; /* hero buttons, empty states */
+
+  /* ---- 3f. Motion: short and quiet; the content is what moves ---- */
+  --my-motion-fast: 120ms; /* hover, press */
+  --my-motion-base: 200ms; /* open/close menus, toasts */
+  --my-motion-slow: 320ms; /* panels, sheets */
+  --my-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ---- Dark theme: only semantics change; scales never do ---- */
+html.dark {
+  --my-accent: var(--my-ice);
+  --my-accent-hover: var(--my-ice-light);
+  --my-accent-press: var(--my-ice-deep);
+  --my-accent-text: var(--my-ice);
+  --my-on-accent: var(--my-ink);
+  --my-accent-tint: rgb(156 201 211 / 0.12);
+  --my-accent-tint-strong: rgb(156 201 211 / 0.3);
+  --my-accent-line: rgb(156 201 211 / 0.35);
+
+  --my-success-text: #5cc283;
+  --my-danger-text: #f48a90;
+  --my-warning-text: var(--my-mustard);
+
+  --my-text-secondary: var(--my-slate-200);
+  --my-text-muted: var(--my-slate-400);
+  --my-text-faint: #7c818c;
+
+  --my-shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --my-shadow-2: 0 6px 16px rgb(0 0 0 / 0.45);
+  --my-bevel: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --my-shadow-card: var(--my-bevel), var(--my-shadow-1), 0 4px 14px rgb(0 0 0 / 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --my-motion-fast: 0ms;
+    --my-motion-base: 0ms;
+    --my-motion-slow: 0ms;
+  }
+}

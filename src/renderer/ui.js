@@ -1,0 +1,549 @@
+// Chrome around the viewport: menus, tool bar, dock panels, status bar, palette, toasts, dialogs.
+import * as D from '../core/document.js';
+import { TOOLS, fmt } from './tools.js';
+
+/** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
+export function h(sel, attrs = {}, ...kids) {
+  const [tag, ...cls] = sel.split('.');
+  const el = document.createElement(tag || 'div');
+  if (cls.length) el.className = cls.join(' ');
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if ((k === 'style' || k === 'dataset') && typeof v === 'object') Object.assign(el[k], v);
+    else if (k in el && k !== 'list') el[k] = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) el.append(k.nodeType ? k : String(k));
+  return el;
+}
+export const icon = (name, fill = false) => h(`i.ph${fill ? '-fill' : ''}.ph-${name}`, { 'aria-hidden': 'true' });
+const iconBtn = (name, label, onclick, pressed) =>
+  h('button.icon-btn', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(name));
+
+export const MATERIALS = [
+  { name: 'Plaster', color: '#e9e4d8', roughness: 0.9 },
+  { name: 'Concrete', color: '#a7a39a', roughness: 0.95 },
+  { name: 'Brick', color: '#a8553c', roughness: 0.9 },
+  { name: 'Terracotta', color: '#d2775a', roughness: 0.8 },
+  { name: 'Oak', color: '#b58a57', roughness: 0.7 },
+  { name: 'Walnut', color: '#5e3f2b', roughness: 0.6 },
+  { name: 'Mustard', color: '#e8bc5e', roughness: 0.6 },
+  { name: 'Fern', color: '#4c7a5a', roughness: 0.8 },
+  { name: 'Grass', color: '#6f9a4a', roughness: 1 },
+  { name: 'Water', color: '#3f879c', roughness: 0.1, opacity: 0.7 },
+  { name: 'Glass', color: '#b8dbe2', roughness: 0.05, opacity: 0.35 },
+  { name: 'Steel', color: '#9aa3ab', roughness: 0.35, metalness: 0.9 },
+  { name: 'Copper', color: '#b8734a', roughness: 0.35, metalness: 0.9 },
+  { name: 'Ink', color: '#1e3a4c', roughness: 0.5 },
+  { name: 'Asphalt', color: '#3c3f44', roughness: 1 },
+  { name: 'Snow', color: '#fbfbf8', roughness: 0.9 },
+];
+
+export class UI {
+  constructor(app) {
+    this.app = app;
+    this.tab = 'ai';
+    this.$ = (id) => document.getElementById(id);
+    this.paint = MATERIALS[3];
+  }
+
+  init() {
+    this.buildActions();
+    this.buildMenus();
+    this.buildToolbar();
+    this.buildViewbar();
+    this.buildTabs();
+    this.buildPalette();
+    this.$('context-chip').onclick = () => this.app.setContext(null);
+  }
+
+  // ---------------------------------------------------------------- actions (menus, palette, shortcuts share them)
+  buildActions() {
+    const app = this.app;
+    const run = (name, args) => () => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
+    const sel = () => app.selection;
+    const style = (k) => ({ checked: () => app.store.doc.settings[k], run: () => app.reg.run('set_style', { [k]: !app.store.doc.settings[k] }) });
+    this.actions = {
+      new: { label: 'New model', icon: 'file-plus', key: 'Ctrl+N', run: () => app.newModel() },
+      open: { label: 'Open…', icon: 'folder-open', key: 'Ctrl+O', run: run('open', {}) },
+      save: { label: 'Save', icon: 'floppy-disk', key: 'Ctrl+S', run: () => app.reg.run('save', { path: app.file || undefined }).catch((e) => this.toast(e.message, 'danger')) },
+      saveAs: { label: 'Save as…', icon: 'floppy-disk', key: 'Ctrl+Shift+S', run: run('save', {}) },
+      import: { label: 'Import model…', icon: 'tray-arrow-down', run: run('import', {}) },
+      exportGlb: { label: 'Export GLB', icon: 'export', run: run('export', { format: 'glb' }) },
+      exportGltf: { label: 'Export glTF', icon: 'export', run: run('export', { format: 'gltf' }) },
+      exportObj: { label: 'Export OBJ', icon: 'export', run: run('export', { format: 'obj' }) },
+      exportStl: { label: 'Export STL (3D print)', icon: 'export', run: run('export', { format: 'stl' }) },
+      exportPng: { label: 'Export image (PNG)', icon: 'image', run: run('export', { format: 'png' }) },
+      exportVideo: { label: 'Export video of the timeline', icon: 'video-camera', run: run('export', { format: 'video' }) },
+      plugins: { label: 'Open plugins folder', icon: 'puzzle-piece', run: () => window.native.invoke('shell:open-path', 'plugins') },
+      undo: { label: 'Undo', icon: 'arrow-arc-left', key: 'Ctrl+Z', run: run('undo') },
+      redo: { label: 'Redo', icon: 'arrow-arc-right', key: 'Ctrl+Y', run: run('redo') },
+      delete: { label: 'Delete', icon: 'trash', key: 'Del', run: () => sel().length && app.reg.run('delete', {}) },
+      selectAll: { label: 'Select all', icon: 'selection-all', key: 'Ctrl+A', run: run('select', { mode: 'all' }) },
+      selectNone: { label: 'Select none', icon: 'selection', key: 'Esc', run: run('select', { mode: 'none' }) },
+      group: { label: 'Make group', icon: 'stack', key: 'Ctrl+G', run: () => sel().length && app.reg.run('group', {}) },
+      ungroup: { label: 'Explode group', icon: 'stack-minus', key: 'Ctrl+Shift+G', run: () => sel().length === 1 && app.reg.run('ungroup', { id: sel()[0] }).catch((e) => this.toast(e.message)) },
+      duplicate: { label: 'Duplicate', icon: 'copy', key: 'Ctrl+D', run: () => sel().length && app.reg.run('duplicate', { offset: [1, 0, 0] }) },
+      hide: { label: 'Hide', icon: 'eye-slash', run: () => sel().length && app.reg.run('set_properties', { visible: false }) },
+      unhideAll: { label: 'Unhide all', icon: 'eye', run: run('run_script', { code: 'for (const e of api.doc.entities) e.visible = true;' }) },
+      lock: { label: 'Lock', icon: 'lock-simple', run: () => sel().length && app.reg.run('set_properties', { locked: true }) },
+      unlockAll: { label: 'Unlock all', icon: 'lock-simple-open', run: run('run_script', { code: 'for (const e of api.doc.entities) e.locked = false;' }) },
+      zoomExtents: { label: 'Zoom extents', icon: 'corners-out', key: 'Shift+Z', run: run('zoom_extents', {}) },
+      zoomSel: { label: 'Zoom to selection', icon: 'magnifying-glass-plus', run: () => sel().length && app.reg.run('zoom_extents', { ids: sel() }) },
+      iso: { label: 'Iso', icon: 'cube', run: run('set_view', { preset: 'iso' }) },
+      top: { label: 'Top', icon: 'square', run: run('set_view', { preset: 'top' }) },
+      front: { label: 'Front', icon: 'square-half-bottom', run: run('set_view', { preset: 'front' }) },
+      right: { label: 'Right', icon: 'square-half', run: run('set_view', { preset: 'right' }) },
+      left: { label: 'Left', run: run('set_view', { preset: 'left' }) },
+      back: { label: 'Back', run: run('set_view', { preset: 'back' }) },
+      edges: { label: 'Edges', icon: 'line-segments', ...style('edges') },
+      xray: { label: 'X-ray', icon: 'cube-transparent', ...style('xray') },
+      wireframe: { label: 'Wireframe', icon: 'cube-focus', ...style('wireframe') },
+      shadows: { label: 'Shadows', icon: 'sun', ...style('shadows') },
+      grid: { label: 'Grid and axes', icon: 'grid-four', ...style('grid') },
+      unsection: { label: 'Remove section cut', icon: 'knife', run: run('section', { enabled: false }) },
+      theme: { label: 'Dark theme', icon: 'moon', checked: () => document.documentElement.classList.contains('dark'), run: () => app.toggleTheme() },
+      timeline: { label: 'Timeline', icon: 'film-strip', key: 'Ctrl+T', checked: () => app.timeline.active, run: () => app.timeline.toggle() },
+      play: { label: 'Play / pause', icon: 'play', key: 'Shift+Space', run: () => (app.timeline.playing ? app.timeline.pause() : app.timeline.play()) },
+      keySel: { label: 'Key the selection at the playhead', icon: 'diamond', key: 'K', run: () => app.keySelection() },
+      keyCam: { label: 'Key the camera at the playhead', icon: 'video-camera', run: () => app.reg.run('add_keyframe', { target: 'camera' }).then(() => app.timeline.open()) },
+      autoKey: { label: 'Auto-key (edits record keyframes)', icon: 'record', checked: () => app.ctx.autoKey, run: () => app.setAutoKey(!app.ctx.autoKey) },
+      sequence: { label: 'Build sequence from selection', icon: 'stack', run: () => sel().length && app.reg.run('build_sequence', { order: 'bottom-up' }).then(() => app.timeline.open()) },
+      turntable: { label: 'Turntable camera', icon: 'arrows-clockwise', run: () => app.reg.run('turntable', {}).then(() => app.timeline.open()) },
+      scenesAnim: { label: 'Animate through scenes', icon: 'film-slate', run: () => app.animateScenes() },
+      clearAnim: { label: 'Clear animation of selection', icon: 'trash', run: () => app.reg.run('run_script', { code: `for (const id of ${JSON.stringify(sel())}) await api.remove_keyframes({ target: id });` }) },
+      askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
+      newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
+      aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
+      mcp: { label: 'Connect Claude Desktop (MCP)…', icon: 'plugs-connected', run: () => this.mcpDialog() },
+      shortcuts: { label: 'Keyboard shortcuts', icon: 'keyboard', run: () => this.shortcutsDialog() },
+      about: { label: 'About MyModellerReel', icon: 'info', run: () => this.aboutDialog() },
+    };
+    for (const t of TOOLS) this.actions[`tool:${t.id}`] = { label: t.label, icon: t.icon, key: t.key, checked: () => app.tools.id === t.id, run: () => app.tools.set(t.id) };
+  }
+
+  buildMenus() {
+    const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
+    this.menus = {
+      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'plugins'],
+      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll'],
+      View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera')],
+      Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', '-', 'clearAnim', 'exportVideo'],
+      AI: ['askAi', 'newChat', '-', 'mcp', 'aiSettings'],
+      Help: ['shortcuts', 'mcp', 'about'],
+    };
+    const bar = this.$('menubar');
+    for (const name of Object.keys(this.menus)) {
+      const b = h('button', { 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: () => this.openMenu(name, b), onmouseenter: () => this.openName && this.openName !== name && this.openMenu(name, b) }, name);
+      bar.append(b);
+    }
+    document.addEventListener('pointerdown', (e) => !e.target.closest('.menu-pop, .menubar') && this.closeMenu());
+  }
+  openMenu(name, btn) {
+    const pop = this.$('menu-pop');
+    if (this.openName === name) return this.closeMenu();
+    this.closeMenu();
+    this.openName = name;
+    btn.setAttribute('aria-expanded', 'true');
+    pop.replaceChildren(
+      ...this.menus[name].map((id) => {
+        if (id === '-') return h('hr');
+        const a = this.actions[id];
+        if (!a) return h('div.overline', {}, id);
+        const on = a.checked?.();
+        return h('button', { role: 'menuitem', onclick: () => (this.closeMenu(), a.run()) }, on ? icon('check') : icon(a.icon || 'dot-outline'), a.label, a.key ? h('span.key', {}, a.key) : null);
+      }),
+    );
+    const r = btn.getBoundingClientRect();
+    Object.assign(pop.style, { left: `${r.left}px`, top: `${r.bottom + 4}px` });
+    pop.hidden = false;
+  }
+  closeMenu() {
+    this.$('menu-pop').hidden = true;
+    for (const b of this.$('menubar').children) b.setAttribute('aria-expanded', 'false');
+    this.openName = null;
+  }
+
+  buildToolbar() {
+    const bar = this.$('toolbar');
+    let group = null;
+    for (const t of TOOLS) {
+      if (group && t.group !== group) bar.append(h('hr'));
+      group = t.group;
+      const b = iconBtn(t.icon, `${t.label} (${t.key})`, () => this.app.tools.set(t.id), false);
+      b.dataset.tool = t.id;
+      bar.append(b);
+    }
+    bar.append(h('hr'), iconBtn('corners-out', 'Zoom extents (Shift+Z)', () => this.actions.zoomExtents.run()));
+    this.pluginBar = h('div', { style: { display: 'contents' } });
+    bar.append(this.pluginBar);
+  }
+  addPluginButton({ icon: ic = 'puzzle-piece', label, run }) {
+    if (!this.pluginBar.children.length) this.pluginBar.append(h('hr'));
+    this.pluginBar.append(iconBtn(ic, label, run));
+  }
+  onTool(id) {
+    for (const b of this.$('toolbar').querySelectorAll('[data-tool]')) b.setAttribute('aria-pressed', String(b.dataset.tool === id));
+    this.$('vcb').value = '';
+  }
+
+  buildViewbar() {
+    const vb = this.$('viewbar');
+    const render = () => {
+      const s = this.app.store.doc.settings;
+      vb.replaceChildren(
+        ...['iso', 'top', 'front', 'right'].map((v) => h('button.icon-btn.sm', { title: `${this.actions[v].label} view`, 'aria-label': `${this.actions[v].label} view`, onclick: this.actions[v].run }, icon(this.actions[v].icon))),
+        h('span.sep'),
+        ...['edges', 'xray', 'shadows', 'grid'].map((k) =>
+          h('button.icon-btn.sm', { title: this.actions[k].label, 'aria-label': this.actions[k].label, 'aria-pressed': String(!!s[k]), onclick: this.actions[k].run }, icon(this.actions[k].icon)),
+        ),
+        h('span.sep'),
+        h('button.icon-btn.sm', { title: 'Timeline (Ctrl+T)', 'aria-label': 'Timeline (Ctrl+T)', 'aria-pressed': String(this.app.timeline.active), onclick: this.actions.timeline.run }, icon('film-strip')),
+      );
+    };
+    this.renderViewbar = render;
+  }
+
+  // ---------------------------------------------------------------- dock
+  buildTabs() {
+    this.tabs = [
+      ['ai', 'AI', 'sparkle'],
+      ['outliner', 'Outliner', 'tree-structure'],
+      ['entity', 'Entity', 'info'],
+      ['materials', 'Materials', 'palette'],
+      ['scenes', 'Scenes', 'camera'],
+      ['plugins', 'Plugins', 'puzzle-piece'],
+      ['settings', 'Settings', 'gear'],
+    ];
+    this.$('dock-tabs').replaceChildren(
+      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id } }, icon(ic), label)),
+    );
+  }
+  show(tab, focus = false) {
+    this.tab = tab;
+    for (const b of this.$('dock-tabs').children) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    this.renderDock();
+    if (focus && tab === 'ai') this.app.ai.focus();
+  }
+  renderDock() {
+    const body = this.$('dock-body');
+    if (this.tab === 'ai') {
+      if (body.firstChild !== this.app.ai.el) body.replaceChildren(this.app.ai.el);
+      return;
+    }
+    const panel = this[`panel_${this.tab}`]();
+    body.replaceChildren(panel);
+  }
+  refresh() {
+    if (this.tab !== 'ai') this.renderDock();
+    this.renderViewbar();
+    const chip = this.$('context-chip');
+    const ctx = this.app.context && this.app.entity(this.app.context);
+    chip.hidden = !ctx;
+    if (ctx) chip.replaceChildren(icon('pencil-simple'), `Editing inside "${ctx.name}"`, icon('x'));
+  }
+  onSelection() {
+    if (this.tab === 'outliner' || this.tab === 'entity') this.renderDock();
+    const n = this.app.selection.length;
+    if (n && this.app.tools.id === 'select') this.setStatus(n === 1 ? `${this.app.entity(this.app.selection[0])?.name} selected.` : `${n} selected.`);
+  }
+
+  panel_outliner() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    const rows = [];
+    const walk = (parent, depth) => {
+      for (const e of doc.entities.filter((x) => x.parent === parent)) {
+        const animated = doc.animation.tracks.some((t) => t.target === e.id);
+        rows.push(
+          h(
+            `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
+            { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
+            icon(e.type === 'group' ? 'folder-simple' : 'cube'),
+            e.mesh ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
+            h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
+            animated ? icon('film-strip') : null,
+            h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
+            h('button.icon-btn.sm', { title: e.locked ? 'Unlock' : 'Lock', 'aria-label': e.locked ? 'Unlock' : 'Lock', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], locked: !e.locked })) }, icon(e.locked ? 'lock-simple' : 'lock-simple-open')),
+          ),
+        );
+        walk(e.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return h(
+      'div.panel',
+      {},
+      h('div.row', {}, h('h3.grow', {}, 'Outliner'), h('span.muted.small', {}, `${doc.entities.length} entities`)),
+      rows.length ? h('div.tree', {}, rows) : h('p.muted', {}, 'Nothing here yet. Draw with the tools on the left, or ask the AI to build something.'),
+      h('div.overline', {}, 'Tags'),
+      h(
+        'div.tree',
+        {},
+        doc.tags.map((t) =>
+          h('div.tree-row', {}, icon('tag'), h('span.name', {}, t.name), h('span.muted.small', {}, doc.entities.filter((e) => e.tag === t.name).length), h('button.icon-btn.sm', { title: t.visible ? 'Hide tag' : 'Show tag', 'aria-label': t.visible ? 'Hide tag' : 'Show tag', onclick: () => run('set_tag_visibility', { tag: t.name, visible: !t.visible }) }, icon(t.visible ? 'eye' : 'eye-slash'))),
+        ),
+      ),
+    );
+  }
+
+  panel_entity() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const sel = app.selection.map((id) => app.entity(id)).filter(Boolean);
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    if (!sel.length) return h('div.panel', {}, h('h3', {}, 'Entity'), h('p.muted', {}, 'Select something to see and edit its size, position, material and animation.'));
+    const e = sel[0];
+    const mat = e.mesh ? e.material : (D.descendants(doc, e.id).find((x) => x.mesh)?.material ?? e.material);
+    const matFields = h(
+      'div.card',
+      {},
+      h('div.overline', {}, 'Material'),
+      h('div.row', {}, h('input', { type: 'color', value: mat.color, onchange: (ev) => run('set_material', { ids: app.selection, color: ev.target.value }) }), h('span.grow.small', {}, mat.color)),
+      ...[['opacity', 'Opacity'], ['metalness', 'Metal'], ['roughness', 'Rough']].map(([k, label]) =>
+        h('label.row.small', {}, h('span', { style: { width: '64px' } }, label), h('input.grow', { type: 'range', min: 0, max: 1, step: 0.05, value: mat[k] ?? 0, onchange: (ev) => run('set_material', { ids: app.selection, [k]: +ev.target.value }) })),
+      ),
+    );
+    const actions = h(
+      'div.row.wrap',
+      {},
+      h('button.btn', { onclick: () => app.keySelection() }, icon('diamond'), 'Key pose'),
+      h('button.btn', { onclick: () => this.actions.group.run() }, icon('stack'), 'Group'),
+      sel.length === 1 && e.type === 'group' ? h('button.btn', { onclick: () => this.actions.ungroup.run() }, icon('stack-minus'), 'Explode') : null,
+      h('button.btn.danger', { onclick: () => run('delete', {}) }, icon('trash'), 'Delete'),
+    );
+    if (sel.length > 1) return h('div.panel', {}, h('h3', {}, `${sel.length} selected`), matFields, actions);
+    const b = D.worldBox(doc, e);
+    const size = b.max.map((x, k) => x - b.min[k]);
+    const xyz = (label, key, step) =>
+      h(
+        'div.xyz',
+        {},
+        h('span.lab', {}, label),
+        ...[0, 1, 2].map((k) =>
+          h('input', {
+            type: 'number',
+            step,
+            value: Math.round(e[key][k] * 1000) / 1000,
+            onchange: (ev) => {
+              const v = [...e[key]];
+              v[k] = +ev.target.value;
+              run('set_transform', { id: e.id, [key]: v });
+            },
+          }),
+        ),
+      );
+    const tracks = doc.animation.tracks.filter((t) => t.target === e.id);
+    return h(
+      'div.panel',
+      {},
+      h('label.field', {}, h('span', {}, `Name · ${e.id} · ${e.type === 'group' ? 'group' : `${e.mesh.f.length} faces`}`), h('input', { value: e.name, onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value }) })),
+      h('label.field', {}, h('span', {}, 'Tag'), h('input', { value: e.tag, list: 'tag-list', onchange: (ev) => run('set_properties', { ids: [e.id], tag: ev.target.value || 'Untagged' }) }), h('datalist', { id: 'tag-list' }, doc.tags.map((t) => h('option', { value: t.name })))),
+      h('div.card', {}, h('div.overline', {}, 'Transform (relative to parent; Y is up)'), xyz('Position', 'position', 0.1), xyz('Rotation°', 'rotation', 5), xyz('Scale', 'scale', 0.1), h('div.small.muted', {}, `Size ${size.map(fmt).join(' × ')}`)),
+      h(
+        'div.row.wrap',
+        {},
+        h('span.small.muted', {}, 'Pivot'),
+        ...['left', 'right', 'center', 'bottom', 'top'].map((p) => h('button.btn', { onclick: () => run('set_pivot', { id: e.id, pivot: p }) }, p)),
+      ),
+      matFields,
+      tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
+      actions,
+    );
+  }
+
+  panel_materials() {
+    const app = this.app;
+    const set = (m) => {
+      this.setPaint(m);
+      if (app.selection.length) app.reg.run('set_material', { ids: app.selection, color: m.color, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.8 });
+      else app.tools.set('paint');
+    };
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'Materials'),
+      h('p.muted.small', {}, 'Click a swatch: it paints the selection, or arms the Paint Bucket (B) when nothing is selected. Alt-click in the model samples a colour.'),
+      h('div.swatches', {}, MATERIALS.map((m) => h('button.swatch', { 'aria-pressed': String(this.paint.color === m.color), onclick: () => set(m) }, h('i', { style: { background: m.color, opacity: m.opacity ?? 1 } }), m.name))),
+      h('label.row', {}, h('span.small', {}, 'Custom'), h('input', { type: 'color', value: this.paint.color, onchange: (ev) => set({ ...this.paint, name: 'Custom', color: ev.target.value }) })),
+    );
+  }
+  setPaint(m) {
+    this.paint = m;
+    this.app.tools.paint = { color: m.color, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.8 };
+    if (this.tab === 'materials') this.renderDock();
+  }
+
+  panel_scenes() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'Scenes'),
+      h('p.muted.small', {}, 'A scene remembers a camera view. Animate through scenes turns them into a camera move on the timeline.'),
+      h('div.row', {}, h('button.btn.primary', { onclick: () => run('add_scene', {}) }, icon('plus'), 'Add scene'), h('button.btn', { onclick: () => app.animateScenes() }, icon('film-slate'), 'Animate through scenes')),
+      h(
+        'div.tree',
+        {},
+        doc.scenes.map((s) =>
+          h(
+            'div.tree-row',
+            { onclick: () => run('go_to_scene', { name: s.name }) },
+            icon('camera'),
+            h('span.name', {}, s.name),
+            h('button.icon-btn.sm', { title: 'Update to current view', 'aria-label': 'Update to current view', onclick: (ev) => (ev.stopPropagation(), run('add_scene', { name: s.name })) }, icon('arrows-clockwise')),
+            h('button.icon-btn.sm', { title: 'Delete scene', 'aria-label': 'Delete scene', onclick: (ev) => (ev.stopPropagation(), run('run_script', { code: `api.doc.scenes = api.doc.scenes.filter((s) => s.name !== ${JSON.stringify(s.name)});` })) }, icon('trash')),
+          ),
+        ),
+      ),
+    );
+  }
+
+  panel_plugins() {
+    const app = this.app;
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'Plugins'),
+      h('p.muted.small', {}, 'A plugin is one JavaScript file that adds commands. Every command it adds is instantly available to the toolbar, the AI, the HTTP API and MCP. Ask the AI to "create a plugin that…" and it writes one for you.'),
+      h('div.row', {}, h('button.btn', { onclick: this.actions.plugins.run }, icon('folder-open'), 'Open plugins folder'), h('button.btn', { onclick: () => app.reloadPlugins() }, icon('arrows-clockwise'), 'Reload')),
+      ...app.plugins.map((p) => h('div.card', {}, h('div.row', {}, icon('puzzle-piece'), h('b.grow', {}, p.name), h('span.small.muted', {}, p.builtin ? 'built-in' : 'yours')), h('div.small.muted', {}, p.error ? `Failed: ${p.error}` : p.commands.join(', ') || 'no commands'))),
+    );
+  }
+
+  panel_settings() {
+    const app = this.app;
+    const s = app.settings;
+    const ai = s.ai;
+    const save = async (patch) => {
+      app.settings = await window.native.invoke('settings:set', patch);
+      this.toast('Saved');
+      app.ai.renderHead();
+      this.renderDock();
+    };
+    const field = (label, value, onchange, attrs = {}) => h('label.field', {}, h('span', {}, label), h('input', { value: value ?? '', onchange, ...attrs }));
+    const prov = ai.provider;
+    const cfg =
+      prov === 'anthropic'
+        ? [field('Model', ai.anthropic.model, (e) => save({ ai: { anthropic: { model: e.target.value } } })), field(`API key ${ai.anthropic.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { anthropic: { apiKey: e.target.value } } }), { type: 'password', placeholder: 'sk-ant-…' })]
+        : prov === 'openai'
+          ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
+          : [field('Ollama URL', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'AI'),
+      h(
+        'label.field',
+        {},
+        h('span', {}, 'Provider'),
+        h(
+          'select',
+          { onchange: (e) => save({ ai: { provider: e.target.value } }) },
+          [['ollama', 'Local model (Ollama: Mistral…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
+        ),
+      ),
+      ...cfg,
+      h('p.small.muted', {}, 'Keys are stored on this PC and only used by the app itself; the page never sees them.'),
+      h('h3', {}, 'API and MCP'),
+      h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
+      h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),
+      h('h3', {}, 'Appearance'),
+      h('label.row', {}, h('input', { type: 'checkbox', checked: document.documentElement.classList.contains('dark'), onchange: () => app.toggleTheme() }), 'Dark theme'),
+    );
+  }
+
+  // ---------------------------------------------------------------- status, toasts, dialogs
+  setStatus(hint, vcbLabel) {
+    this.$('status-hint').textContent = hint || '';
+    if (vcbLabel !== undefined) this.$('vcb-label').textContent = vcbLabel || 'Measurements';
+  }
+  toast(msg, kind = '') {
+    const t = h(`div.toast${kind ? `.${kind}` : ''}`, { role: kind === 'danger' ? 'alert' : 'status' }, msg);
+    this.$('toasts').append(t);
+    setTimeout(() => t.remove(), kind === 'danger' ? 6000 : 2600);
+  }
+  modal(title, body, buttons = [['Close', null]]) {
+    const dlg = this.$('modal');
+    return new Promise((resolve) => {
+      dlg.replaceChildren(
+        h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => (dlg.close(), resolve(value)) }, label)))),
+      );
+      dlg.onclose = () => resolve(null);
+      dlg.showModal();
+    });
+  }
+  mcpDialog() {
+    const cfg = this.app.mcpConfig();
+    const text = JSON.stringify(cfg, null, 2);
+    return this.modal(
+      'Connect Claude Desktop (MCP)',
+      h(
+        'div.panel',
+        { style: { padding: 0 } },
+        h('p', {}, 'Add this to Claude Desktop → Settings → Developer → Edit config (claude_desktop_config.json), then restart Claude Desktop. Claude then sees every MyModellerReel command as a tool, can look at screenshots, and starts the app if it is closed.'),
+        h('div.code', {}, text),
+        h('p.small.muted', {}, 'Or run "npm run mcp:config" in the project folder to add it for you. Any other MCP client (Claude Code, Cursor…) uses the same command.'),
+      ),
+      [['Copy config', 'copy'], ['Close', null]],
+    ).then((v) => v === 'copy' && navigator.clipboard.writeText(text).then(() => this.toast('Copied')));
+  }
+  shortcutsDialog() {
+    const rows = Object.values(this.actions).filter((a) => a.key);
+    return this.modal('Keyboard shortcuts', h('div.panel', { style: { padding: 0, gap: '4px' } }, rows.map((a) => h('div.row', {}, h('span.grow', {}, a.label), h('kbd', {}, a.key))), h('p.small.muted', {}, 'While a tool is active, just type numbers: they go to the Measurements box (bottom right). Arrow keys lock an axis: → red, ← green, ↑ blue. Middle mouse orbits, right mouse pans, the wheel zooms.')));
+  }
+  aboutDialog() {
+    return this.modal(
+      'MyModellerReel',
+      h('div.panel', { style: { padding: 0 } }, h('p', {}, h('b', {}, 'Model it. Reel it. Ship it.')), h('p', {}, `Version ${this.app.info.version}. An AI-first 3D modeller and animation sequencer of the My…Reel family. Files are GLB, the format every 3D tool reads.`), h('p.small.muted', {}, `Data folder: ${this.app.info.userData}`)),
+    );
+  }
+
+  // ---------------------------------------------------------------- command palette (Ctrl+K)
+  buildPalette() {
+    const dlg = this.$('palette');
+    const input = this.$('palette-input');
+    const list = this.$('palette-list');
+    let items = [];
+    let idx = 0;
+    const render = () => {
+      const q = input.value.trim().toLowerCase();
+      const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
+      const cmds = this.app.reg.list().filter((c) => !(c.params.required || []).length).map((c) => ({ label: c.name, desc: c.description, icon: 'terminal', run: () => this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))) }));
+      items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
+      if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });
+      idx = Math.min(idx, items.length - 1);
+      list.replaceChildren(...items.map((it, i) => h('li', { 'aria-selected': String(i === idx), onclick: () => go(i) }, icon(it.icon || 'dot-outline'), h('span', {}, it.label), it.desc ? h('span.desc', {}, it.desc) : null, it.key ? h('span.key', {}, it.key) : null)));
+      list.children[idx]?.scrollIntoView({ block: 'nearest' });
+    };
+    const go = (i) => {
+      const it = items[i];
+      dlg.close();
+      it?.run();
+    };
+    input.oninput = () => ((idx = 0), render());
+    input.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') (idx = Math.min(items.length - 1, idx + 1)), render(), e.preventDefault();
+      else if (e.key === 'ArrowUp') (idx = Math.max(0, idx - 1)), render(), e.preventDefault();
+      else if (e.key === 'Enter') {
+        // A sentence with no matching command goes straight to the AI.
+        const q = input.value.trim();
+        if (q.split(/\s+/).length > 2 && !items.slice(0, -1).some((x) => x.label.toLowerCase() === q.toLowerCase())) go(items.length - 1);
+        else go(idx);
+      }
+    };
+    this.openPalette = () => {
+      input.value = '';
+      idx = 0;
+      render();
+      dlg.showModal();
+      input.focus();
+    };
+    this.$('palette-btn').onclick = this.openPalette;
+  }
+}

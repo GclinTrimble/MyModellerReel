@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MyModellerReel</title>
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/400.css" />
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/600.css" />
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/700.css" />
+    <link rel="stylesheet" href="../../node_modules/@phosphor-icons/web/src/regular/style.css" />
+    <link rel="stylesheet" href="../../node_modules/@phosphor-icons/web/src/fill/style.css" />
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../../node_modules/three/build/three.module.js",
+          "three/addons/": "../../node_modules/three/examples/jsm/",
+          "three-mesh-bvh": "../../node_modules/three-mesh-bvh/src/index.js",
+          "three-bvh-csg": "../../node_modules/three-bvh-csg/src/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="appbar">
+      <div class="brand">
+        <img src="../../resources/icon.svg" alt="" />
+        <span class="wordmark">My<b>Modeller</b><b class="reel">Reel</b></span>
+      </div>
+      <nav class="menubar" id="menubar" aria-label="Main menu"></nav>
+      <button class="search" id="palette-btn" title="Search commands or ask the AI (Ctrl+K)" aria-label="Search commands or ask the AI (Ctrl+K)">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i><span>Search commands or ask AI…</span><kbd>Ctrl K</kbd>
+      </button>
+      <span class="doc-title" id="doc-title">Untitled</span>
+    </header>
+
+    <main class="workspace">
+      <nav class="toolbar" id="toolbar" aria-label="Tools"></nav>
+      <section class="stage">
+        <div class="viewport-wrap">
+          <canvas id="viewport" tabindex="0" aria-label="3D model view"></canvas>
+          <div id="snap-label" hidden></div>
+          <div id="select-box" hidden></div>
+          <button class="context-chip" id="context-chip" hidden></button>
+          <div class="viewbar" id="viewbar"></div>
+          <div class="axis-legend" aria-hidden="true"><span class="x">X</span><span class="z">Z</span><span class="y">Y up</span></div>
+        </div>
+        <section class="timeline" id="timeline" hidden></section>
+      </section>
+      <aside class="dock">
+        <div class="tabs" id="dock-tabs" role="tablist"></div>
+        <div class="dock-body" id="dock-body"></div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status-hint"></span>
+      <span class="spacer"></span>
+      <span class="api-pill" id="api-pill" title="Local API and MCP"></span>
+      <label class="vcb"><span id="vcb-label">Measurements</span><input id="vcb" autocomplete="off" spellcheck="false" /></label>
+    </footer>
+
+    <div id="toasts" aria-live="polite"></div>
+    <div class="menu-pop" id="menu-pop" hidden></div>
+    <dialog id="palette" class="palette">
+      <input id="palette-input" placeholder="Type a command, or ask the AI anything…" autocomplete="off" spellcheck="false" />
+      <ul id="palette-list"></ul>
+    </dialog>
+    <dialog id="modal" class="modal"></dialog>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
