@@ -2,6 +2,7 @@
 // registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on.
 import { protocolOf, systemPrompt, runTurn } from '../core/agent.js';
 import { h, icon } from './ui.js';
+import { SKILLS } from '../core/skills.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
@@ -51,7 +52,12 @@ export class Assistant {
     const ok = s.provider === 'ollama' || s[s.provider]?.hasKey;
     this.head.replaceChildren(
       icon('sparkle'),
-      h('b.grow', {}, 'Copilot'),
+      h(
+        'select.skill-pick.grow',
+        { title: 'Domain skill: know-how the copilot adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
+        h('option', { value: 'none' }, 'No skill'),
+        Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, s.label)),
+      ),
       h(
         'button.icon-btn.sm',
         { title: 'Propose: show the AI\'s changes as a preview to accept or reject', 'aria-label': 'Propose changes for review', 'aria-pressed': String(this.propose), onclick: () => this.setPropose(!this.propose) },
@@ -125,7 +131,7 @@ export class Assistant {
     try {
       await runTurn({
         protocol,
-        chat: async (body) => (await window.native.invoke('ai:chat', body)).data,
+        chat: (body) => app.chat(body),
         run: (name, args) => app.reg.run(name, args),
         list: () => app.reg.list(),
         history: this.history,

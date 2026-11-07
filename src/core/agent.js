@@ -69,17 +69,31 @@ export function parseReply(protocol, data) {
 
 /** The message that carries one tool result back to the model. */
 export function toolResultMessage(protocol, call, result, isError) {
-  const image = result?.image;
-  if (image) result = { ...result, image: undefined, note: 'screenshot attached' };
+  const images = [result?.image, ...(result?.images || [])].filter(Boolean);
+  const image = images[0];
+  if (images.length) result = { ...result, image: undefined, images: undefined, note: `${images.length} image${images.length > 1 ? 's' : ''} attached` };
   const json = JSON.stringify(result ?? { ok: true });
   const content = json.length > 24000 ? `${json.slice(0, 24000)}…(truncated)` : json;
   if (protocol === 'anthropic') {
-    const blocks = image ? [{ type: 'text', text: content }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image.split(',')[1] } }] : content;
+    const blocks = image ? [{ type: 'text', text: content }, ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: im.split(',')[1] } }))] : content;
     return { type: 'tool_result', tool_use_id: call.id, content: blocks, is_error: isError };
   }
   const note = image ? `${content}\n(This model cannot see images; use get_scene numbers instead.)` : content;
   return protocol === 'ollama' ? { role: 'tool', tool_name: call.name, content: note } : { role: 'tool', tool_call_id: call.id, content: note };
 }
+
+/** A one-shot request that shows images to a vision model (design review). */
+export function visionRequest(protocol, { system, text, images }) {
+  const b64 = images.map((im) => im.split(',')[1]);
+  if (protocol === 'anthropic') return { system, messages: [{ role: 'user', content: [...b64.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })), { type: 'text', text }] }] };
+  if (protocol === 'ollama') return { stream: false, messages: [{ role: 'system', content: system }, { role: 'user', content: text, images: b64 }] };
+  return { messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }] };
+}
+
+export const REVIEW_SYSTEM = `You review 3D models made in MyModellerReel (metres, Y up). You get four views (iso, front, top, right), scene
+numbers and the issues an automatic check found. Reply with at most 8 short bullet points: real problems first (floating
+or intersecting parts, wrong scale or proportions, missing obvious parts, things that would not stand or work), then
+one or two improvements. Name parts as the scene does. No preamble.`;
 
 /**
  * One user turn: ask, run the tool calls, feed results back, until the model answers without tools.

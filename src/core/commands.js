@@ -7,6 +7,9 @@ import * as C from './curves.js';
 import * as P from './profiles.js';
 import * as R from './derived.js';
 import { booleanMeshes } from './csg.js';
+import { quantities, toCsv } from './quantities.js';
+import { reviewChecks, reviewStats } from './review.js';
+import { SKILLS, skillPrompt } from './skills.js';
 import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
@@ -36,6 +39,8 @@ export const GUIDE = `MyModellerReel conventions:
 - create_curve makes paths (polyline, smooth spline, bezier) for sweeps and motion.
 - Recipes: save_recipe keeps how the model was built (with {{param}} placeholders); replay_recipe rebuilds it with
   other values. record_macro / stop_macro turn what was just done into a recipe or a plugin command.
+- Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
+  parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
@@ -883,6 +888,48 @@ function registerCore(reg, ctx) {
       plugin = await ctx.plugins.create(cmd.replace(/_/g, '-'), code);
     }
     return { name, steps: steps.length, script, ...(plugin ? { plugin } : {}) };
+  });
+
+  // ---------------------------------------------------------------- insight: quantities, review, skills
+  def('scene', 'report_quantities', 'Quantities: count, surface area (m²), volume (m³), length (m: curves and sweeps) and cost (metadata cost) per material, tag, metadata key, name or kind. "How many m³ of concrete?" format csv or a path writes a file.', obj({ group_by: { description: 'material (default) | tag | name | type | none | a metadata key (e.g. phase, or meta.phase)' }, ids: { ...ids, description: 'only these (default: the whole model)' }, include_hidden: bool('count hidden things too'), format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv or .json path to write') }), async (a) => {
+    const report = quantities(ctx.doc, { by: a.group_by || 'material', ids: a.ids, hidden: !!a.include_hidden });
+    const csv = toCsv(report);
+    const out = { ...report, rows: report.rows.map(({ ids: x, ...r }) => (x.length <= 50 ? { ...r, ids: x } : r)) };
+    if (a.path) {
+      if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app; omit path to get the numbers.');
+      await ctx.io.writeText(a.path, /\.json$/i.test(a.path) ? JSON.stringify(out, null, 2) : csv);
+      out.written = a.path;
+    }
+    if (a.format === 'csv') out.csv = csv;
+    return out;
+  });
+
+  def('ai', 'review_model', 'Design review: finds floating parts, collisions, parts below the ground, unlikely sizes and broken parametric shapes; with a vision model it also critiques four views (iso, front, top, right). include_images returns the four views.', obj({ use_ai: bool('ask the vision model too (default true when one is set up)'), include_images: bool('return the four views as images'), views: bool('take the four screenshots (default true)') }), async (a) => {
+    const doc = ctx.doc;
+    const issues = reviewChecks(doc);
+    const stats = reviewStats(doc);
+    const out = { issues, stats };
+    const images = ctx.view?.reviewShots && a.views !== false ? await ctx.view.reviewShots() : [];
+    if (a.use_ai !== false && ctx.ai?.review && images.length) {
+      try {
+        out.critique = await ctx.ai.review({ images, issues, stats });
+      } catch (e) {
+        out.critique_error = e.message;
+      }
+    }
+    if (a.include_images) out.images = images;
+    return out;
+  });
+
+  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
+    const pick = a.name ? [[a.name, SKILLS[a.name]]] : Object.entries(SKILLS);
+    return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(a.name ? { prompt: s.prompt, examples: s.examples } : {}), active: ctx.skill === name }));
+  });
+
+  def('ai', 'use_skill', 'Give the in-app copilot a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
+    ctx.skill = a.name === 'none' ? null : a.name;
+    ctx.onSkill?.(ctx.skill);
+    return { skill: ctx.skill, prompt: ctx.skill ? skillPrompt(ctx.skill) : '' };
   });
 
   // ---------------------------------------------------------------- proposals (review AI changes before keeping them)

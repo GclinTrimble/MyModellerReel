@@ -425,6 +425,21 @@ export class Viewport {
     return (this.vertexCache = pts);
   }
 
+  /** Four standard views for a design review (iso, front, top, right); the camera is put back afterwards. */
+  async reviewShots(width = 768) {
+    const cam = this.getCamera();
+    const shots = [];
+    try {
+      for (const v of ['iso', 'front', 'top', 'right']) {
+        this.setView(v);
+        shots.push(await this.screenshot({ width }));
+      }
+    } finally {
+      this.setCamera(cam);
+    }
+    return shots;
+  }
+
   async screenshot({ width = 1024 } = {}) {
     this.render();
     const src = this.canvas;

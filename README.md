@@ -39,7 +39,8 @@ Electron's binary download is an install script; if your npm blocks install scri
   proposal to accept or reject, tool routing for small local models, relational placement (place on, against, stack,
   align, distribute), scene queries (raycast, free space, what is at a point), smart selection and metadata,
   screenshots for vision models, `run_script` for parametric work, AI-written plugins, and `npm run eval` to compare
-  models on the same tasks.
+  models on the same tasks. Domain skills (architecture, product, jobsite, furniture) for the copilot, a design review
+  (AI → Review my model), a quantities report (File → Quantities), and MCP resources and prompts.
 - **Open**: GLB/glTF/OBJ/STL/FBX in, GLB/glTF/OBJ/STL/PNG/MP4/WebM out. MyModellerReel `.glb` files reopen fully
   editable and still open in Blender, Unreal, Unity or any glTF viewer.
 

@@ -1,5 +1,7 @@
 // Chrome around the viewport: menus, tool bar, dock panels, status bar, palette, toasts, dialogs.
 import * as D from '../core/document.js';
+import { MATERIALS } from '../core/materials.js';
+export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, fmt } from './tools.js';
@@ -22,25 +24,6 @@ export function h(sel, attrs = {}, ...kids) {
 export const icon = (name, fill = false) => h(`i.ph${fill ? '-fill' : ''}.ph-${name}`, { 'aria-hidden': 'true' });
 const iconBtn = (name, label, onclick, pressed) =>
   h('button.icon-btn', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(name));
-
-export const MATERIALS = [
-  { name: 'Plaster', color: '#e9e4d8', roughness: 0.9 },
-  { name: 'Concrete', color: '#a7a39a', roughness: 0.95 },
-  { name: 'Brick', color: '#a8553c', roughness: 0.9 },
-  { name: 'Terracotta', color: '#d2775a', roughness: 0.8 },
-  { name: 'Oak', color: '#b58a57', roughness: 0.7 },
-  { name: 'Walnut', color: '#5e3f2b', roughness: 0.6 },
-  { name: 'Mustard', color: '#e8bc5e', roughness: 0.6 },
-  { name: 'Fern', color: '#4c7a5a', roughness: 0.8 },
-  { name: 'Grass', color: '#6f9a4a', roughness: 1 },
-  { name: 'Water', color: '#3f879c', roughness: 0.1, opacity: 0.7 },
-  { name: 'Glass', color: '#b8dbe2', roughness: 0.05, opacity: 0.35 },
-  { name: 'Steel', color: '#9aa3ab', roughness: 0.35, metalness: 0.9 },
-  { name: 'Copper', color: '#b8734a', roughness: 0.35, metalness: 0.9 },
-  { name: 'Ink', color: '#1e3a4c', roughness: 0.5 },
-  { name: 'Asphalt', color: '#3c3f44', roughness: 1 },
-  { name: 'Snow', color: '#fbfbf8', roughness: 0.9 },
-];
 
 export class UI {
   constructor(app) {
@@ -193,6 +176,8 @@ export class UI {
       recordMacro: { label: 'Record macro', icon: 'record', checked: () => !!app.ctx.macro, run: () => (app.ctx.macro ? app.reg.run('stop_macro', {}).then((r) => this.toast(`Saved recipe "${r.name}" (${r.steps} steps)`)) : app.reg.run('record_macro', {})).catch((e) => this.toast(e.message, 'danger')) },
       saveRecipe: { label: 'Save recipe of this model…', icon: 'floppy-disk-back', run: form('save_recipe') },
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
+      review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
+      quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
@@ -206,13 +191,13 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'plugins'],
+      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
-      AI: ['askAi', 'newChat', '-', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
+      AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
     };
     const bar = this.$('menubar');
@@ -758,6 +743,53 @@ export class UI {
       dlg.showModal();
     });
   }
+  /** Design review (#100): the checks at once, the vision critique when it arrives; issues select what they name. */
+  async reviewDialog() {
+    const app = this.app;
+    const list = h('div.review-list', {}, h('p.muted', {}, 'Checking…'));
+    const critique = h('div.review-critique');
+    const done = this.modal('Review', h('div.panel', { style: { padding: 0 } }, list, critique), [['Ask the AI to fix them', 'fix'], ['Close', null]]);
+    let r;
+    try {
+      r = await app.reg.run('review_model', {});
+    } catch (e) {
+      list.replaceChildren(h('p', { role: 'alert' }, e.message));
+      return;
+    }
+    const sev = { error: 'x-circle', warning: 'warning', info: 'info' };
+    list.replaceChildren(
+      h('p.small.muted', {}, `${r.stats.shapes} shapes, ${r.stats.faces} faces, ${r.stats.size.join(' × ')} m.`),
+      ...(r.issues.length
+        ? r.issues.map((i) => h(`button.review-issue.${i.severity}`, { onclick: () => (app.select(i.ids), app.reg.run('zoom_extents', { ids: i.ids })) }, icon(sev[i.severity]), i.message))
+        : [h('p', {}, icon('check-circle'), ' No geometric problems found.')]),
+    );
+    critique.replaceChildren(r.critique ? h('div', {}, h('div.overline', {}, `AI review · ${app.ai.modelName()}`), h('p.pre', {}, r.critique)) : h('p.small.muted', {}, r.critique_error ? `The AI review could not run: ${r.critique_error}` : 'Set up a vision model (Claude, or an OpenAI-compatible one) in AI settings for a written critique of the views.'));
+    if ((await done) === 'fix' && (r.issues.length || r.critique)) app.ai.ask(`Fix these review findings where they are real mistakes, leave design choices alone:\n${r.issues.map((i) => `- ${i.message}`).join('\n')}${r.critique ? `\n${r.critique}` : ''}`);
+  }
+
+  /** Quantities report (#53): pick the grouping, read the table, export CSV. */
+  async quantitiesDialog() {
+    const app = this.app;
+    const metaKeys = [...new Set(app.store.doc.entities.flatMap((e) => Object.keys(e.meta || {})))];
+    const by = h('select', {}, ['material', 'tag', 'name', 'type', 'none', ...metaKeys.map((k) => `meta.${k}`)].map((v) => h('option', { value: v }, v.replace('meta.', 'metadata: '))));
+    const table = h('div.qty');
+    const fill = async () => {
+      const r = await app.reg.run('report_quantities', { group_by: by.value });
+      const n = (x) => (x ? x.toLocaleString(undefined, { maximumFractionDigits: 3 }) : '–');
+      const row = (cells, cls = 'td') => h('tr', {}, cells.map((c) => h(cls, {}, c)));
+      table.replaceChildren(
+        h('table', {}, h('thead', {}, row([by.value.replace('meta.', ''), 'Count', 'Area m²', 'Volume m³', 'Length m', 'Cost'], 'th')), h('tbody', {}, r.rows.map((x) => row([x.group, x.count, n(x.area), n(x.volume), n(x.length), n(x.cost)])), row(['Total', r.totals.count, n(r.totals.area), n(r.totals.volume), n(r.totals.length), n(r.totals.cost)], 'th'))),
+      );
+    };
+    by.onchange = fill;
+    await fill();
+    const v = await this.modal('Quantities', h('div.panel', { style: { padding: 0 } }, h('label.row', {}, h('span.small', { style: { whiteSpace: 'nowrap' } }, 'Group by'), by), table), [['Export CSV…', 'csv'], ['Close', null]]);
+    if (v === 'csv') {
+      const path = await window.native.invoke('file:save-dialog', { defaultPath: 'Quantities.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+      if (path) await app.reg.run('report_quantities', { group_by: by.value, path }).catch((e) => this.toast(e.message, 'danger'));
+    }
+  }
+
   mcpDialog() {
     const cfg = this.app.mcpConfig();
     const text = JSON.stringify(cfg, null, 2);

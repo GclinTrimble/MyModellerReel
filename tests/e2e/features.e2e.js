@@ -113,3 +113,42 @@ test('render_video: frame by frame to MP4 (H.264 or VP9) and GIF, captions burne
   const r2 = await run('render_video', { path: path.join(home, 'out', 'x.mp4'), transparent: true });
   assert.match(r2.error, /MP4 has no transparency/);
 });
+
+test('the copilot end to end (stubbed provider): routed tools, a proposal to accept, a skill, the vision review', async () => {
+  await ok('new_model');
+  // The provider is stubbed in the main process: a scripted local model that calls two tools, then answers.
+  await app.evaluate(({ ipcMain }) => {
+    const script = [
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_box', arguments: { width: 2, height: 1, depth: 1, name: 'AI box' } } }] },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_sphere', arguments: '{"radius": "0.3", "name": "AI ball"}' } }] },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'place_on', arguments: { ids: ['AI ball'], target: 'AI box' } } }] },
+      { role: 'assistant', content: 'Done: a box with a ball on it.' },
+    ];
+    globalThis.requests = [];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', (_, body) => {
+      globalThis.requests.push(body);
+      if (body.messages.some((m) => m.images)) return { provider: 'ollama', data: { message: { role: 'assistant', content: '- AI ball sits on AI box: good.' } } };
+      return { provider: 'ollama', data: { message: script.shift() } };
+    });
+  });
+  await ok('use_skill', { name: 'furniture' });
+  await w.click('[data-tab="ai"]');
+  await w.evaluate(() => window.mmr.app.ai.setPropose(true));
+  await w.fill('.chat-input textarea', 'Put a ball on a box');
+  await w.keyboard.press('Enter');
+  await w.locator('.msg.assistant', { hasText: 'Done: a box with a ball on it.' }).waitFor();
+  const reqs = await app.evaluate(() => globalThis.requests);
+  assert.ok(reqs[0].tools.length <= 18, 'a small model gets a routed tool list');
+  assert.ok(reqs[0].messages[0].content.includes('Domain: furniture'), 'the skill is in the system prompt');
+  const bar = w.locator('#proposal-bar');
+  await bar.getByText('2 new').waitFor();
+  await bar.getByRole('button', { name: 'Accept' }).click();
+  const ball = await ok('get_entity', { id: 'AI ball' });
+  assert.equal(ball.min[1], 1);
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length > 0), true);
+  await w.evaluate(() => window.mmr.app.ai.setPropose(false));
+  const review = await ok('review_model', { include_images: true });
+  assert.equal(review.images.length, 4);
+  assert.match(review.critique, /sits on AI box/);
+});

@@ -50,7 +50,10 @@ adds this to `%APPDATA%\Claude\claude_desktop_config.json` (a backup is kept):
 { "mcpServers": { "mymodellerreel": { "command": "node", "args": ["<project>\\src\\mcp\\server.js"] } } }
 ```
 
-Restart Claude Desktop. Claude then lists every command as a tool. The server starts MyModellerReel on the first
+Restart Claude Desktop. Claude then lists every command as a tool, can read **resources** (`mmr://scene`,
+`mmr://selection`, `mmr://guide`, `mmr://animation`, `mmr://quantities`, `mmr://commands`) and offers **prompts** for
+common workflows (`build_house`, `assembly_sequence`, `turntable_reel`, `review_model`, and `skill_<domain>` for each
+domain skill). The server starts MyModellerReel on the first
 tool call if it is closed, returns `screenshot` as an image, and reports errors so the model can correct itself.
 For Claude Code: `claude mcp add mymodellerreel -- node <project>/src/mcp/server.js`.
 For MCP clients that handle few tools well, add `"env": { "MMR_TOOLSETS": "modelling,animation" }` to the server
@@ -95,6 +98,8 @@ Invoke-RestMethod "http://127.0.0.1:$($a.port)/api/run" -Method Post -Headers @{
 Every time parameter (`start`, `end`, `time`, `from`, `to`) takes seconds or a **marker** name with an optional
 offset: `add_marker { name: "roof", time: 12 }`, then `animate { …, start: "roof", end: "roof + 2" }`.
 | extend | `run_script`, `create_plugin`, `list_plugins` |
+| ai | `review_model` (floating parts, collisions, below ground, units, broken parametric shapes, plus a vision critique of four views; `include_images` returns them), `list_skills`, `use_skill` (architecture, product, jobsite, furniture) |
+| report | `report_quantities` (count, area m², volume m³, length m, cost by material, tag, name, kind or a metadata key; CSV or JSON file) |
 | plugin | whatever plugins add (built in: `create_stairs`, `create_wall` with openings) |
 
 ### `run_script`

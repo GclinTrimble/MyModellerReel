@@ -340,3 +340,20 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 }
 .span-bar.cap { background: var(--mmr-fern-deep); color: #fff; border-left: 3px solid var(--my-mustard); }
 .span-bar.motion { background: repeating-linear-gradient(135deg, var(--my-accent-tint-strong) 0 6px, transparent 6px 12px); color: var(--my-text); }
+
+/* ---------- review (#100), quantities (#53), skill picker (#96) ---------- */
+.review-list { display: flex; flex-direction: column; gap: var(--my-space-1); max-height: 40vh; overflow: auto; }
+.review-issue {
+  display: flex; align-items: flex-start; gap: var(--my-space-2); text-align: left; padding: var(--my-space-1) var(--my-space-2);
+  border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); background: var(--my-surface); cursor: pointer;
+}
+.review-issue:hover { background: var(--my-accent-tint); }
+.review-issue.error .ph { color: var(--my-danger); }
+.review-issue.warning .ph { color: var(--my-mustard); }
+.review-critique { margin-top: var(--my-space-2); }
+.pre { white-space: pre-wrap; }
+.qty { max-height: 50vh; overflow: auto; }
+.qty table { border-collapse: collapse; width: 100%; font-size: var(--my-text-sm); font-variant-numeric: tabular-nums; }
+.qty th, .qty td { padding: var(--my-space-1) var(--my-space-2); border-bottom: 1px solid var(--my-border); text-align: right; }
+.qty th:first-child, .qty td:first-child { text-align: left; }
+.skill-pick { height: 26px; min-width: 0; max-width: 160px; border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); background: var(--my-surface); font-size: var(--my-text-xs); padding: 0 var(--my-space-1); }

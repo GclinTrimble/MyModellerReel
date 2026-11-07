@@ -6,6 +6,8 @@ import * as G from '../core/geometry.js';
 import { createRegistry, GUIDE } from '../core/commands.js';
 import { registerGenerator } from '../core/derived.js';
 import { booleanMeshes } from '../core/csg.js';
+import { skillPrompt } from '../core/skills.js';
+import { protocolOf, visionRequest, parseReply, REVIEW_SYSTEM } from '../core/agent.js';
 import { Viewport, skyTexture } from './viewport.js';
 import { Tools, TOOLS } from './tools.js';
 import { UI } from './ui.js';
@@ -60,6 +62,19 @@ app.ctx = {
   },
   autoKey: false,
   onMacro: () => app.ui.refresh(),
+  skill: localStorage.getItem('mymodellerreel.skill') || null,
+  onSkill: (name) => {
+    localStorage.setItem('mymodellerreel.skill', name || '');
+    app.ai?.renderHead();
+  },
+  // The design review's vision half: four views + the checks, to the configured model (#100).
+  ai: {
+    async review({ images, issues, stats }) {
+      const protocol = protocolOf(app.settings.ai.provider);
+      const text = `Scene: ${JSON.stringify(stats)}\nAutomatic checks found: ${issues.length ? issues.map((i) => `- ${i.message}`).join('\n') : 'nothing'}\nThe views are iso, front, top, right.`;
+      return parseReply(protocol, await app.chat(visionRequest(protocol, { system: REVIEW_SYSTEM, text, images }))).text;
+    },
+  },
   afterRun: [
     (name) => {
       // Animation commands from anywhere (AI, API) open the timeline so the result is visible.
@@ -70,6 +85,15 @@ app.ctx = {
   ],
 };
 app.reg = createRegistry(app.ctx);
+/** One request to the configured AI provider (the main process holds the keys). Errors read as plain sentences. */
+app.chat = async (body) => {
+  try {
+    return (await native.invoke('ai:chat', body)).data;
+  } catch (e) {
+    throw new Error(String(e.message).replace(/^Error invoking remote method 'ai:chat': (Error: )?/, ''));
+  }
+};
+app.skillPrompt = () => (app.ctx.skill ? skillPrompt(app.ctx.skill) : '');
 app.tools = null;
 
 app.select = (ids) => {

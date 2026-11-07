@@ -9,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { rankCommands, ALWAYS } from '../core/routing.js';
+import { WORKFLOWS, workflowText } from '../core/skills.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DATA = process.env.MMR_HOME || (process.env.APPDATA ? join(process.env.APPDATA, 'MyModellerReel') : join(homedir(), '.config', 'MyModellerReel'));
@@ -20,6 +21,7 @@ const filterTools = (list) => {
   const keep = new Set([...ALWAYS, ...TOOLSETS.flatMap((t) => rankCommands(list, { toolset: t }).map((c) => c.name))]);
   return list.filter((c) => keep.has(c.name));
 };
+const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 const log = (...a) => process.stderr.write(`[mymodellerreel-mcp] ${a.join(' ')}\n`); // stdout is the protocol
 
 function apiInfo() {
@@ -81,6 +83,35 @@ async function ensureApp() {
   return launching;
 }
 
+/** MCP resources: what an agent may want to read before acting. app: needs the running app (it is started). */
+const RESOURCES = [
+  { uri: 'mmr://scene', name: 'Scene', description: 'Every entity with id, name, size and bounds; tags, camera, animation summary, selection', run: ['get_scene', {}] },
+  { uri: 'mmr://selection', name: 'Selection', description: 'The selected entities in full (faces, recipe, metadata, tracks)', selection: true },
+  { uri: 'mmr://guide', name: 'Conventions', description: 'Units, axes, how commands refer to things: read this first', mimeType: 'text/plain', guide: true },
+  { uri: 'mmr://animation', name: 'Animation', description: 'Tracks and keyframes, markers, captions, procedural motions', run: ['get_animation', {}] },
+  { uri: 'mmr://quantities', name: 'Quantities', description: 'Count, area, volume, length and cost per material', run: ['report_quantities', {}] },
+  { uri: 'mmr://commands', name: 'Commands', description: 'Every command with its JSON Schema', run: ['list_commands', {}] },
+];
+
+async function readResource(uri) {
+  const r = RESOURCES.find((x) => x.uri === uri);
+  if (!r) throw new Error(`Unknown resource ${uri}. Resources: ${RESOURCES.map((x) => x.uri).join(', ')}`);
+  if (r.guide) return { uri, mimeType: 'text/plain', text: await call('GET', '/api/guide').catch(() => cached('guide.txt') || '') };
+  await ensureApp();
+  let value;
+  if (r.selection) {
+    const scene = await call('POST', '/api/run', { command: 'get_scene', args: {} });
+    if (!scene.ok) throw new Error(scene.error);
+    const sel = scene.result.selection;
+    value = sel.length ? (await call('POST', '/api/batch', { commands: sel.map((id) => ({ command: 'get_entity', args: { id } })) })).map((x) => x.result ?? x.error) : [];
+  } else {
+    const out = await call('POST', '/api/run', { command: r.run[0], args: r.run[1] });
+    if (!out.ok) throw new Error(out.error);
+    value = out.result;
+  }
+  return { uri, mimeType: 'application/json', text: JSON.stringify(value) };
+}
+
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
 const fail = (id, code, message) => send({ jsonrpc: '2.0', id, error: { code, message } });
@@ -92,13 +123,23 @@ async function handle(msg) {
     const guide = await call('GET', '/api/guide').catch(() => cached('guide.txt') || '');
     return reply(id, {
       protocolVersion: params?.protocolVersion || '2025-06-18',
-      capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'mymodellerreel', version: '0.1.0' },
+      capabilities: { tools: { listChanged: false }, resources: {}, prompts: {} },
+      serverInfo: { name: 'mymodellerreel', version: VERSION },
       instructions: `MyModellerReel is a desktop 3D modeller and animation sequencer. Every tool edits the live model the user sees.\n${guide}`,
     });
   }
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return;
   if (method === 'ping') return reply(id, {});
+  if (method === 'resources/list') return reply(id, { resources: RESOURCES.map(({ uri, name, description, mimeType }) => ({ uri, name, description, mimeType: mimeType || 'application/json' })) });
+  if (method === 'resources/templates/list') return reply(id, { resourceTemplates: [] });
+  if (method === 'resources/read') return reply(id, { contents: [await readResource(params?.uri)] });
+  if (method === 'prompts/list')
+    return reply(id, { prompts: Object.entries(WORKFLOWS).map(([name, w]) => ({ name, description: w.description, arguments: w.arguments.map((a) => ({ ...a, required: false })) })) });
+  if (method === 'prompts/get') {
+    const w = WORKFLOWS[params?.name];
+    if (!w) return fail(id, -32602, `Unknown prompt ${params?.name}. Prompts: ${Object.keys(WORKFLOWS).join(', ')}`);
+    return reply(id, { description: w.description, messages: [{ role: 'user', content: { type: 'text', text: workflowText(params.name, params.arguments || {}) } }] });
+  }
   if (method === 'tools/list') {
     const live = await call('GET', '/api/commands').catch(() => null);
     const list = live?.ok ? live.result : JSON.parse(cached('commands.json') || 'null');
@@ -118,14 +159,11 @@ async function handle(msg) {
     await ensureApp();
     const r = await call('POST', '/api/run', { command: params.name, args: params.arguments || {} });
     if (!r.ok) return reply(id, { content: [{ type: 'text', text: r.error }], isError: true });
-    const image = r.result?.image;
-    if (image) {
-      return reply(id, {
-        content: [
-          { type: 'image', data: image.split(',')[1], mimeType: 'image/png' },
-          { type: 'text', text: 'Screenshot of the MyModellerReel viewport.' },
-        ],
-      });
+    const images = [r.result?.image, ...(r.result?.images || [])].filter(Boolean);
+    if (images.length) {
+      const rest = { ...r.result, image: undefined, images: undefined };
+      const text = Object.values(rest).some((v) => v !== undefined) ? JSON.stringify(rest) : 'Screenshot of the MyModellerReel viewport.';
+      return reply(id, { content: [...images.map((im) => ({ type: 'image', data: im.split(',')[1], mimeType: 'image/png' })), { type: 'text', text }] });
     }
     return reply(id, { content: [{ type: 'text', text: JSON.stringify(r.result ?? { ok: true }) }] });
   }

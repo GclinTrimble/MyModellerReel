@@ -9,6 +9,7 @@ export const TOOLSETS = {
   query: { categories: ['scene'], names: ['set_metadata'] },
   view: { categories: ['view'], names: ['screenshot'] },
   files: { categories: ['file'], names: ['report_quantities'] },
+  insight: { categories: [], names: ['report_quantities', 'review_model', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
   ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
 };
 

@@ -190,6 +190,13 @@ export class IO {
     return { exported: path };
   }
 
+  /** Write a text file (reports). The main process only allows known extensions. */
+  async writeText(path, text) {
+    await native().invoke('file:write', path, text);
+    this.app.ui.toast(`Wrote ${base(path)}`);
+    return path;
+  }
+
   /** Frame-by-frame render of the timeline (render.js). Asks for a path when none is given. */
   async renderVideo(opts = {}) {
     const path = opts.path || (await this.pick('video', true, `${(this.app.file ? base(this.app.file) : 'Reel.glb').replace(/\.\w+$/, '')}.mp4`));

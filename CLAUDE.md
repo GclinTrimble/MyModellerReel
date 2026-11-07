@@ -15,7 +15,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   easing, evaluate), `commands.js` (registry + GUIDE text sent to AIs), `schema.js` (argument checking),
   `routing.js` (toolsets, ranking, examples), `query.js` (selection, raycast, free space, placement maths),
   `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `curves.js` (curves,
-  sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`.
+  sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
+  `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
+  `materials.js` (the material catalogue).
 - Entities: `type` mesh | group | curve. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
 - Keep command bodies in `commands.js` short: put the maths in a pure module with its own test.
