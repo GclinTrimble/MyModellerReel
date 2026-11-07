@@ -1,6 +1,7 @@
 // Timeline: playback clock, scrubbing, and the track/keyframe editor at the bottom of the stage.
 import * as A from '../core/animation.js';
 import { h, icon } from './ui.js';
+import { drawCaptions } from './captions.js';
 
 const PAD = 12; // px before 0 s in the lanes
 
@@ -13,6 +14,20 @@ export class Timeline {
     this.active = false;
     this.loop = true;
     this.selKey = null; // { track, t }
+    this.laneOf = new Map(); // track → its lane element (kept out of the document, which is plain JSON)
+    this.captionLayer = document.getElementById('caption-layer');
+  }
+
+  /** Captions at the playhead, over the viewport (the same drawing render_video burns into frames). */
+  drawCaptions() {
+    const c = this.captionLayer;
+    if (!c) return;
+    const r = c.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)) (c.width = Math.round(r.width * dpr)), (c.height = Math.round(r.height * dpr));
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+    if (this.active && !this.recording) drawCaptions(g, this.doc.animation.captions, this.time, c.width, c.height);
   }
 
   get doc() {
@@ -32,6 +47,7 @@ export class Timeline {
     this.active = false;
     this.el.hidden = true;
     this.app.viewport.applyPose(null, false);
+    this.drawCaptions();
     this.app.ui.renderViewbar();
   }
   toggle() {
@@ -43,6 +59,7 @@ export class Timeline {
     this.time = Math.max(0, Math.min(dur, t));
     if (this.active) this.app.viewport.applyPose(A.evaluate(this.doc, this.time), true);
     this.updateHead();
+    if (!this.recording) this.drawCaptions();
   }
   play() {
     if (!this.active) this.open();
@@ -97,12 +114,15 @@ export class Timeline {
       btn('diamond', 'Key the selection here (K)', () => app.keySelection()),
       btn('video-camera', 'Key the camera here', () => run('add_keyframe', { target: 'camera' })),
       btn('record', 'Auto-key: moves, rotations and scales record keyframes', () => app.setAutoKey(!app.ctx.autoKey), !!app.ctx.autoKey),
+      btn('flag', 'Add a marker at the playhead', () => app.ui.commandDialog('add_marker', { time: this.time })),
+      btn('subtitles', 'Add a caption at the playhead', () => app.ui.commandDialog('add_caption', { start: this.time })),
+      btn('wave-sine', 'Add a procedural motion (spin, oscillate, wiggle, orbit, pulse)', () => app.ui.commandDialog('add_motion', { target: app.selection[0] || 'camera', start: this.time })),
       h('label', {}, 'Length', h('input', { type: 'number', min: 1, step: 1, value: a.duration, onchange: (e) => run('set_timeline', { duration: +e.target.value }) }), 's'),
       h('label', {}, 'FPS', h('input', { type: 'number', min: 1, max: 120, value: a.fps, onchange: (e) => run('set_timeline', { fps: +e.target.value }) })),
       h('span.spacer'),
       this.selKey ? h('select', { title: 'Easing into the selected keyframe', onchange: (e) => this.setEase(e.target.value) }, Object.keys(A.EASES).map((k) => h('option', { value: k, selected: this.keyObj()?.ease === k }, k))) : null,
       this.selKey ? btn('trash', 'Delete the selected keyframe (Del)', () => this.deleteKey()) : null,
-      btn('video-camera', 'Export video', () => run('export', { format: 'video' })),
+      btn('film-script', 'Render video (frame by frame)…', () => app.ui.commandDialog('render_video', {})),
       btn('x', 'Close timeline (Ctrl+T)', () => this.close()),
     ].filter(Boolean));
     this.updateHead();
@@ -154,7 +174,24 @@ export class Timeline {
     const tracks = doc.animation.tracks;
     const ruler = h('div.ruler');
     this.lanes.append(ruler);
-    if (!tracks.length) {
+    this.laneOf = new Map();
+    const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.app.ui.toast(e.message, 'danger'));
+    // captions and procedural motions get a row each, above the keyframe tracks
+    this.special = [];
+    for (const c of doc.animation.captions || []) {
+      names.append(h('div', { title: c.text }, icon('subtitles'), 'Caption', h('span.prop', {}, `· ${c.style}`)));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({ lane, bars: [{ t0: c.start, t1: c.end, label: c.text.split('\n')[0], cls: 'cap', title: `${c.id} · ${c.style} · ${c.start}–${c.end}s. Double-click to delete.`, del: () => run('remove_caption', { id: c.id }) }] });
+    }
+    const labelOf = (target) => (target === 'camera' ? 'Camera' : this.app.entity(target)?.name || target);
+    for (const m of doc.animation.motions || []) {
+      names.append(h('div', {}, icon('wave-sine'), labelOf(m.target), h('span.prop', {}, `· ${m.type}`)));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({ lane, bars: [{ t0: m.start ?? 0, t1: m.end ?? doc.animation.duration, label: m.type, cls: 'motion', title: `${m.id} · ${m.type}. Double-click to delete.`, del: () => run('remove_motion', { id: m.id }) }] });
+    }
+    if (!tracks.length && !this.special.length) {
       body.append(h('div.tl-empty', {}, 'No animation yet. Select something, move the playhead, change it and press K (or turn on Auto-key). Or ask the AI: "animate the door opening over 2 seconds", "make a build sequence", "add a turntable".'));
     }
     const label = (target) => (target === 'camera' ? 'Camera' : this.app.entity(target)?.name || target);
@@ -163,7 +200,7 @@ export class Timeline {
       names.append(h(`div${sel ? '.sel' : ''}`, { onclick: () => tr.target !== 'camera' && this.app.select([tr.target]) }, icon(tr.target === 'camera' ? 'video-camera' : 'cube'), label(tr.target), h('span.prop', {}, `· ${tr.property}`)));
       const lane = h('div.lane');
       this.lanes.append(lane);
-      tr.lane = lane;
+      this.laneOf.set(tr, lane);
     }
     requestAnimationFrame(() => this.layout(ruler));
     this.playhead = h('div.playhead');
@@ -184,12 +221,25 @@ export class Timeline {
     const doc = this.doc;
     const dur = doc.animation.duration;
     const step = dur <= 10 ? 1 : dur <= 30 ? 2 : dur <= 120 ? 10 : 30;
-    ruler.replaceChildren(...Array.from({ length: Math.floor(dur / step) + 1 }, (_, i) => h('span', { style: { left: `${this.x(i * step)}px` } }, `${i * step}s`)));
+    const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.app.ui.toast(e.message, 'danger'));
+    ruler.replaceChildren(
+      ...Array.from({ length: Math.floor(dur / step) + 1 }, (_, i) => h('span', { style: { left: `${this.x(i * step)}px` } }, `${i * step}s`)),
+      ...(doc.animation.markers || []).map((m) =>
+        h('button.marker', { style: { left: `${this.x(m.t)}px` }, title: `${m.name} · ${m.t}s. Click to go there, double-click to delete.`, onpointerdown: (e) => e.stopPropagation(), onclick: () => this.seek(m.t), ondblclick: () => run('remove_marker', { name: m.name }) }, icon('flag', true), m.name),
+      ),
+    );
+    for (const row of this.special || [])
+      row.lane.replaceChildren(
+        ...row.bars.map((b) =>
+          h(`div.span-bar.${b.cls}`, { style: { left: `${this.x(b.t0)}px`, width: `${Math.max(4, this.x(Math.min(dur, b.t1)) - this.x(b.t0))}px` }, title: b.title, onpointerdown: (e) => e.stopPropagation(), onclick: () => this.seek(b.t0), ondblclick: b.del }, b.label),
+        ),
+      );
     for (const tr of doc.animation.tracks) {
-      if (!tr.lane) continue;
+      const lane = this.laneOf.get(tr);
+      if (!lane) continue;
       const k0 = tr.keys[0].t;
       const k1 = tr.keys.at(-1).t;
-      tr.lane.replaceChildren(
+      lane.replaceChildren(
         h('div.bar', { style: { left: `${this.x(k0)}px`, width: `${Math.max(0, this.x(k1) - this.x(k0))}px` } }),
         ...tr.keys.map((k) => {
           const sel = this.selKey?.track === tr && Math.abs(this.selKey.t - k.t) < 1e-3;

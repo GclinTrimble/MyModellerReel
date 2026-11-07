@@ -22,6 +22,10 @@ export const GUIDE = `MyModellerReel conventions:
 - Animation: keyframes per property on a timeline in seconds. Use animate for a from→to move, build_sequence for
   construction / assembly sequences, turntable for a camera orbit, add_keyframe to capture the current pose.
   To hinge a door: set_pivot (e.g. "left") then animate rotation.
+- Sequencing: add_marker names a moment; every time parameter then takes it ("roof", "roof + 1.5"). add_caption puts
+  titles and lower thirds in the video; add_motion adds spin/oscillate/wiggle/orbit/pulse without keys; explode,
+  animate_along_path (a curve) and stagger (offsets starts by height, distance, name…) do the choreography.
+  render_video renders the timeline frame by frame (mp4, webm, gif, png).
 - Place things by relation, not coordinates: place_on (on top of / against a face), against (beside, same floor),
   stack, align, distribute; find_free_space gives an empty spot for a new footprint.
 - Ask instead of reading JSON: select_where (by name, colour, tag, size, metadata, similar_to), bounds_of, raycast,
@@ -127,6 +131,8 @@ function fillParams(v, params) {
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
+/** A time parameter: seconds, or a marker name with an optional offset ("roof", "roof + 1.5"). */
+const T = (d) => ({ description: `${d}: seconds, or a marker name ("roof", "roof + 1.5")` });
 
 function targets(ctx, args) {
   const refs = args.ids ?? (args.id !== undefined ? [args.id] : ctx.selection.get());
@@ -930,6 +936,11 @@ function registerCore(reg, ctx) {
 
   // ---------------------------------------------------------------- animate
   const now = () => ctx.timeline?.time ?? 0;
+  const at = (v, fallback) => {
+    const t = A.timeOf(ctx.doc, v, fallback);
+    if (!(t >= 0)) throw new Error(`Times must be ≥ 0 seconds; got ${JSON.stringify(v)}.`);
+    return t;
+  };
   const baseValue = (target, property) => {
     if (target === 'camera') return (ctx.view?.getCamera() ?? ctx.doc.camera)[property];
     const [e] = D.resolve(ctx.doc, target);
@@ -939,9 +950,9 @@ function registerCore(reg, ctx) {
   const targetId = (t) => (t === 'camera' ? 'camera' : D.resolve(ctx.doc, t)[0].id);
   const PROPS = ['position', 'rotation', 'scale', 'opacity', 'visible', 'color', 'target', 'fov'];
 
-  def('animate', 'add_keyframe', 'Record a keyframe at a time. Without values it captures the current pose (position, rotation, scale), or for the camera its position and target.', obj({ target: str('entity id/name, or "camera"'), time: num('seconds, default: playhead'), values: obj({}, []), ease: str('ease into this key', Object.keys(A.EASES)) }, ['target']), (a) => {
+  def('animate', 'add_keyframe', 'Record a keyframe at a time. Without values it captures the current pose (position, rotation, scale), or for the camera its position and target.', obj({ target: str('entity id/name, or "camera"'), time: T('default: playhead'), values: obj({}, []), ease: str('ease into this key', Object.keys(A.EASES)) }, ['target']), (a) => {
     const tid = targetId(a.target);
-    const t = a.time ?? now();
+    const t = at(a.time, now());
     const values = a.values && Object.keys(a.values).length ? a.values : Object.fromEntries((tid === 'camera' ? ['position', 'target'] : ['position', 'rotation', 'scale']).map((p) => [p, baseValue(a.target, p)]));
     for (const [p, v] of Object.entries(values)) {
       if (!PROPS.includes(p)) throw new Error(`Cannot animate "${p}". Use one of ${PROPS.join(', ')}.`);
@@ -950,10 +961,11 @@ function registerCore(reg, ctx) {
     return { target: tid, time: t, keyed: Object.keys(values) };
   }, true);
 
-  def('animate', 'animate', 'Animate one property from → to between start and end seconds. position/rotation/scale are [x,y,z] (rotation in degrees), opacity 0..1, color "#rrggbb", visible true/false. Use by for a relative change.', obj({ target: str('entity id/name or "camera"'), property: str('property', PROPS), to: { description: 'end value' }, by: { description: 'relative change instead of to (numbers / [x,y,z])' }, from: { description: 'start value, default: current' }, start: num('seconds, default: playhead'), end: num('seconds, default start + 1'), ease: str('easing', Object.keys(A.EASES)) }, ['target', 'property']), (a) => {
+  def('animate', 'animate', 'Animate one property from → to between start and end seconds. position/rotation/scale are [x,y,z] (rotation in degrees), opacity 0..1, color "#rrggbb", visible true/false. Use by for a relative change.', obj({ target: str('entity id/name or "camera"'), property: str('property', PROPS), to: { description: 'end value' }, by: { description: 'relative change instead of to (numbers / [x,y,z])' }, from: { description: 'start value, default: current' }, start: T('default: playhead'), end: T('default start + 1'), ease: str('easing', Object.keys(A.EASES)) }, ['target', 'property']), (a) => {
     const tid = targetId(a.target);
-    const start = a.start ?? now();
-    const end = a.end ?? start + 1;
+    const start = at(a.start, now());
+    const end = at(a.end, start + 1);
+    if (end <= start) throw new Error(`end (${end} s) must come after start (${start} s).`);
     const tr = ctx.doc.animation.tracks.find((t) => t.target === tid && t.property === a.property);
     const from = a.from ?? (tr ? A.sample(tr, start) : baseValue(a.target, a.property));
     let to = a.to;
@@ -964,14 +976,15 @@ function registerCore(reg, ctx) {
     return { target: tid, property: a.property, start, end, from, to };
   }, true);
 
-  def('animate', 'build_sequence', 'Construction / assembly sequence: entities appear one after another (4D-style). Order: as given, or bottom-up.', obj({ ids, effect: str('how each piece arrives', ['rise', 'drop', 'grow', 'fade', 'slide']), order: str('given | bottom-up | top-down', ['given', 'bottom-up', 'top-down']), start: num('seconds, default 0'), duration: num('per piece, default 0.8'), stagger: num('delay between pieces, default 0.4'), distance: num('travel for rise/drop/slide, default 3') }), (a) => {
+  def('animate', 'build_sequence', 'Construction / assembly sequence: entities appear one after another (4D-style). Order: as given, or bottom-up.', obj({ ids, effect: str('how each piece arrives', ['rise', 'drop', 'grow', 'fade', 'slide']), order: str('given | bottom-up | top-down', ['given', 'bottom-up', 'top-down']), start: T('default 0'), duration: num('per piece, default 0.8'), stagger: num('delay between pieces, default 0.4'), distance: num('travel for rise/drop/slide, default 3') }), (a) => {
     const doc = ctx.doc;
     let ents = targets(ctx, a);
     if (a.order === 'bottom-up' || a.order === 'top-down') {
       ents = [...ents].sort((x, y) => D.worldBox(doc, x).min[1] - D.worldBox(doc, y).min[1]);
       if (a.order === 'top-down') ents.reverse();
     }
-    const { effect = 'rise', start = 0, duration = 0.8, stagger = 0.4, distance = 3 } = a;
+    const { effect = 'rise', duration = 0.8, stagger = 0.4, distance = 3 } = a;
+    const start = at(a.start, 0);
     ents.forEach((e, i) => {
       const t0 = start + i * stagger;
       const t1 = t0 + duration;
@@ -994,7 +1007,7 @@ function registerCore(reg, ctx) {
     return { pieces: ents.map((e) => e.id), ends: endT };
   }, true);
 
-  def('animate', 'turntable', 'Camera orbit around the model (or a point) for a presentation reel.', obj({ start: num('s, default 0'), duration: num('s, default 8'), turns: num('default 1'), center: v3('orbit centre, default model centre'), radius: num('m, default: fits the model'), height: num('camera height, default: current') }), (a) => {
+  def('animate', 'turntable', 'Camera orbit around the model (or a point) for a presentation reel.', obj({ start: T('default 0'), duration: num('s, default 8'), turns: num('default 1'), center: v3('orbit centre, default model centre'), radius: num('m, default: fits the model'), height: num('camera height, default: current') }), (a) => {
     const doc = ctx.doc;
     const tops = doc.entities.filter((e) => !e.parent);
     const b = tops.length ? D.unionBox(tops.map((e) => D.worldBox(doc, e))) : { min: [-1, 0, -1], max: [1, 1, 1] };
@@ -1002,7 +1015,8 @@ function registerCore(reg, ctx) {
     const r = a.radius || Math.max(4, G.len(G.sub(b.max, b.min)) * 1.3);
     const cam = ctx.view?.getCamera() ?? doc.camera;
     const h = a.height ?? Math.max(cam.position[1], c[1] + r * 0.45);
-    const { start = 0, duration = 8, turns = 1 } = a;
+    const { duration = 8, turns = 1 } = a;
+    const start = at(a.start, 0);
     const steps = Math.max(8, Math.round(24 * turns));
     const a0 = Math.atan2(cam.position[2] - c[2], cam.position[0] - c[0]);
     for (let i = 0; i <= steps; i++) {
@@ -1016,8 +1030,8 @@ function registerCore(reg, ctx) {
     return { center: c, radius: r, start, end: start + duration };
   }, true);
 
-  def('animate', 'remove_keyframes', 'Remove keyframes of a target (all, one property, or at one time).', obj({ target: str('entity id/name or "camera"'), property: str('optional'), time: num('optional seconds') }, ['target']), (a) => {
-    A.removeKeys(ctx.doc, targetId(a.target), a.property || null, a.time ?? null);
+  def('animate', 'remove_keyframes', 'Remove keyframes of a target (all, one property, or at one time).', obj({ target: str('entity id/name or "camera"'), property: str('optional'), time: T('optional') }, ['target']), (a) => {
+    A.removeKeys(ctx.doc, targetId(a.target), a.property || null, a.time === undefined ? null : at(a.time));
     return { tracks: ctx.doc.animation.tracks.length };
   }, true);
 
@@ -1028,13 +1042,196 @@ function registerCore(reg, ctx) {
 
   def('animate', 'get_animation', 'All animation tracks and keyframes.', obj({}), () => ctx.doc.animation);
 
-  def('animate', 'playback', 'Play, pause, stop or seek the timeline.', obj({ action: str('play | pause | stop | seek', ['play', 'pause', 'stop', 'seek']), time: num('seconds for seek') }, ['action']), (a) => {
+  def('animate', 'playback', 'Play, pause, stop or seek the timeline.', obj({ action: str('play | pause | stop | seek', ['play', 'pause', 'stop', 'seek']), time: T('for seek') }, ['action']), (a) => {
     const tl = ctx.timeline;
     if (!tl) throw new Error('No timeline in this context.');
-    if (a.action === 'seek') tl.seek(a.time ?? 0);
+    if (a.action === 'seek') tl.seek(at(a.time, 0));
     else tl[a.action]();
     return { time: tl.time, playing: tl.playing };
   });
+
+  // ---------------------------------------------------------------- sequencing: markers, captions, motions, explode, paths, stagger
+  const anim = () => {
+    const a = ctx.doc.animation;
+    a.markers ||= [];
+    a.captions ||= [];
+    a.motions ||= [];
+    return a;
+  };
+  const extend = (t) => {
+    const a = ctx.doc.animation;
+    if (Number.isFinite(t) && t > a.duration) a.duration = Math.ceil(t);
+  };
+  const nextId = (list, p) => `${p}${list.reduce((m, x) => Math.max(m, +String(x.id).slice(1) || 0), 0) + 1}`;
+
+  def('animate', 'add_marker', 'Name a moment on the timeline ("roof", "doors open"). Every time parameter then accepts the name, with an optional offset ("roof + 1.5").', obj({ name: str('marker name'), time: T('default: playhead') }, ['name']), (a) => {
+    const m = anim();
+    const t = at(a.time, now());
+    m.markers = m.markers.filter((x) => x.name.toLowerCase() !== a.name.toLowerCase());
+    m.markers.push({ name: a.name, t: Math.round(t * 1000) / 1000 });
+    m.markers.sort((x, y) => x.t - y.t);
+    extend(t);
+    return { markers: m.markers };
+  }, true);
+
+  def('animate', 'remove_marker', 'Remove a timeline marker.', obj({ name: str('marker name') }, ['name']), (a) => {
+    const m = anim();
+    const n = m.markers.length;
+    m.markers = m.markers.filter((x) => x.name.toLowerCase() !== a.name.toLowerCase());
+    if (m.markers.length === n) throw new Error(`No marker "${a.name}".`);
+    return { markers: m.markers };
+  }, true);
+
+  const POS = ['top', 'center', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+  def('animate', 'add_caption', 'Text in the video: titles, phase names, dates, credits. Shows over the view while the timeline is open and is burned into render_video. Styles: title (big, centred band), caption (lower third), label (small pill).', obj({ text: str('the words (\\n for a new line)'), start: T('default: playhead'), end: T('default start + duration'), duration: num('seconds, default 3'), position: str('where on the frame', POS), style: str('look', ['title', 'caption', 'label']), fade: num('fade in/out seconds, default 0.3') }, ['text']), (a) => {
+    const m = anim();
+    const start = at(a.start, now());
+    const end = a.end !== undefined ? at(a.end) : start + (a.duration ?? 3);
+    if (end <= start) throw new Error('A caption must end after it starts.');
+    const style = a.style || 'caption';
+    const c = { id: nextId(m.captions, 'c'), text: a.text, start, end, position: a.position || (style === 'title' ? 'center' : style === 'label' ? 'top-left' : 'bottom-left'), style, fade: a.fade ?? 0.3 };
+    m.captions.push(c);
+    extend(end);
+    return c;
+  }, true);
+
+  def('animate', 'remove_caption', 'Remove a caption by id (or by its exact text).', obj({ id: str('caption id or text') }, ['id']), (a) => {
+    const m = anim();
+    const n = m.captions.length;
+    m.captions = m.captions.filter((c) => c.id !== a.id && c.text !== a.id);
+    if (m.captions.length === n) throw new Error(`No caption "${a.id}". Captions: ${m.captions.map((c) => `${c.id} "${c.text}"`).join(', ') || 'none'}.`);
+    return { captions: m.captions.length };
+  }, true);
+
+  def('animate', 'add_motion', 'Procedural motion, no keyframes: spin (speed °/s), oscillate (back and forth), wiggle (smooth shake), orbit (circle; the camera circles its target), pulse (breathing scale). Plays on top of keyframes, from start to end (it holds after end).', obj({ target: str('entity id/name, or "camera"'), type: str('motion', Object.keys(A.MOTIONS)), axis: str('axis (spin default y, others x; wiggle default all)', ['x', 'y', 'z']), property: str('what moves (default by type)', ['position', 'rotation', 'scale']), amplitude: num('how much: m, degrees for rotation, a fraction for pulse; orbit radius'), frequency: num('cycles per second (oscillate, wiggle, pulse)'), speed: num('degrees per second (spin, orbit)'), center: v3('orbit centre'), phase: num('degrees, to offset copies'), start: T('default 0'), end: T('default: forever') }, ['target', 'type']), (a) => {
+    const m = anim();
+    const target = targetId(a.target);
+    const start = at(a.start, 0);
+    const end = a.end === undefined ? undefined : at(a.end);
+    if (end !== undefined && end <= start) throw new Error('A motion must end after it starts.');
+    const mo = { id: nextId(m.motions, 'm'), target, type: a.type, start, ...(end !== undefined ? { end } : {}) };
+    for (const k of ['axis', 'property', 'amplitude', 'frequency', 'speed', 'center', 'phase']) if (a[k] !== undefined) mo[k] = a[k];
+    m.motions.push(mo);
+    extend(end);
+    return mo;
+  }, true);
+
+  def('animate', 'remove_motion', 'Remove a procedural motion by id, or every motion of a target.', obj({ id: str('motion id, or an entity / "camera"') }, ['id']), (a) => {
+    const m = anim();
+    const n = m.motions.length;
+    let tid = a.id;
+    if (!m.motions.some((x) => x.id === a.id)) tid = targetId(a.id);
+    m.motions = m.motions.filter((x) => x.id !== a.id && x.target !== tid);
+    if (m.motions.length === n) throw new Error(`No motion "${a.id}".`);
+    return { motions: m.motions.length };
+  }, true);
+
+  /** An entity's local position once its origin moves by a world offset. */
+  const localAfter = (doc, e, off) => {
+    const pw = D.parentWorldMatrix(doc, e);
+    const w = new Vector3(...e.position).applyMatrix4(pw).add(new Vector3(...off));
+    return D.round3(w.applyMatrix4(pw.clone().invert()).toArray());
+  };
+
+  def('animate', 'explode', 'Exploded view: parts move away from their common centre (or along axes), now (static) or animated out, or out-hold-back in. One group explodes its children.', obj({ ids, factor: num('how far: 1 doubles each part\'s distance from the centre (default 1)'), axes: str('directions parts may move (default all)', ['all', 'x', 'y', 'z', 'xz']), center: v3('explode from this point (default: the parts\' centre)'), mode: str('static | out | out-in (default out)', ['static', 'out', 'out-in']), start: T('default: playhead'), duration: num('seconds, default 1.5'), hold: num('out-in: seconds apart, default 1') }), (a) => {
+    const doc = ctx.doc;
+    let ents = targets(ctx, a);
+    if (ents.length === 1 && ents[0].type === 'group') ents = D.childrenOf(doc, ents[0].id);
+    if (ents.length < 2) throw new Error('Explode needs at least two parts (or one group with parts).');
+    const boxes = ents.map((e) => D.worldBox(doc, e));
+    const c = a.center || Q.centerOf(D.unionBox(boxes));
+    const mask = { all: [1, 1, 1], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1], xz: [1, 0, 1] }[a.axes || 'all'];
+    const f = a.factor ?? 1;
+    const offs = boxes.map((b) => D.round3(G.sub(Q.centerOf(b), c).map((x, k) => x * f * mask[k])));
+    if ((a.mode || 'out') === 'static') {
+      shift(ents, offs);
+      return { moved: ents.map((e) => e.id) };
+    }
+    const t0 = at(a.start, now());
+    const dur = a.duration ?? 1.5;
+    const hold = a.hold ?? 1;
+    ents.forEach((e, i) => {
+      const p1 = localAfter(doc, e, offs[i]);
+      A.setKey(doc, e.id, 'position', t0, e.position, 'linear');
+      A.setKey(doc, e.id, 'position', t0 + dur, p1, 'ease-in-out');
+      if (a.mode === 'out-in') {
+        A.setKey(doc, e.id, 'position', t0 + dur + hold, p1, 'linear');
+        A.setKey(doc, e.id, 'position', t0 + 2 * dur + hold, e.position, 'ease-in-out');
+      }
+    });
+    return { parts: ents.map((e) => e.id), start: t0, end: t0 + dur * (a.mode === 'out-in' ? 2 : 1) + (a.mode === 'out-in' ? hold : 0) };
+  }, true);
+
+  const FORWARD = { x: (t) => Math.atan2(-t[2], t[0]), '-x': (t) => Math.atan2(t[2], -t[0]), z: (t) => Math.atan2(t[0], t[2]), '-z': (t) => Math.atan2(-t[0], -t[2]) };
+  def('animate', 'animate_along_path', 'Move an entity or the camera along a path (trucks, cranes, fly-throughs). It turns to face the direction of travel unless orient is false; the camera looks ahead along the path.', obj({ target: str('entity id/name, or "camera"'), path: { description: 'curve id/name, or [[x,y,z], …] points' }, start: T('default: playhead'), end: T('default start + 5'), orient: bool('face the direction of travel (default true)'), forward: str('the model\'s front axis (default x)', Object.keys(FORWARD)), look_ahead: num('camera: metres ahead it looks (default 3)'), ease: str('speed profile (default ease-in-out)', Object.keys(A.EASES)), keys: num('keys along the path (default 4 per second, at least 8)') }, ['target', 'path']), (a) => {
+    const doc = ctx.doc;
+    let path = a.path;
+    if (typeof path === 'string' && path.trim().startsWith('[')) path = JSON.parse(path);
+    let pts;
+    if (Array.isArray(path)) pts = path;
+    else {
+      const [c] = D.resolve(doc, path);
+      if (!c.curve) throw new Error(`${c.name} is not a curve. Make one with create_curve, or give path points.`);
+      pts = D.curvePoints(doc, c, 24);
+    }
+    if (pts.length < 2 || C.polyLength(pts) < 1e-6) throw new Error('The path is too short.');
+    const t0 = at(a.start, now());
+    const t1 = at(a.end, t0 + 5);
+    if (t1 <= t0) throw new Error('end must come after start.');
+    const n = Math.max(8, Math.round(a.keys ?? (t1 - t0) * 4));
+    const ease = A.EASES[a.ease || 'ease-in-out'];
+    const len = C.polyLength(pts);
+    const tid = targetId(a.target);
+    const e = tid === 'camera' ? null : D.getEntity(doc, tid);
+    const yawOf = FORWARD[a.forward || 'x'];
+    let prev = null;
+    for (let i = 0; i <= n; i++) {
+      const s = i / n;
+      const u = ease(s);
+      const t = t0 + s * (t1 - t0);
+      const { point, tangent } = C.pointAt(pts, u);
+      if (!e) {
+        A.setKey(doc, 'camera', 'position', t, D.round3(point), 'linear');
+        if (a.orient !== false) {
+          const ahead = u + (a.look_ahead ?? 3) / len;
+          const look = ahead <= 1 ? C.pointAt(pts, ahead).point : G.add(C.pointAt(pts, 1).point, G.scl(tangent, (ahead - 1) * len));
+          A.setKey(doc, 'camera', 'target', t, D.round3(look), 'linear');
+        }
+        continue;
+      }
+      A.setKey(doc, e.id, 'position', t, localAfter(doc, { ...e, position: [0, 0, 0] }, point), 'linear');
+      if (a.orient !== false && Math.hypot(tangent[0], tangent[2]) > 1e-6) {
+        // shortcut: heading only (yaw), in the parent's frame; banking and pitch would need a full frame per key
+        let yaw = (yawOf(tangent) * 180) / Math.PI;
+        if (prev !== null) yaw += 360 * Math.round((prev - yaw) / 360); // unwrap: never spin the long way round
+        prev = yaw;
+        A.setKey(doc, e.id, 'rotation', t, [e.rotation[0], r4(yaw), e.rotation[2]], 'linear');
+      }
+    }
+    return { target: tid, start: t0, end: t1, keys: n + 1, length: r4(len) };
+  }, true);
+
+  def('animate', 'stagger', 'Offset the animation of entities so each starts delta seconds after the previous one, in an order: selection, height (bottom first), distance from a point, name, x or z. The quickest way to make a sequence look designed.', obj({ ids, delta: num('seconds between starts (default 0.2; negative reverses)'), order: str('default selection', ['selection', 'height', 'distance', 'name', 'x', 'z']), from: v3('order distance: measured from here (default: the centre)') }), (a) => {
+    const doc = ctx.doc;
+    let ents = targets(ctx, a);
+    const animated = (e) => [e, ...D.descendants(doc, e.id)].some((x) => doc.animation.tracks.some((t) => t.target === x.id) || (doc.animation.motions || []).some((m) => m.target === x.id));
+    ents = ents.filter(animated);
+    if (!ents.length) throw new Error('None of them is animated yet: animate them first (or use build_sequence).');
+    const box = (e) => D.worldBox(doc, e);
+    const c = a.from || Q.centerOf(D.unionBox(ents.map(box)));
+    const key = {
+      height: (e) => box(e).min[1],
+      distance: (e) => G.len(G.sub(Q.centerOf(box(e)), c)),
+      name: (e) => e.name,
+      x: (e) => box(e).min[0],
+      z: (e) => box(e).min[2],
+    }[a.order || 'selection'];
+    if (key) ents = [...ents].sort((p, q) => (key(p) < key(q) ? -1 : key(p) > key(q) ? 1 : 0));
+    const delta = a.delta ?? 0.2;
+    const shiftAll = (e, dt) => [e, ...D.descendants(doc, e.id)].forEach((x) => A.shiftTarget(doc, x.id, dt));
+    ents.forEach((e, i) => shiftAll(e, (delta >= 0 ? i : ents.length - 1 - i) * Math.abs(delta)));
+    return { order: ents.map((e) => e.name), delta };
+  }, true);
 
   // ---------------------------------------------------------------- file
   const needIO = () => {
@@ -1044,7 +1241,14 @@ function registerCore(reg, ctx) {
   def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
   def('file', 'open', 'Open a .glb/.gltf (MyModellerReel files reopen fully editable).', obj({ path: str('absolute path') }), (a) => needIO().open(a.path));
   def('file', 'import', 'Insert a model file (glb, gltf, obj, stl, fbx) into the current model.', obj({ path: str('absolute path') }), (a) => needIO().importModel(a.path));
-  def('file', 'export', 'Export: glb, gltf, obj, stl, png (viewport image) or video (renders the timeline to mp4/webm).', obj({ format: str('format', ['glb', 'gltf', 'obj', 'stl', 'png', 'video']), path: str('absolute output path; omit to be asked') }, ['format']), (a) => needIO().exportAs(a.format, a.path));
+  def('file', 'export', 'Export: glb, gltf, obj, stl, png (viewport image) or video (renders the timeline; render_video has all the options).', obj({ format: str('format', ['glb', 'gltf', 'obj', 'stl', 'png', 'video']), path: str('absolute output path; omit to be asked') }, ['format']), (a) => needIO().exportAs(a.format, a.path));
+  def('file', 'render_video', 'Render the timeline frame by frame (no dropped frames at any size): mp4 (H.264), webm (VP9, can be transparent), gif, or a png sequence (name_0001.png …). Captions are burned in.', obj({ path: str('absolute .mp4 / .webm / .gif / .png path; omit to be asked'), format: str('default: from the path', ['mp4', 'webm', 'gif', 'png']), width: num('pixels, default 1920'), height: num('pixels, default 1080'), fps: num('default: the timeline\'s'), from: T('default 0'), to: T('default: the end'), transparent: bool('no background (webm, png, gif)'), quality: str('default high', ['medium', 'high', 'very-high']) }), (a) => {
+    const io = needIO();
+    const from = at(a.from, 0);
+    const to = at(a.to, ctx.doc.animation.duration);
+    if (to <= from) throw new Error('to must come after from.');
+    return io.renderVideo({ ...a, from, to });
+  });
 
   // ---------------------------------------------------------------- extend
   def('extend', 'run_script', 'Run JavaScript against the API as ONE undo step (all or nothing: an error undoes the whole script). Inside: `await api.create_box({...})` (every command is a function), `api.doc` (the model JSON), `api.geometry`, and `params`. Return a value to see it.', obj({ code: str('async JavaScript body'), params: obj({}, []) }, ['code']), async (a) => {

@@ -139,7 +139,8 @@ export class Viewport {
   constructor(canvas, store) {
     this.canvas = canvas;
     this.store = store;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    // alpha: render_video can leave the background transparent
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -201,12 +202,13 @@ export class Viewport {
     this.resize();
     const loop = () => {
       requestAnimationFrame(loop);
-      if (this.dirty) this.render();
+      if (this.dirty && !this.rendering) this.render();
     };
     loop();
   }
 
   resize() {
+    if (this.rendering) return; // render_video owns the size until it is done
     const r = this.canvas.parentElement.getBoundingClientRect();
     this.renderer.setSize(r.width, r.height, false);
     this.camera.aspect = r.width / Math.max(1, r.height);

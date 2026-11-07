@@ -89,8 +89,11 @@ Invoke-RestMethod "http://127.0.0.1:$($a.port)/api/run" -Method Post -Headers @{
 | recipe | `save_recipe`, `list_recipes`, `replay_recipe`, `record_macro`, `stop_macro` |
 | edit | `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_metadata`, `set_curve`, `set_tag_visibility`, `boolean`, `propose`, `undo`, `redo`, `new_model` (`duplicate` with `live: true` makes a live array) |
 | view | `set_camera`, `set_view`, `zoom_extents`, `set_style`, `section`, `add_scene`, `go_to_scene` |
-| animate | `add_keyframe`, `animate` (from/to or by, with easing), `build_sequence`, `turntable`, `remove_keyframes`, `set_timeline`, `get_animation`, `playback` |
-| file | `save`, `open`, `import`, `export` (glb, gltf, obj, stl, png, video) |
+| animate | `add_keyframe`, `animate` (from/to or by, with easing), `build_sequence`, `turntable`, `explode`, `animate_along_path`, `stagger`, `add_motion` / `remove_motion` (spin, oscillate, wiggle, orbit, pulse), `add_marker` / `remove_marker`, `add_caption` / `remove_caption`, `remove_keyframes`, `set_timeline`, `get_animation`, `playback` |
+| file | `save`, `open`, `import`, `export` (glb, gltf, obj, stl, png, video), `render_video` (mp4 H.264, webm VP9 with transparency, gif, png sequence; any size; frame by frame) |
+
+Every time parameter (`start`, `end`, `time`, `from`, `to`) takes seconds or a **marker** name with an optional
+offset: `add_marker { name: "roof", time: 12 }`, then `animate { …, start: "roof", end: "roof + 2" }`.
 | extend | `run_script`, `create_plugin`, `list_plugins` |
 | plugin | whatever plugins add (built in: `create_stairs`, `create_wall` with openings) |
 

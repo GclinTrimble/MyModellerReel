@@ -32,7 +32,9 @@ Electron's binary download is an install script; if your npm blocks install scri
   live arrays, recipes that rebuild a model with other values, and a macro recorder.
 - **Animation and sequencing**: timeline with draggable keyframes and easing for position, rotation, scale, opacity,
   colour, visibility and the camera; Auto-key; build sequences (4D construction style); turntables; scenes;
-  **video export**; animation is saved into the GLB.
+  markers to aim at ("at the roof marker"), captions and titles, procedural motion (spin, oscillate, wiggle, orbit,
+  pulse), exploded views, animation along a path (trucks, cranes, fly-throughs), stagger; **frame-accurate video
+  render** to MP4 (H.264), WebM (transparent), GIF or PNG frames at any size; animation is saved into the GLB.
 - **AI-first**: copilot panel (Claude, Ollama/Mistral, any OpenAI-compatible API), one undo step per AI turn or a
   proposal to accept or reject, tool routing for small local models, relational placement (place on, against, stack,
   align, distribute), scene queries (raycast, free space, what is at a point), smart selection and metadata,

@@ -325,3 +325,18 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
   display: flex; align-items: center; gap: var(--my-space-1); border: 0; border-radius: var(--my-radius-pill);
   padding: 0 var(--my-space-2); background: var(--axis-x); color: #fff; font-size: var(--my-text-xs); font-weight: var(--my-weight-semibold);
 }
+
+/* ---------- timeline markers, caption and motion rows (#84, #82, #80); the caption overlay ---------- */
+#caption-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.tl-lanes .ruler .marker {
+  position: absolute; top: 2px; display: flex; align-items: center; gap: 2px; height: 20px; padding: 0 var(--my-space-1) 0 0;
+  border: 0; border-left: 2px solid var(--axis-x); background: var(--my-surface); color: var(--my-text); font-size: var(--my-text-xs);
+  white-space: nowrap; cursor: pointer; z-index: 3;
+}
+.tl-lanes .ruler .marker .ph { color: var(--axis-x); font-size: 12px; }
+.span-bar {
+  position: absolute; top: 3px; height: 18px; padding: 0 var(--my-space-1); border-radius: var(--my-radius-xs);
+  font-size: var(--my-text-xs); line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.span-bar.cap { background: var(--mmr-fern-deep); color: #fff; border-left: 3px solid var(--my-mustard); }
+.span-bar.motion { background: repeating-linear-gradient(135deg, var(--my-accent-tint-strong) 0 6px, transparent 6px 12px); color: var(--my-text); }

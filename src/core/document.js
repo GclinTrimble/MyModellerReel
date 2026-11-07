@@ -16,7 +16,7 @@ export function newDoc() {
     profiles: {}, // custom sweep profiles: name → { points: [[u, v], …], description }
     recipes: {}, // replayable build histories: name → { description, params, steps: [{ command, args }] }
     journal: [], // the commands that built this model, in order (recipes and macros are cut from it)
-    animation: { duration: 10, fps: 30, tracks: [] },
+    animation: { duration: 10, fps: 30, tracks: [], markers: [], captions: [], motions: [] },
     settings: {
       edges: true,
       xray: false,
@@ -257,4 +257,5 @@ export function removeEntity(doc, e) {
   const gone = new Set([e.id, ...descendants(doc, e.id).map((d) => d.id)]);
   doc.entities = doc.entities.filter((x) => !gone.has(x.id));
   doc.animation.tracks = doc.animation.tracks.filter((t) => !gone.has(t.target));
+  if (doc.animation.motions) doc.animation.motions = doc.animation.motions.filter((m) => !gone.has(m.target));
 }

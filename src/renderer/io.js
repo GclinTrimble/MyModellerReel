@@ -12,6 +12,7 @@ import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
 import { buildModel } from './viewport.js';
+import { renderVideo } from './render.js';
 
 const D2R = Math.PI / 180;
 const native = () => window.native;
@@ -22,7 +23,7 @@ const FILTERS = {
   obj: [{ name: 'Wavefront OBJ', extensions: ['obj'] }],
   stl: [{ name: 'STL (3D printing)', extensions: ['stl'] }],
   png: [{ name: 'PNG image', extensions: ['png'] }],
-  video: [{ name: 'MP4 video', extensions: ['mp4'] }, { name: 'WebM video', extensions: ['webm'] }],
+  video: [{ name: 'MP4 video (H.264)', extensions: ['mp4'] }, { name: 'WebM video (VP9, can be transparent)', extensions: ['webm'] }, { name: 'Animated GIF', extensions: ['gif'] }, { name: 'PNG sequence', extensions: ['png'] }],
   models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
 };
 
@@ -54,13 +55,15 @@ export class IO {
     const { duration, fps } = doc.animation;
     const times = Array.from({ length: Math.round(duration * fps) + 1 }, (_, i) => i / fps);
     const tracks = [];
-    const targets = [...new Set(doc.animation.tracks.map((t) => t.target))];
+    // keyframes and procedural motions both end up as baked tracks
+    const animated = [...doc.animation.tracks.map((t) => [t.target, t.property]), ...(doc.animation.motions || []).map((m) => [m.target, m.property || A.MOTIONS[m.type]?.property])];
+    const targets = [...new Set(animated.map(([t]) => t))];
     for (const id of targets) {
       if (id === 'camera') continue;
       const o = objs.get(id);
       const e = D.getEntity(doc, id);
       if (!o || !e) continue;
-      const props = new Set(doc.animation.tracks.filter((t) => t.target === id).map((t) => t.property));
+      const props = new Set(animated.filter(([t]) => t === id).map(([, p]) => p));
       const pose = times.map((t) => A.evaluate(doc, t)[id] || {});
       if (props.has('position')) tracks.push(new THREE.VectorKeyframeTrack(`${o.uuid}.position`, times, pose.flatMap((p) => p.position || e.position)));
       if (props.has('rotation'))
@@ -78,7 +81,7 @@ export class IO {
       if (props.has('scale') || props.has('visible'))
         tracks.push(new THREE.VectorKeyframeTrack(`${o.uuid}.scale`, times, pose.flatMap((p) => ((p.visible ?? e.visible) ? p.scale || e.scale : [0, 0, 0]))));
     }
-    if (doc.animation.tracks.some((t) => t.target === 'camera')) {
+    if (targets.includes('camera')) {
       const cam = new THREE.PerspectiveCamera(doc.camera.fov || 45, 16 / 9, 0.05, 5000);
       cam.name = 'Camera';
       scene.add(cam);
@@ -167,7 +170,7 @@ export class IO {
 
   async exportAs(format, path) {
     const name = (this.app.file ? base(this.app.file) : 'Untitled.glb').replace(/\.\w+$/, '');
-    if (format === 'video') return this.exportVideo(path);
+    if (format === 'video') return this.renderVideo({ path });
     path ||= await this.pick(format, true, `${name}.${format}`);
     if (!path) return { cancelled: true };
     let data;
@@ -187,43 +190,13 @@ export class IO {
     return { exported: path };
   }
 
-  /** Plays the timeline once in real time and records the canvas. */
-  async exportVideo(path) {
-    const app = this.app;
-    const doc = app.store.doc;
-    path ||= await this.pick('video', true, 'Reel.mp4');
+  /** Frame-by-frame render of the timeline (render.js). Asks for a path when none is given. */
+  async renderVideo(opts = {}) {
+    const path = opts.path || (await this.pick('video', true, `${(this.app.file ? base(this.app.file) : 'Reel.glb').replace(/\.\w+$/, '')}.mp4`));
     if (!path) return { cancelled: true };
-    // Electron says yes to H.264 recording but writes nothing, so MP4 is VP9 in an MP4 box (plays in browsers,
-    // VLC, Premiere, DaVinci; not in the old Windows "Films & TV"). shortcut: bundle ffmpeg if H.264 is a must.
-    const wantMp4 = /\.mp4$/i.test(path);
-    const types = wantMp4 ? ['video/mp4;codecs=vp9', 'video/webm;codecs=vp9'] : ['video/webm;codecs=vp9', 'video/webm'];
-    const mime = types.find((t) => MediaRecorder.isTypeSupported(t));
-    if (!mime) throw new Error('This system cannot record video.');
-    if (wantMp4 && !mime.startsWith('video/mp4')) path = path.replace(/\.mp4$/i, '.webm');
-    const tl = app.timeline;
-    tl.open();
-    tl.pause();
-    tl.seek(0);
-    const stream = app.viewport.canvas.captureStream(doc.animation.fps);
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 });
-    const chunks = [];
-    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    const done = new Promise((r) => (rec.onstop = r));
-    app.ui.toast(`Recording ${doc.animation.duration}s…`);
-    rec.start(250);
-    tl.recording = true;
-    await new Promise((resolve) => {
-      tl.onPause = resolve;
-      tl.play();
-    });
-    tl.onPause = null;
-    tl.recording = false;
-    rec.stop();
-    await done;
-    const blob = new Blob(chunks, { type: mime });
-    if (!blob.size) throw new Error(`The video recorder produced no data (${mime}). Try saving as .webm.`);
-    await native().invoke('file:write', path, await blob.arrayBuffer());
-    app.ui.toast(`Exported ${base(path)}`);
-    return { exported: path, seconds: doc.animation.duration, type: mime };
+    this.app.ui.toast('Rendering… (the view pauses until it is done)');
+    const r = await renderVideo(this.app, { ...opts, path }, (p, data) => native().invoke('file:write', p, data));
+    this.app.ui.toast(`Rendered ${r.frames} frames to ${base(r.exported)}`);
+    return r;
   }
 }

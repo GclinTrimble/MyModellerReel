@@ -22,7 +22,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 - `src/main/main.cjs` window, settings (`%APPDATA%\MyModellerReel\settings.json`), file IPC with extension allow-lists,
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
-- `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`.
+- `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
+  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `captions.js` (2D caption drawing shared
+  by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 
 ## Conventions

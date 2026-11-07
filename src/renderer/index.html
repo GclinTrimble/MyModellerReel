@@ -16,7 +16,9 @@
           "three": "../../node_modules/three/build/three.module.js",
           "three/addons/": "../../node_modules/three/examples/jsm/",
           "three-mesh-bvh": "../../node_modules/three-mesh-bvh/src/index.js",
-          "three-bvh-csg": "../../node_modules/three-bvh-csg/src/index.js"
+          "three-bvh-csg": "../../node_modules/three-bvh-csg/src/index.js",
+          "mediabunny": "../../node_modules/mediabunny/dist/bundles/mediabunny.mjs",
+          "gifenc": "../../node_modules/gifenc/dist/gifenc.esm.js"
         }
       }
     </script>
@@ -39,6 +41,7 @@
       <section class="stage">
         <div class="viewport-wrap">
           <canvas id="viewport" tabindex="0" aria-label="3D model view"></canvas>
+          <canvas id="caption-layer" aria-hidden="true"></canvas>
           <div id="snap-label" hidden></div>
           <div id="select-box" hidden></div>
           <button class="context-chip" id="context-chip" hidden></button>

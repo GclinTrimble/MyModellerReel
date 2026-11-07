@@ -91,3 +91,25 @@ test('parametric: sweep from the Library, edit a parameter in the Entity panel, 
   await w.locator('#macro-pill').waitFor({ state: 'detached' });
   assert.equal((await ok('list_recipes', { name: 'Test macro' })).steps.length, 1);
 });
+
+test('render_video: frame by frame to MP4 (H.264 or VP9) and GIF, captions burned in, the view restored', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'Mover' });
+  await ok('animate', { target: 'Mover', property: 'position', by: [3, 0, 0], start: 0, end: 1 });
+  await ok('add_caption', { text: 'Hello', start: 0, end: 1, style: 'title' });
+  await ok('add_motion', { target: 'Mover', type: 'spin' });
+  await ok('set_timeline', { duration: 1, fps: 12 });
+  const size = await w.evaluate(() => [window.mmr.app.viewport.canvas.width, window.mmr.app.viewport.canvas.height]);
+  const mp4 = path.join(home, 'out', 'reel.mp4');
+  const r = await ok('render_video', { path: mp4, width: 320, height: 180 });
+  assert.equal(r.frames, 12);
+  assert.ok(['avc', 'vp9'].includes(r.codec));
+  const head = fs.readFileSync(mp4);
+  assert.equal(head.subarray(4, 8).toString(), 'ftyp');
+  const gif = await ok('render_video', { path: path.join(home, 'out', 'reel.gif'), width: 160, height: 90, fps: 6 });
+  assert.equal(gif.frames, 6);
+  assert.equal(fs.readFileSync(path.join(home, 'out', 'reel.gif')).subarray(0, 6).toString(), 'GIF89a');
+  assert.deepEqual(await w.evaluate(() => [window.mmr.app.viewport.canvas.width, window.mmr.app.viewport.canvas.height]), size);
+  const r2 = await run('render_video', { path: path.join(home, 'out', 'x.mp4'), transparent: true });
+  assert.match(r2.error, /MP4 has no transparency/);
+});
