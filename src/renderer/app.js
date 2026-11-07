@@ -221,7 +221,7 @@ window.mmr = {
   list: () => app.reg.list(),
   registerCommand(spec) {
     if (!spec?.name || typeof spec.run !== 'function') throw new Error('registerCommand needs { name, description, params, run }');
-    app.reg.define({ category: 'plugin', mutates: true, ...spec, params: spec.params || { type: 'object', properties: {} }, run: (args) => spec.run(args, window.mmr) });
+    app.reg.define({ category: 'plugin', mutates: true, compound: true, ...spec, params: spec.params || { type: 'object', properties: {} }, run: (args) => spec.run(args, window.mmr) });
   },
   /** A generator of parametric shapes: { description, params, world?, run({ params, inputs, doc }) → { mesh, origin? } }. */
   registerGenerator: (name, spec) => registerGenerator(name, spec),

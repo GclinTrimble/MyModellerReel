@@ -132,7 +132,15 @@ export class Assistant {
       await runTurn({
         protocol,
         chat: (body) => app.chat(body),
-        run: (name, args) => app.reg.run(name, args),
+        run: async (name, args) => {
+          const before = JSON.stringify(app.store.doc);
+          try {
+            return await app.reg.run(name, args);
+          } catch (e) {
+            app.store.doc = JSON.parse(before); // a failed call leaves nothing behind for the model to trip over
+            throw e;
+          }
+        },
         list: () => app.reg.list(),
         history: this.history,
         system: () =>

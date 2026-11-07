@@ -65,9 +65,12 @@ export function timeOf(doc, v, fallback = 0) {
   if (typeof v === 'number') return v;
   const s = String(v).trim();
   if (Number.isFinite(+s)) return +s;
+  const markers = doc.animation.markers || [];
+  const exact = markers.find((x) => x.name.toLowerCase() === s.toLowerCase()); // "Level-2" is a name, not Level − 2
+  if (exact) return exact.t;
   const m = s.match(/^(.*?)\s*([+-])\s*(\d+(?:\.\d+)?)\s*s?$/);
   const name = (m ? m[1] : s).trim().toLowerCase();
-  const mk = (doc.animation.markers || []).find((x) => x.name.toLowerCase() === name);
+  const mk = markers.find((x) => x.name.toLowerCase() === name);
   if (!mk) throw new Error(`No marker "${m ? m[1].trim() : s}". Markers: ${(doc.animation.markers || []).map((x) => x.name).join(', ') || 'none (add_marker makes one)'}.`);
   return Math.max(0, mk.t + (m ? (m[2] === '-' ? -1 : 1) * +m[3] : 0));
 }

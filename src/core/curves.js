@@ -94,7 +94,9 @@ export function sweep(profile, path, { closed = null } = {}) {
   const legIn = (i) => (i === 0 && !isClosed ? seg(0) : seg((i - 1 + n) % n));
   const legOut = (i) => (i === n - 1 && !isClosed ? seg(n - 2) : seg(i));
   const rings = [];
-  let prevR = null;
+  // vertical runs carry the right vector over; one that starts the path borrows it from the first non-vertical corner
+  const firstFlat = pts.findIndex((_, i) => Math.abs(G.norm(G.add(legIn(i), legOut(i)))[1]) < 0.99);
+  let prevR = firstFlat >= 0 ? G.norm(G.cross(G.norm(G.add(legIn(firstFlat), legOut(firstFlat))), [0, 1, 0])) : null;
   for (let i = 0; i < n; i++) {
     const tin = legIn(i);
     const tout = legOut(i);
@@ -102,7 +104,7 @@ export function sweep(profile, path, { closed = null } = {}) {
     let R;
     if (Math.abs(T[1]) < 0.99) R = G.norm(G.cross(T, [0, 1, 0]));
     else {
-      // vertical: carry the previous right vector over (no twist); the very first one faces +x
+      // vertical: carry the previous right vector over (no twist); an all-vertical path faces +x
       const base = prevR || [1, 0, 0];
       R = G.norm(G.sub(base, G.scl(T, G.dot(base, T))));
     }

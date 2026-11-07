@@ -92,16 +92,43 @@ function hash(s) {
 }
 function stampOf(doc, e, inputs) {
   const d = e.derived;
-  return hash(JSON.stringify([d.generator, d.params, d.offset || null, inputs.map((x) => [x.mesh || x.curve || null, D.worldMatrix(doc, x).elements.map((v) => Math.round(v * 1e6))])]));
+  const profile = typeof d.params?.profile === 'string' ? doc.profiles?.[d.params.profile] ?? null : null; // redefined profiles rebuild
+  return hash(JSON.stringify([d.generator, d.params, d.offset || null, d.pivot || null, profile, inputs.map((x) => [x.mesh || x.curve || null, D.worldMatrix(doc, x).elements.map((v) => Math.round(v * 1e6))])]));
+}
+
+/**
+ * The axes a set_pivot phrase names (left/right → x, bottom/top → y, back/front → z, center → all) and where they fall
+ * on a local mesh's bounds. Those axes follow the shape when it is resized; the others keep their fixed offset.
+ */
+export function anchorOf(mesh, words) {
+  const b = G.bbox(mesh);
+  const w = String(words).toLowerCase().split(/[\s,-]+/);
+  const p = b.min.map((x, k) => (x + b.max[k]) / 2);
+  const axes = new Set(w.includes('center') || w.includes('centre') ? [0, 1, 2] : []);
+  const at = (k, v) => ((p[k] = v), axes.add(k));
+  if (w.includes('left')) at(0, b.min[0]);
+  if (w.includes('right')) at(0, b.max[0]);
+  if (w.includes('bottom') || w.includes('base')) at(1, b.min[1]);
+  if (w.includes('top')) at(1, b.max[1]);
+  if (w.includes('back')) at(2, b.min[2]);
+  if (w.includes('front')) at(2, b.max[2]);
+  return { p, axes: [...axes] };
 }
 
 function apply(doc, e, out) {
-  const off = e.derived.offset;
-  if (getGenerator(e.derived.generator).world) {
+  const d = e.derived;
+  if (getGenerator(d.generator).world) {
     e.mesh = out.mesh;
     D.setWorldMatrix(doc, e, new Matrix4().makeTranslation(...out.origin));
   } else e.mesh = out.mesh;
-  if (off) e.mesh = G.translate(e.mesh, off);
+  if (d.offset || d.pivot) {
+    const off = [...(d.offset || [0, 0, 0])];
+    if (d.pivot) {
+      const { p, axes } = anchorOf(out.mesh, d.pivot);
+      for (const k of axes) off[k] = -p[k];
+    }
+    e.mesh = G.translate(e.mesh, off);
+  }
 }
 
 /** Run an entity's generator now. Throws on bad parameters, leaving the entity as it was. */
@@ -166,7 +193,7 @@ export function rebuildDerived(doc) {
       if (!indeg.get(x.id)) order.push(x);
     }
   const placed = new Set(order);
-  for (const e of list) if (!placed.has(e)) e.derived.error = 'Its inputs form a cycle (it depends on itself).';
+  for (const e of list) if (!placed.has(e)) e.derived.error = 'It depends on a loop of parametric shapes (one of them uses itself, directly or not).';
   const rebuilt = [];
   for (const e of order) {
     const d = e.derived;

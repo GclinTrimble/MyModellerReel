@@ -40,10 +40,14 @@ export class Store {
   }
   checkpoint() {
     this.undoStack.push(JSON.stringify(this.doc));
+    let dropped = null;
     if (this.undoStack.length > 200) {
-      this.undoStack.shift(); // shortcut: whole-doc snapshots, fine below ~50 MB models
-      if (this.proposal) this.proposalAt--;
+      // shortcut: whole-doc snapshots, fine below ~50 MB models. A pending proposal's own snapshot is never dropped.
+      const at = this.proposal && this.proposalAt === 0 ? 1 : 0;
+      dropped = { at, snap: this.undoStack.splice(at, 1)[0] };
+      if (this.proposal && at === 0) this.proposalAt--;
     }
+    this.last = { redo: this.redoStack, dropped }; // what rollback() must give back
     this.redoStack = [];
   }
   undo() {
@@ -64,6 +68,14 @@ export class Store {
   rollback() {
     if (!this.undoStack.length) return false;
     this.doc = JSON.parse(this.undoStack.pop());
+    if (this.last) {
+      this.redoStack = this.last.redo;
+      if (this.last.dropped) {
+        this.undoStack.splice(this.last.dropped.at, 0, this.last.dropped.snap);
+        if (this.proposal && this.last.dropped.at === 0) this.proposalAt++;
+      }
+      this.last = null;
+    }
     this.changed();
     return true;
   }
@@ -86,6 +98,8 @@ export class Store {
   }
   acceptProposal() {
     if (!this.proposal) return false;
+    // everything done inside it becomes one undo step: back to the state before the proposal
+    if (this.undoStack[this.proposalAt] === this.proposal) this.undoStack.length = this.proposalAt + 1;
     this.proposal = null;
     this.changed();
     return true;

@@ -94,7 +94,7 @@ test('dependency graph: a chain of three rebuilds in order, cycles and missing i
   // a cycle: make the beam depend on the grid
   ctx.doc.entities.find((e) => e.id === beam.id).derived.inputs = [grid];
   R.rebuildDerived(ctx.doc);
-  assert.match((await reg.run('get_entity', { id: grid })).error, /cycle/);
+  assert.match((await reg.run('get_entity', { id: grid })).error, /loop of parametric shapes/);
   ctx.doc.entities.find((e) => e.id === beam.id).derived.inputs = ['e1']; // undo the hand-made cycle
   R.rebuildDerived(ctx.doc);
   assert.equal((await reg.run('get_entity', { id: grid })).error, undefined);

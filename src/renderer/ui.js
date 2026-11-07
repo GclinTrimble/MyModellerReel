@@ -321,7 +321,7 @@ export class UI {
       pill = h('button.macro-pill', { id: 'macro-pill', title: 'Stop recording and save the macro as a recipe', onclick: () => this.actions.recordMacro.run() });
       this.$('status-hint').after(pill);
     }
-    pill.replaceChildren(icon('record', true), `Recording "${m.name}" · ${(this.app.store.doc.journal?.length ?? 0) - m.start} steps · Stop`);
+    pill.replaceChildren(icon('record', true), `Recording "${m.name}" · ${m.steps.length} steps · Stop`);
   }
 
   renderProposal() {

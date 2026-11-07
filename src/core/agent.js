@@ -118,7 +118,10 @@ export async function runTurn({ protocol, chat, run, list, history, system, tool
     if (!calls.length) return stats;
     const results = [];
     for (const c of calls) {
-      if (hooks.stopped?.()) break;
+      if (hooks.stopped?.()) {
+        results.push(toolResultMessage(protocol, c, { error: 'Stopped by the user before this ran.' }, true));
+        continue;
+      }
       const token = hooks.onCall?.(c);
       let result;
       let isError = false;

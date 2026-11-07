@@ -86,20 +86,34 @@ export function createRegistry(ctx) {
         throw new Error(`Unknown command "${name}".${near.length ? ` Did you mean ${near.join(', ')}?` : ''} Call list_commands with a query to find commands.`);
       }
       args = validate(name, c.params, args);
-      // The journal records what built the model (for recipes and macros), with the selection made explicit.
+      // The journal records what built the model (for recipes and macros). A command that acts on "the selection"
+      // keeps it implicit when the previous recorded step made that selection (so a replay with other parameters acts on
+      // what the replay made), and records the ids when the selection was made by hand.
       const record = c.journal && !ctx.scriptDepth;
-      const recArgs = record && c.params.properties?.ids && args.ids === undefined ? { ...args, ids: [...ctx.selection.get()] } : args;
+      const sel = ctx.selection.get();
+      const handPicked = JSON.stringify(sel) !== ctx.journalSel;
+      const recArgs = record && c.params.properties?.ids && args.ids === undefined && handPicked ? { ...args, ids: [...sel] } : args;
       const own = c.mutates && !ctx.batchDepth;
+      // a compound command (script, recipe, plugin command) is all or nothing inside a batch too
+      const snap = !own && c.compound ? JSON.stringify(ctx.doc) : null;
       if (own) ctx.store.checkpoint();
+      if (c.compound) (ctx.batchDepth = (ctx.batchDepth || 0) + 1), (ctx.scriptDepth = (ctx.scriptDepth || 0) + 1);
       let result;
       try {
         result = await c.run(args, ctx);
         if (c.mutates) R.rebuildDerived(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
+        else if (snap) ctx.store.doc = JSON.parse(snap);
         throw e;
+      } finally {
+        if (c.compound) ctx.batchDepth--, ctx.scriptDepth--;
       }
-      if (record) journal(ctx.doc, name, recArgs);
+      if (record) {
+        journal(ctx.doc, name, recArgs);
+        ctx.macro?.steps.push({ command: name, args: structuredClone(recArgs) });
+        ctx.journalSel = JSON.stringify(ctx.selection.get());
+      }
       if (own) ctx.store.changed();
       for (const fn of ctx.afterRun || []) fn(name, args, result);
       return result ?? { ok: true };
@@ -440,8 +454,8 @@ function registerCore(reg, ctx) {
     const out = [];
     if (a.live) {
       if (a.angle) throw new Error('Live arrays are linear: use offset, not angle.');
+      for (const e of ents) if (!e.mesh) throw new Error(`${e.name} is not a shape; live arrays copy shapes.`);
       for (const e of ents) {
-        if (!e.mesh) throw new Error(`${e.name} is not a shape; live arrays copy shapes.`);
         const params = { count: a.count || 1, offset: a.offset || [1, 0, 0] };
         R.getGenerator('array').run({ params, inputs: [e], doc });
         const c = D.addEntity(doc, { name: `${e.name} array`, material: { ...e.material }, tag: e.tag });
@@ -455,7 +469,7 @@ function registerCore(reg, ctx) {
       for (const e of ents) {
         const c = D.duplicateEntity(doc, e);
         c.name = `${e.name} ${k + 1}`;
-        if (c.derived && R.getGenerator(c.derived.generator)?.world) R.bake(c); // a copy of a sweep would snap back onto its path
+        for (const x of [c, ...D.descendants(doc, c.id)]) if (x.derived && R.getGenerator(x.derived.generator)?.world) R.bake(x); // a copied sweep would snap back onto its path
         if (a.angle) applyWorld(ctx, c, new Matrix4().makeRotationY(a.angle * k * D2R), a.center || [0, 0, 0]);
         if (a.offset || !a.angle) applyWorld(ctx, c, new Matrix4().makeTranslation(...G.scl(a.offset || [1, 0, 0], k)), [0, 0, 0]);
         out.push(c.id);
@@ -468,8 +482,9 @@ function registerCore(reg, ctx) {
     const doc = ctx.doc;
     const k = { x: 0, y: 1, z: 2 }[a.axis];
     const out = [];
-    for (const e of targets(ctx, a)) {
-      if (!e.mesh) throw new Error(`${e.name} is a group; mirror its shapes.`);
+    const ents = targets(ctx, a);
+    for (const e of ents) if (!e.mesh) throw new Error(`${e.name} is not a shape; mirror the shapes themselves.`);
+    for (const e of ents) {
       const b = D.worldBox(doc, e);
       const at = a.at ?? (b.min[k] + b.max[k]) / 2;
       const w = worldMesh(doc, e);
@@ -527,7 +542,12 @@ function registerCore(reg, ctx) {
     const pw = new Vector3(...anchorPoint(doc, e, a.pivot));
     const L = pw.clone().applyMatrix4(D.worldMatrix(doc, e).invert()).toArray(); // pivot in local space
     if (e.derived && R.getGenerator(e.derived.generator)?.world) R.bake(e);
-    else if (e.derived) e.derived.offset = D.round3(G.sub(e.derived.offset || [0, 0, 0], L)); // rebuilds keep the new pivot
+    else if (e.derived) {
+      // rebuilds keep the pivot; one named by words ("left") stays on that side when the shape is resized
+      e.derived.offset = D.round3(G.sub(e.derived.offset || [0, 0, 0], L));
+      if (typeof a.pivot === 'string') e.derived.pivot = a.pivot;
+      else delete e.derived.pivot;
+    }
     if (e.mesh) e.mesh = G.translate(e.mesh, G.scl(L, -1));
     if (e.curve) e.curve.points = e.curve.points.map((p) => G.sub(p, L));
     for (const c of D.childrenOf(doc, e.id)) c.position = D.round3(G.sub(c.position, L));
@@ -819,11 +839,15 @@ function registerCore(reg, ctx) {
   // ---------------------------------------------------------------- recipes and macros
   def('recipe', 'save_recipe', 'Save how this model was built as a named, replayable recipe. Without steps it takes the commands that built the current model (from step `from`). Steps may hold "{{expr}}" placeholders over params (e.g. "{{storeys * 3}}"); run_script steps also get `params`.', obj({ name: str('recipe name'), description: str('what it builds'), params: obj({}, []), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the journal)' }, from: num('first journal step (default 0)') }, ['name']), (a) => {
     const doc = ctx.doc;
-    const steps = a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => structuredClone(s));
+    const old = doc.recipes?.[a.name];
+    const steps = (a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => structuredClone(s))).flatMap((s) =>
+      s.command === 'replay_recipe' && s.args?.name === a.name ? (old ? structuredClone(old.steps) : []) : [s],
+    );
     if (!steps.length) throw new Error('Nothing to save: no steps given and the journal is empty.');
     for (const s of steps) if (!reg.commands.has(s.command)) throw new Error(`Step "${s.command}" is not a command.`);
-    (doc.recipes ||= {})[a.name] = { description: a.description || '', params: a.params || {}, steps };
-    return { name: a.name, steps: steps.length, params: a.params || {} };
+    const params = a.params || old?.params || {};
+    (doc.recipes ||= {})[a.name] = { description: a.description || old?.description || '', params, steps };
+    return { name: a.name, steps: steps.length, params };
   }, true);
   reg.commands.get('save_recipe').journal = false;
 
@@ -840,13 +864,13 @@ function registerCore(reg, ctx) {
     const r = ctx.doc.recipes?.[a.name];
     if (!r) throw new Error(`No recipe "${a.name}". Recipes: ${Object.keys(ctx.doc.recipes || {}).join(', ') || 'none'}.`);
     const params = { ...r.params, ...(a.params || {}) };
+    if ((ctx.replaying ||= new Set()).has(a.name)) throw new Error(`The recipe "${a.name}" replays itself.`);
     if (a.clear !== false) {
       const keep = { recipes: ctx.doc.recipes, profiles: ctx.doc.profiles, settings: ctx.doc.settings, camera: ctx.doc.camera };
       ctx.store.doc = { ...D.newDoc(), ...structuredClone(keep) };
       ctx.selection.set([]);
     }
-    ctx.batchDepth = (ctx.batchDepth || 0) + 1;
-    ctx.scriptDepth = (ctx.scriptDepth || 0) + 1;
+    ctx.replaying.add(a.name);
     try {
       for (const [i, s] of r.steps.entries()) {
         const args = fillParams(s.args || {}, params);
@@ -858,14 +882,14 @@ function registerCore(reg, ctx) {
         }
       }
     } finally {
-      ctx.batchDepth--;
-      ctx.scriptDepth--;
+      ctx.replaying.delete(a.name);
     }
     return { recipe: a.name, params, steps: r.steps.length, entities: ctx.doc.entities.length };
   }, true);
+  reg.commands.get('replay_recipe').compound = true;
 
   def('recipe', 'record_macro', 'Start recording: everything done from now (tools, menus, AI, scripts) is captured until stop_macro.', obj({ name: str('macro name') }), (a) => {
-    ctx.macro = { name: a.name || `Macro ${Object.keys(ctx.doc.recipes || {}).length + 1}`, start: (ctx.doc.journal || []).length };
+    ctx.macro = { name: a.name || `Macro ${Object.keys(ctx.doc.recipes || {}).length + 1}`, steps: [] };
     ctx.onMacro?.(ctx.macro);
     return { recording: ctx.macro.name };
   });
@@ -875,7 +899,7 @@ function registerCore(reg, ctx) {
     if (!m) throw new Error('Not recording. Call record_macro first.');
     ctx.macro = null;
     ctx.onMacro?.(null);
-    const steps = (ctx.doc.journal || []).slice(m.start).map((s) => structuredClone(s));
+    const steps = m.steps;
     if (!steps.length) return { name: m.name, steps: 0, note: 'Nothing was recorded.' };
     const name = a.name || m.name;
     const script = steps.map((s) => `await api.${s.command}(${JSON.stringify(s.args)});`).join('\n');
@@ -1310,24 +1334,13 @@ function registerCore(reg, ctx) {
       { get: (o, k) => (k in o ? o[k] : typeof k === 'symbol' || k === 'then' ? undefined : (x) => reg.run(k, x)) },
     );
     const AsyncFn = Object.getPrototypeOf(async () => {}).constructor;
-    const top = !ctx.batchDepth;
-    if (top) ctx.store.checkpoint();
-    ctx.batchDepth = (ctx.batchDepth || 0) + 1;
-    ctx.scriptDepth = (ctx.scriptDepth || 0) + 1;
     try {
-      const result = (await new AsyncFn('api', 'params', a.code)(api, a.params || {})) ?? null;
-      R.rebuildDerived(ctx.doc);
-      return { result };
-    } catch (e) {
-      if (top) ctx.store.rollback();
-      throw e;
+      return { result: (await new AsyncFn('api', 'params', a.code)(api, a.params || {})) ?? null };
     } finally {
-      ctx.batchDepth--;
-      ctx.scriptDepth--;
-      ctx.store.changed();
+      ctx.store.changed(); // live view while scripts run inside an AI turn
     }
-  }, false);
-  reg.commands.get('run_script').journal = true;
+  }, true);
+  reg.commands.get('run_script').compound = true;
 
   def('extend', 'create_plugin', 'Write and load a plugin that adds new commands (and toolbar buttons) permanently. code is an ES module: export default function (mmr) { mmr.registerCommand({ name, description, params, run: async (args, mmr) => ... }) }', obj({ name: str('file name, letters/digits/-'), code: str('ES module source') }, ['name', 'code']), (a) => {
     if (!ctx.plugins) throw new Error('Plugins need the desktop app.');

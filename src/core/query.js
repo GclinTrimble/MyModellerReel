@@ -145,18 +145,17 @@ export function findFreeSpace(doc, [w, d], { near = [0, 0], clearance = 0.1, max
   const free = (x, z) =>
     boxes.every((b) => x + w / 2 + clearance <= b.min[0] || x - w / 2 - clearance >= b.max[0] || z + d / 2 + clearance <= b.min[2] || z - d / 2 - clearance >= b.max[2]);
   if (free(near[0], near[1])) return [r4(near[0]), 0, r4(near[1])];
-  for (let ring = 1; ring * step <= maxRadius; ring++) {
-    let best = null;
+  // square rings: a free cell in ring r can be up to √2·r steps away, so keep looking until no closer one is possible
+  let best = null;
+  for (let ring = 1; ring * step <= maxRadius && !(best && ring * step > best.dist); ring++)
     for (let i = -ring; i <= ring; i++)
       for (const [dx, dz] of [[i, -ring], [i, ring], [-ring, i], [ring, i]]) {
         const x = near[0] + dx * step;
         const z = near[1] + dz * step;
         const dist = Math.hypot(x - near[0], z - near[1]);
-        if (free(x, z) && (!best || dist < best.dist)) best = { x, z, dist };
+        if ((!best || dist < best.dist) && free(x, z)) best = { x, z, dist };
       }
-    if (best) return [r4(best.x), 0, r4(best.z)];
-  }
-  return null;
+  return best ? [r4(best.x), 0, r4(best.z)] : null;
 }
 
 // ---------------------------------------------------------------- arrange (each returns world offsets to apply)

@@ -20,6 +20,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `materials.js` (the material catalogue).
 - Entities: `type` mesh | group | curve. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
+  A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
+  one undo step and one journal entry with it, and it is rolled back whole even inside an AI turn.
 - Keep command bodies in `commands.js` short: put the maths in a pure module with its own test.
 - `src/main/main.cjs` window, settings (`%APPDATA%\MyModellerReel\settings.json`), file IPC with extension allow-lists,
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
