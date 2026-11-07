@@ -13,7 +13,7 @@
   --axis-x: #d2453c;
   --axis-y: #2f6fb8;
   --axis-z: #3c9a4e;
-  --dock-w: 360px;
+  --dock-w: 380px;
   --tool-w: 52px;
   color-scheme: light;
 }
@@ -143,7 +143,8 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .dock { display: grid; grid-template-rows: auto 1fr; background: var(--my-surface); border-left: 1px solid var(--my-border); min-height: 0; }
 .tabs { display: flex; gap: var(--my-space-0); padding: var(--my-space-1); border-bottom: 1px solid var(--my-border); overflow-x: auto; }
 .tabs button {
-  display: flex; flex-direction: column; align-items: center; gap: 0; flex: 1; min-width: 44px; border: 0; background: none;
+  display: flex; flex-direction: column; align-items: center; gap: 0; flex: 1 1 0; min-width: 0; border: 0; background: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.01em;
   padding: var(--my-space-1) 0; border-radius: var(--my-radius-sm); color: var(--my-text-muted); font-size: var(--my-text-xs); cursor: pointer;
 }
 .tabs button:hover { background: var(--my-accent-tint); }
@@ -357,3 +358,18 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .qty th, .qty td { padding: var(--my-space-1) var(--my-space-2); border-bottom: 1px solid var(--my-border); text-align: right; }
 .qty th:first-child, .qty td:first-child { text-align: left; }
 .skill-pick { height: 26px; min-width: 0; max-width: 160px; border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); background: var(--my-surface); font-size: var(--my-text-xs); padding: 0 var(--my-space-1); }
+
+/* ---------- survey (#117): labels over the view, the points table, code chips ---------- */
+#label-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.qty.pts { max-height: 36vh; }
+.qty.pts table { table-layout: fixed; font-size: var(--my-text-xs); }
+.qty.pts th:nth-child(1) { width: 15%; } .qty.pts th:nth-child(2), .qty.pts th:nth-child(3) { width: 27%; } .qty.pts th:nth-child(4) { width: 16%; } .qty.pts th:nth-child(5) { width: 15%; }
+.qty.pts td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px; }
+.qty.pts tr { cursor: pointer; }
+.qty.pts tr.sel td { background: var(--my-accent-tint); }
+/* beats the generic .panel input rule: a table cell, not a form field */
+.panel .qty input.cell { width: 100% !important; min-width: 0; height: 20px !important; border: 0 !important; background: transparent !important; font: inherit; text-align: right; padding: 0 2px !important; }
+.qty .cell:focus { outline: 1px solid var(--my-accent); background: var(--my-surface); }
+.code-chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); font-size: var(--my-text-xs); }
+.code-chip i { width: 8px; height: 8px; border-radius: 50%; }
+.btn.sm { min-height: 22px; padding: 0 var(--my-space-2); font-size: var(--my-text-xs); }

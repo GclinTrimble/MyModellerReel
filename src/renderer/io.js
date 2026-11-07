@@ -48,6 +48,7 @@ export class IO {
     scene.name = 'MyModellerReel';
     scene.add(root);
     if (withDoc) scene.userData.mymodellerreel = JSON.stringify(doc, stripForSave);
+    if (doc.geo?.base) scene.userData.georef = { base_point_enz: doc.geo.base, crs: doc.geo.crs, axes: 'x = Easting − base, y = Elevation − base, z = −(Northing − base)' };
     const animations = this.clips(doc, objs, scene);
     return new GLTFExporter().parseAsync(scene, { binary, animations, onlyVisible: false });
   }
@@ -192,6 +193,11 @@ export class IO {
     await native().invoke('file:write', path, data);
     this.app.ui.toast(`Exported ${base(path)}`);
     return { exported: path };
+  }
+
+  /** Read a text file (survey points, feature libraries). */
+  readText(path) {
+    return native().invoke('file:read-text', path);
   }
 
   /** Write a text file (reports). The main process only allows known extensions. */

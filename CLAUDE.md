@@ -18,8 +18,10 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
   `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
-  (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files).
-- Entities: `type` mesh | group | curve. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
+  (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files), `survey.js` (points,
+  coordinates, codes, point files), `terrain.js` (TIN triangulation, sampling, cut/fill, alignments, corridors),
+  `sitework.js` (surface / corridor / design generators).
+- Entities: `type` mesh | group | curve | point | linework. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
   one undo step and one journal entry with it, and it is rolled back whole even inside an AI turn.
@@ -28,7 +30,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
 - `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
-  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `captions.js` (2D caption drawing shared
+  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `captions.js` (2D caption drawing shared
   by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 

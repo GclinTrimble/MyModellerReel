@@ -21,6 +21,7 @@ export const TOOLS = [
   { id: 'polygon', label: 'Polygon', key: 'G', icon: 'hexagon', group: 'draw' },
   { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
   { id: 'arc', label: 'Arc (start, end, bulge)', key: 'A', icon: 'circle-half', group: 'draw' },
+  { id: 'point', label: 'Survey point (click to add)', key: 'N', icon: 'map-pin', group: 'draw' },
   { id: 'pushpull', label: 'Push/Pull', key: 'P', icon: 'arrow-fat-lines-up', group: 'edit' },
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
@@ -239,7 +240,8 @@ class SelectTool {
     if (!s) return;
     let ids;
     if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) < 4) {
-      const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+      const mesh = this.t.vp.pick(ev); // also aims the ray for the two below
+      const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve(); // a survey point wins over the surface under it
       ids = hit ? [app.pickTarget(hit.entityId)] : [];
     } else {
       const [x0, x1] = [s.x, ev.clientX].sort((a, b) => a - b);
@@ -735,7 +737,8 @@ class EraserTool {
     this.t = t;
   }
   async down(ev) {
-    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+    const mesh = this.t.vp.pick(ev);
+    const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve();
     if (hit) await this.t.run('delete', { ids: [this.t.app.pickTarget(hit.entityId)] });
   }
 }
@@ -783,6 +786,28 @@ class CameraTool {
   hint = 'Drag to navigate. Middle mouse orbits, right mouse pans and the wheel zooms with any tool.';
   constructor(t) {
     this.t = t;
+  }
+}
+
+/** Survey point: click to add one (snapped), with the code typed in the Measurements box last. */
+class PointTool {
+  hint = 'Click to add a survey point (it snaps to faces, ends and surfaces). Type a code first (e.g. GND, KERB B) to code the next points.';
+  vcbLabel = 'Code';
+  constructor(t) {
+    this.t = t;
+    this.code = '';
+  }
+  move(ev) {
+    this.t.infer(ev);
+  }
+  async down(ev) {
+    const p = this.t.infer(ev).point;
+    const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code: this.code });
+    this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${this.code ? ` · ${this.code}` : ''}`);
+  }
+  vcb(text) {
+    this.code = text.trim();
+    this.t.status(`Code for the next points: ${this.code || '(none)'}`);
   }
 }
 
@@ -874,6 +899,7 @@ const IMPL = {
   polygon: PolygonTool,
   curve: CurveTool,
   arc: ArcTool,
+  point: PointTool,
   pushpull: PushPullTool,
   move: MoveTool,
   rotate: RotateTool,

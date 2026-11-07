@@ -5,6 +5,7 @@
 export const TOOLSETS = {
   modelling: { categories: ['create', 'edit', 'arrange', 'parametric'], names: ['get_scene', 'get_entity', 'select', 'select_where', 'measure'] },
   recipes: { categories: ['recipe'], names: ['get_scene'] },
+  terrain: { categories: ['terrain'], names: ['get_scene', 'get_entity', 'select_where', 'measure'] },
   animation: { categories: ['animate'], names: ['get_scene', 'select', 'select_where', 'add_scene', 'go_to_scene'] },
   query: { categories: ['scene'], names: ['set_metadata'] },
   view: { categories: ['view'], names: ['screenshot'] },

@@ -166,15 +166,20 @@ export function* triangles(mesh) {
 export function toBuffers(mesh) {
   const pos = [];
   const nor = [];
+  const col = mesh.fc ? [] : null; // per-face colours (cut/fill maps)
   const triFace = [];
+  // sRGB hex → linear, as the renderer expects vertex colours
+  const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const rgb = (h) => [1, 3, 5].map((k) => lin(parseInt(h.slice(k, k + 2), 16) / 255));
   for (let fi = 0; fi < mesh.f.length; fi++) {
     const n = faceNormal(mesh, fi);
+    const c = col && rgb(mesh.fc[fi] || '#ffffff');
     for (const t of triangulateFace(mesh, fi)) {
-      for (const i of t) pos.push(...mesh.v[i]), nor.push(...n);
+      for (const i of t) pos.push(...mesh.v[i]), nor.push(...n), col && col.push(...c);
       triFace.push(fi);
     }
   }
-  return { position: new Float32Array(pos), normal: new Float32Array(nor), triFace };
+  return { position: new Float32Array(pos), normal: new Float32Array(nor), triFace, ...(col ? { color: new Float32Array(col) } : {}) };
 }
 
 /** Build a mesh from raw triangles (imports, booleans). Welds vertices closer than 1e-5. */

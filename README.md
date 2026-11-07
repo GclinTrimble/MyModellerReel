@@ -30,6 +30,10 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Modelling depth**: draw on a face and push/pull it into a recess, a boss or a hole (imprint), offset/inset faces,
   move a face, edge or corner (roof slopes), arcs (Arc tool, A), mesh repair for imports, and components: edit one
   window and every copy updates (shared geometry, lighter files).
+- **Survey-grade terrain**: survey points with names, codes and labels (Point tool, N, COGO, import PNEZD/CSV),
+  feature codes that turn field codes into breaklines and objects, live TIN surfaces with breaklines, boundaries and
+  surface checks, cut/fill maps and volume reports, alignments with corridors that daylight to the ground, and quick
+  designs (sloped line, plane, trench, road). A Survey tab lists and edits every point.
 - **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
   sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
   live arrays, recipes that rebuild a model with other values, and a macro recorder.

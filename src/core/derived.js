@@ -93,7 +93,7 @@ function hash(s) {
 function stampOf(doc, e, inputs) {
   const d = e.derived;
   const profile = typeof d.params?.profile === 'string' ? doc.profiles?.[d.params.profile] ?? null : null; // redefined profiles rebuild
-  return hash(JSON.stringify([d.generator, d.params, d.offset || null, d.pivot || null, profile, inputs.map((x) => [x.mesh || x.curve || null, D.worldMatrix(doc, x).elements.map((v) => Math.round(v * 1e6))])]));
+  return hash(JSON.stringify([d.generator, d.params, d.offset || null, d.pivot || null, profile, inputs.map((x) => [x.mesh || x.curve || x.line || x.point || null, D.worldMatrix(doc, x).elements.map((v) => Math.round(v * 1e6))])]));
 }
 
 /**
@@ -117,6 +117,7 @@ export function anchorOf(mesh, words) {
 
 function apply(doc, e, out) {
   const d = e.derived;
+  if (out.report) d.report = out.report; // e.g. a surface's duplicates and crossings, for check_surface
   if (getGenerator(d.generator).world) {
     e.mesh = out.mesh;
     D.setWorldMatrix(doc, e, new Matrix4().makeTranslation(...out.origin));
@@ -136,6 +137,7 @@ export function regenerate(doc, e) {
   const d = e.derived;
   const gen = getGenerator(d.generator);
   if (!gen) throw new Error(`The generator "${d.generator}" is not loaded (a plugin may be missing).`);
+  if (gen.inputsFrom) d.inputs = gen.inputsFrom(d.params, doc);
   const inputs = d.inputs.map((id) => {
     const x = D.getEntity(doc, id);
     if (!x) throw new Error(`Its input ${id} was deleted.`);
@@ -172,6 +174,11 @@ export function dependentsOf(doc, id) {
 export function rebuildDerived(doc) {
   const list = doc.entities.filter((e) => e.derived);
   if (!list.length) return [];
+  // generators that pick their own inputs (a surface of "all points") refresh them first
+  for (const e of list) {
+    const gen = GENERATORS.get(e.derived.generator);
+    if (gen?.inputsFrom) e.derived.inputs = gen.inputsFrom(e.derived.params, doc);
+  }
   // Kahn's algorithm over an adjacency map: runs after every command, so it must stay linear in the model size
   const all = new Map(doc.entities.map((e) => [e.id, e]));
   const users = new Map(); // input id → the derived entities that use it (once per use)

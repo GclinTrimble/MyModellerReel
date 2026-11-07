@@ -236,9 +236,11 @@ export function worldBox(doc, e) {
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const x of [e, ...descendants(doc, e.id)]) {
-    if (!x.mesh && !x.curve) continue;
-    const m = worldMatrix(doc, x);
-    const b = bbox(x.mesh || { v: samplePoints(x.curve) });
+    if (!x.mesh && !x.curve && x.type !== 'point' && !x.line) continue;
+    const pts = x.mesh ? null : x.curve ? samplePoints(x.curve) : x.line ? x.line.points.map((id) => getEntity(doc, id)).filter(Boolean).map((p) => worldMatrix(doc, p).elements.slice(12, 15)) : [[0, 0, 0]];
+    if (pts && !pts.length) continue;
+    const m = x.line ? new Matrix4() : worldMatrix(doc, x); // linework lives where its points are
+    const b = bbox(x.mesh || { v: pts });
     for (const cx of [b.min[0], b.max[0]])
       for (const cy of [b.min[1], b.max[1]])
         for (const cz of [b.min[2], b.max[2]]) {

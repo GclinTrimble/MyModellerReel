@@ -53,7 +53,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt)$/i;
 
 let win;
 function createWindow(page) {
@@ -122,6 +122,12 @@ ipcMain.handle('file:read', (_, p) => {
   if (!MODEL_EXT.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only model files.`);
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+});
+// survey files and feature libraries, as text
+ipcMain.handle('file:read-text', (_, p) => {
+  if (!/\.(csv|txt|xyz|pnezd|penzd|json)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only .csv, .txt and .json files.`);
+  if (fs.statSync(p).size > 50e6) throw new Error('That file is over 50 MB.');
+  return fs.readFileSync(p, 'utf8');
 });
 ipcMain.handle('file:write', (_, p, data) => {
   if (!OUT_EXT.test(p)) throw new Error(`Refusing to write ${path.basename(p)}: only model, image and video files.`);

@@ -185,6 +185,35 @@ export class UI {
       saveRecipe: { label: 'Save recipe of this model…', icon: 'floppy-disk-back', run: form('save_recipe') },
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
+      importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
+      exportPoints: { label: 'Export points…', icon: 'export', run: async () => {
+        const path = await window.native.invoke('file:save-dialog', { defaultPath: 'Points.csv', filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }] });
+        if (path) run('export_points', { path })();
+      } },
+      addPoint: { label: 'Add point…', icon: 'map-pin', run: form('add_point') },
+      breakline: { label: 'Breakline through the selected points', icon: 'line-segment', run: run('add_breakline', {}) },
+      boundary: { label: 'Boundary through the selected points', icon: 'polygon', run: run('add_boundary', {}) },
+      surface: { label: 'Create surface (TIN)…', icon: 'mountains', run: form('create_surface', { name: 'Existing ground' }) },
+      checkSurface: { label: 'Check surface', icon: 'list-checks', run: () => this.checkSurfaceDialog(sel()[0]) },
+      cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
+      volumeReport: { label: 'Volume report…', icon: 'table', run: form('volume_report') },
+      alignment: { label: 'Alignment…', icon: 'path', run: form('create_alignment') },
+      corridor: { label: 'Corridor…', icon: 'road-horizon', run: form('create_corridor') },
+      trench: { label: 'Design: trench…', icon: 'shovel', run: form('design_trench') },
+      lineSlope: { label: 'Design: line with cross slope…', icon: 'line-segment', run: form('design_line_slope') },
+      plane: { label: 'Design: plane…', icon: 'square', run: form('design_plane') },
+      offsetSurface: { label: 'Design: offset surface…', icon: 'stack', run: form('design_offset_surface') },
+      road: { label: 'Design: road…', icon: 'road-horizon', run: form('design_road') },
+      featureCode: { label: 'Define feature code…', icon: 'tag', run: form('define_feature_code') },
+      loadLibrary: { label: 'Load feature library…', icon: 'books', run: async () => {
+        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library', extensions: ['json'] }] });
+        if (path) run('load_feature_library', { path })();
+      } },
+      processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
+      coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: form('set_coordinate_system') },
+      basePoint: { label: 'Base point…', icon: 'crosshair', run: form('set_base_point') },
+      units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
+      survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
@@ -205,6 +234,7 @@ export class UI {
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
+      Site: ['survey', 'importPoints', 'exportPoints', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
     };
@@ -289,6 +319,7 @@ export class UI {
       ['materials', 'Materials', 'palette'],
       ['scenes', 'Scenes', 'camera'],
       ['library', 'Library', 'books'],
+      ['survey', 'Survey', 'map-pin'],
       ['settings', 'Settings', 'gear'],
     ];
     this.$('dock-tabs').replaceChildren(
@@ -463,6 +494,35 @@ export class UI {
   paramsCard(e) {
     const app = this.app;
     const run = (n, a) => app.reg.run(n, a).catch((x) => this.toast(x.message, 'danger'));
+    if (e.point) {
+      const p = e.point;
+      const put = (k) => (ev) => run('edit_points', { points: [e.id], [k]: k === 'code' || k === 'desc' ? ev.target.value : +ev.target.value });
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, 'Survey point'),
+        ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
+        h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
+        h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
+      );
+    }
+    if (e.line)
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `${e.line.kind}${e.line.boundary ? ` · ${e.line.boundary}` : ''} · ${e.line.points.length} points`),
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'reverse' }) }, icon('arrows-left-right'), 'Reverse'), h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'smooth', smooth: !e.line.smooth }) }, icon('bezier-curve'), e.line.smooth ? 'Straight' : 'Smooth')),
+      );
+    if (e.derived?.report && e.mesh) {
+      const tri = e.mesh.f.length;
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `Surface · ${tri} triangles · ${e.derived.report.points} points`),
+        e.derived.error ? h('div.small.param-error', { role: 'alert' }, e.derived.error) : null,
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => this.checkSurfaceDialog(e.id) }, icon('list-checks'), 'Check'), h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: e.id }) }, icon('chart-bar'), 'Cut / fill…')),
+      );
+    }
     if (e.component) {
       const n = app.store.doc.entities.filter((x) => x.component === e.component).length;
       return h(
@@ -783,6 +843,108 @@ export class UI {
     );
     critique.replaceChildren(r.critique ? h('div', {}, h('div.overline', {}, `AI review · ${app.ai.modelName()}`), h('p.pre', {}, r.critique)) : h('p.small.muted', {}, r.critique_error ? `The AI review could not run: ${r.critique_error}` : 'Set up a vision model (Claude, or an OpenAI-compatible one) in AI settings for a written critique of the views.'));
     if ((await done) === 'fix' && (r.issues.length || r.critique)) app.ai.ask(`Fix these review findings where they are real mistakes, leave design choices alone:\n${r.issues.map((i) => `- ${i.message}`).join('\n')}${r.critique ? `\n${r.critique}` : ''}`);
+  }
+
+  /** Import points: a file, its column order and units. */
+  async importPointsDialog() {
+    const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd'] }] });
+    if (path) this.commandDialog('import_points', { path, format: 'PNEZD' });
+  }
+
+  /** Surface checks (#130) with one-click fixes. */
+  async checkSurfaceDialog(id) {
+    const app = this.app;
+    const s = id && app.entity(id);
+    if (!s?.derived?.report) return this.toast('Select a surface first.');
+    const list = h('div.review-list', {}, h('p.muted', {}, 'Checking…'));
+    const done = this.modal(`Check ${s.name}`, h('div.panel', { style: { padding: 0 } }, list), [['Close', null]]);
+    const draw = async () => {
+      const r = await app.reg.run('check_surface', { id });
+      const fix = (label, cmd, args) => h('button.btn.sm', { onclick: async (ev) => (ev.stopPropagation(), await app.reg.run(cmd, args).catch((e) => this.toast(e.message, 'danger')), draw()) }, label);
+      list.replaceChildren(
+        h('p.small.muted', {}, `${r.triangles} triangles, ${r.area_2d} m² in plan, elevations ${r.min_y}…${r.max_y} (model).`),
+        ...(r.issues.length
+          ? r.issues.map((i) =>
+              h(
+                `div.review-issue.${i.severity}`,
+                { onclick: () => i.point && (app.select([i.point]), app.reg.run('zoom_extents', { ids: [i.point] })) },
+                icon(i.severity === 'error' ? 'x-circle' : i.severity === 'warning' ? 'warning' : 'info'),
+                h('span.grow', {}, i.message),
+                i.point ? fix('Exclude', 'set_surface_sources', { id, exclude: [...(s.derived.params.exclude || []), i.point] }) : null,
+                i.point ? fix('Delete', 'delete', { ids: [i.point] }) : null,
+              ),
+            )
+          : [h('p', {}, icon('check-circle'), ' No problems found.')]),
+      );
+    };
+    await draw().catch((e) => list.replaceChildren(h('p', { role: 'alert' }, e.message)));
+    await done;
+  }
+
+  /** Survey: coordinates, points table, surfaces and the feature library. */
+  panel_survey() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    const g = doc.geo || {};
+    const pts = doc.entities.filter((e) => e.type === 'point');
+    const q = (this.surveyFilter || '').toLowerCase();
+    const shown = pts.filter((p) => !q || `${p.name} ${p.point.code} ${p.point.desc}`.toLowerCase().includes(q));
+    const k = { m: 1, ft: 0.3048, usft: 1200 / 3937 }[g.units || 'm'];
+    const f = (x) => (x / k).toFixed(3);
+    const filter = h('input', { placeholder: 'Filter by name, code, description', value: this.surveyFilter || '', 'aria-label': 'Filter points', oninput: (e) => ((this.surveyFilter = e.target.value), this.renderDock(), this.$('dock-body').querySelector('input')?.focus()) });
+    const surfaces = doc.entities.filter((e) => e.derived?.report || ['corridor', 'design_trench', 'design_plane', 'design_line_slope', 'design_offset_surface', 'design_road'].includes(e.derived?.generator));
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'Coordinates'),
+      h('div.small', {}, g.base ? `Base point E ${g.base[0]} · N ${g.base[1]} · Z ${g.base[2]}` : 'No base point yet: the first point sets it.'),
+      h('div.small.muted', {}, `${g.crs?.name || 'No coordinate system'}${g.crs?.epsg ? ` (EPSG:${g.crs.epsg})` : ''} · units ${g.units || 'm'} · angles ${g.angles || 'deg'}`),
+      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
+      h('div.row', {}, h('h3.grow', {}, `Points · ${pts.length}`), h('button.btn', { onclick: this.actions.importPoints.run }, icon('tray-arrow-down'), 'Import…'), h('button.icon-btn.sm', { title: 'Export points', 'aria-label': 'Export points', onclick: this.actions.exportPoints.run }, icon('export'))),
+      filter,
+      h(
+        'div.qty.pts',
+        {},
+        h(
+          'table',
+          {},
+          h('thead', {}, h('tr', {}, ['Name', 'N', 'E', 'Z', 'Code'].map((c) => h('th', {}, c)))),
+          h(
+            'tbody',
+            {},
+            shown.slice(0, 300).map((p) =>
+              h(
+                `tr${app.selection.includes(p.id) ? '.sel' : ''}`,
+                { onclick: () => app.select([p.id]), ondblclick: () => run('zoom_extents', { ids: [p.id] }) },
+                h('td', {}, p.name),
+                h('td', {}, f(p.point.n)),
+                h('td', {}, f(p.point.e)),
+                h('td', {}, h('input.cell', { inputmode: 'decimal', value: f(p.point.z), 'aria-label': `Elevation of ${p.name}`, onclick: (e) => e.stopPropagation(), onchange: (e) => run('edit_points', { points: [p.id], z: +e.target.value }) })),
+                h('td', {}, h('input.cell', { value: p.point.code, 'aria-label': `Code of ${p.name}`, onclick: (e) => e.stopPropagation(), onchange: (e) => run('edit_points', { points: [p.id], code: e.target.value }) })),
+              ),
+            ),
+          ),
+        ),
+      ),
+      shown.length > 300 ? h('div.small.muted', {}, `Showing 300 of ${shown.length}: filter to narrow.`) : null,
+      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.breakline.run }, icon('line-segment'), 'Breakline'), h('button.btn', { onclick: this.actions.boundary.run }, icon('polygon'), 'Boundary'), h('button.btn.primary', { onclick: this.actions.surface.run }, icon('mountains'), 'Surface…')),
+      h('h3', {}, 'Surfaces'),
+      surfaces.length
+        ? surfaces.map((s) =>
+            h(
+              'div.card',
+              {},
+              h('div.row', {}, icon('mountains'), h('b.grow', {}, s.name), h('span.small.muted', {}, `${s.mesh?.f.length || 0} triangles`)),
+              s.derived.error ? h('div.small.param-error', {}, s.derived.error) : null,
+              h('div.row.wrap', {}, s.derived.report ? h('button.btn', { onclick: () => this.checkSurfaceDialog(s.id) }, icon('list-checks'), 'Check') : null, h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: s.id }) }, icon('chart-bar'), 'Cut / fill…'), h('button.icon-btn.sm', { title: 'Select', 'aria-label': `Select ${s.name}`, onclick: () => app.select([s.id]) }, icon('cursor'))),
+            ),
+          )
+        : h('p.small.muted', {}, 'Import points, then Surface… makes a live TIN.'),
+      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Load library', 'aria-label': 'Load feature library', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.type}` : ''))),
+      h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
+    );
   }
 
   /** Quantities report (#53): pick the grouping, read the table, export CSV. */

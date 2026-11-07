@@ -198,3 +198,30 @@ test('modelling depth with the mouse: a rectangle drawn on a face imprints it, t
   }, [g.id, copy]);
   assert.equal(shared, true, 'instances share one GPU geometry');
 });
+
+test('survey: click a point in the cloud, edit an elevation in the Survey table, the surface and the cut/fill map follow', async () => {
+  await ok('new_model');
+  const rows = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) rows.push(`P${i}${j},${5400000 + i * 10},${650000 + j * 10},${100 + i},GND`);
+  await ok('import_points', { text: rows.join('\n') });
+  const s = await ok('create_surface', { name: 'EG' });
+  await ok('set_view', { preset: 'top' });
+  const [sx, sy] = await w.evaluate(() => {
+    const p = window.mmr.doc.entities.find((e) => e.name === 'P21');
+    const q = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p.position));
+    return [q.x, q.y];
+  });
+  await w.keyboard.press(' ');
+  await w.mouse.click(sx, sy);
+  assert.equal(await w.evaluate(() => window.mmr.app.entity(window.mmr.app.selection[0])?.name), 'P21', 'the point wins over the surface under it');
+  await w.click('[data-tab="survey"]');
+  const cell = w.locator('input.cell[aria-label="Elevation of P21"]');
+  await cell.fill('110');
+  await cell.press('Enter');
+  await cell.blur();
+  await w.waitForFunction(() => window.mmr.doc.entities.find((e) => e.name === 'P21').point.z === 110);
+  assert.ok((await ok('get_entity', { id: s.id })).max[1] > 9, 'the surface rose with the point');
+  const cf = await ok('cut_fill', { existing: 'EG', elevation: 101 });
+  assert.ok(await w.evaluate((id) => !!window.mmr.app.viewport.objs.get(id).geometry.attributes.color, cf.map), 'the map is coloured per face');
+  assert.ok(await w.evaluate(() => document.getElementById('label-layer').width > 0));
+});

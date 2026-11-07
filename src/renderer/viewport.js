@@ -16,6 +16,7 @@ export function meshGeometry(mesh) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(b.position, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(b.normal, 3));
+  if (b.color) g.setAttribute('color', new THREE.BufferAttribute(b.color, 3)); // sRGB-ish face colours, shown as given
   g.userData.triFace = b.triFace;
   return g;
 }
@@ -33,6 +34,7 @@ export function makeMaterial(m, opts = {}) {
     polygonOffset: true,
     polygonOffsetFactor: opts.flat ? -2 : 1, // lone faces win over the face they were drawn on; edges win over faces
     polygonOffsetUnits: opts.flat ? -2 : 1,
+    vertexColors: !!opts.vertexColors,
   });
   return mat;
 }
@@ -64,7 +66,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     let o;
     if (e.mesh) {
       const g = geo(e.mesh);
-      o = new THREE.Mesh(g.geometry, makeMaterial(e.material, { xray, flat: e.mesh.f.length === 1 }));
+      o = new THREE.Mesh(g.geometry, makeMaterial(e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc }));
       o.material.clippingPlanes = clipping;
       o.castShadow = o.receiveShadow = true;
       if (wireframe) o.material.visible = false;
@@ -77,6 +79,14 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
         lines.userData.isEdges = true;
         o.add(lines);
       }
+    } else if (e.type === 'point') {
+      o = new THREE.Object3D(); // drawn by the shared point cloud below; this keeps its place in the tree
+      o.userData.isPoint = true;
+    } else if (e.line) {
+      const pts = e.line.points.map((id) => doc.entities.find((x) => x.id === id)).filter(Boolean).map((p) => new THREE.Vector3(...p.position));
+      if (e.line.closed && pts.length > 2) pts.push(pts[0]);
+      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: e.material.color, clippingPlanes: clipping }));
+      o.userData.isCurve = true;
     } else if (e.curve) {
       o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samplePoints(e.curve).map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: e.material.color, clippingPlanes: clipping }));
       o.userData.isCurve = true;
@@ -89,6 +99,26 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     objs.set(e.id, o);
   }
   for (const e of doc.entities) (e.parent && objs.get(e.parent) ? objs.get(e.parent) : root).add(objs.get(e.id));
+  // survey points: one point cloud for all of them (thousands of points, one draw call), coloured by code
+  const pts = doc.entities.filter((e) => e.type === 'point' && objs.get(e.id).visible);
+  if (pts.length) {
+    const pos = new Float32Array(pts.length * 3);
+    const col = new Float32Array(pts.length * 3);
+    const c = new THREE.Color();
+    pts.forEach((p, i) => {
+      pos.set(p.position, i * 3);
+      c.set(p.material.color).toArray(col, i * 3);
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const cloud = new THREE.Points(geo, new THREE.PointsMaterial({ size: 7, sizeAttenuation: false, vertexColors: true, depthTest: false, transparent: true }));
+    cloud.name = 'Survey points';
+    cloud.renderOrder = 2;
+    cloud.userData.pointIds = pts.map((p) => p.id);
+    cloud.userData.colors = col.slice();
+    root.add(cloud);
+  }
   return { root, objs };
 }
 
@@ -322,6 +352,13 @@ export class Viewport {
     const doc = this.store.doc;
     const lit = new Set();
     for (const id of ids) for (const d of [id, ...D.descendants(doc, id).map((x) => x.id)]) lit.add(d);
+    const cloud = this.modelRoot.children.find((o) => o.isPoints);
+    if (cloud) {
+      const col = cloud.geometry.attributes.color;
+      col.array.set(cloud.userData.colors);
+      cloud.userData.pointIds.forEach((id, i) => lit.has(id) && col.array.set([0.91, 0.74, 0.37], i * 3));
+      col.needsUpdate = true;
+    }
     for (const [id, o] of this.objs) {
       if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.color || '#2f6f86');
       if (!o.isMesh) continue;
@@ -417,6 +454,15 @@ export class Viewport {
     if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate(); // back side of a lone face
     return { entityId: h.object.userData.entityId, faceIndex: h.object.geometry.userData.triFace[h.faceIndex], point: h.point.clone(), normal, object: h.object };
   }
+  /** The survey point under the mouse, using the ray pick() just set. */
+  pickPoint() {
+    const cloud = this.modelRoot.children.find((o) => o.isPoints);
+    if (!cloud) return null;
+    this.raycaster.params.Points.threshold = 0.01 * this.camera.position.distanceTo(this.controls.target);
+    const h = this.raycaster.intersectObject(cloud, false)[0];
+    return h ? { entityId: cloud.userData.pointIds[h.index], faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: cloud, survey: true } : null;
+  }
+
   /** The curve under the mouse (curves have no faces: faceIndex -1), using the ray pick() just set. */
   pickCurve() {
     const lines = [];

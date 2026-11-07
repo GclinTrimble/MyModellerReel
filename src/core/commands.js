@@ -12,6 +12,9 @@ import { reviewChecks, reviewStats } from './review.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
+import * as S from './survey.js';
+import * as TR from './terrain.js';
+import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
 import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
@@ -44,6 +47,10 @@ export const GUIDE = `MyModellerReel conventions:
 - Modelling depth: imprint an outline on a face (or offset_face to inset it), then push_pull it into a recess,
   a boss or a hole; move_elements moves a face, edge ("top front") or corner; repair_mesh cleans imports; create_arc.
   make_component links copies: edit any instance's parts (edit_component) and every instance follows.
+- Survey and terrain: add_point / import_points (N, E, Z, code; real-world coordinates stay exact around a base
+  point), add_breakline / add_boundary, create_surface (a live TIN), check_surface, cut_fill / volume_report,
+  create_alignment + create_corridor, design_line_slope / design_plane / design_trench / design_road, a feature library
+  (define_feature_code) that turns coded points into lines and objects.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
@@ -106,7 +113,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -183,6 +190,8 @@ function summary(doc, e) {
         ? { color: e.material.color, faces: e.mesh.f.length }
         : { children: D.childrenOf(doc, e.id).length }),
     ...(e.component ? { component: e.component } : {}),
+    ...(e.point ? { n: r4(e.point.n), e: r4(e.point.e), z: r4(e.point.z), code: e.point.code } : {}),
+    ...(e.line ? { kind: e.line.kind, line_points: e.line.points.length, ...(e.line.boundary ? { boundary: e.line.boundary } : {}) } : {}),
     ...(e.derived ? { generator: e.derived.generator, ...(e.derived.error ? { error: e.derived.error } : {}) } : {}),
     ...(e.material.opacity < 1 ? { opacity: e.material.opacity } : {}),
     ...(e.tag !== 'Untagged' ? { tag: e.tag } : {}),
@@ -923,6 +932,478 @@ function registerCore(reg, ctx) {
     Object.entries(ctx.doc.components || {}).map(([name, c]) => ({ name, parts: c.parts.length, instances: Comp.instancesOf(ctx.doc, name).map((g) => g.id) })),
   );
 
+  // ---------------------------------------------------------------- survey and terrain (#116–#119, #124, #130, #131, #136, #36)
+  const pointsByRefs = (refs) => {
+    const doc = ctx.doc;
+    if (!refs?.length) throw new Error('Give points (names or ids).');
+    return refs.map((r) => {
+      const p = doc.entities.find((e) => S.isPoint(e) && (e.id === r || e.name === String(r))) || D.resolve(doc, r)[0];
+      if (!S.isPoint(p)) throw new Error(`${p.name} is not a survey point.`);
+      return p;
+    });
+  };
+  const fmtPt = (p) => ({ id: p.id, name: p.name, n: r4(p.point.n), e: r4(p.point.e), z: r4(p.point.z), code: p.point.code, ...(p.point.desc ? { desc: p.point.desc } : {}), ...(Object.keys(p.point.attrs || {}).length ? { attrs: p.point.attrs } : {}) });
+  const afterPoints = () => {
+    if (Object.keys(ctx.doc.featureCodes || {}).length) return processCodes();
+    return null;
+  };
+  /** A design / surface input: a point name, a local [x,y,z], or [x, z] on a surface. */
+  const designRef = (r) => {
+    if (Array.isArray(r) && r.length === 3) return r;
+    const [p] = pointsByRefs([r]);
+    return { point: p.id };
+  };
+  const surfaceOf = (ref) => {
+    const [s] = D.resolve(ctx.doc, ref);
+    if (!s.mesh) throw new Error(`${s.name} is not a surface.`);
+    return s;
+  };
+
+  def('terrain', 'set_coordinate_system', 'The project coordinate system: an EPSG code and name (recorded and written to GLB exports), and an optional site grid (origin [E, N], rotation in degrees, scale factor) for importing local grid coordinates.', obj({ epsg: num('EPSG code, e.g. 2193'), name: str('name, e.g. NZGD2000 / NZTM'), grid: obj({ origin: { type: 'array', items: { type: 'number' } }, rotation: num('degrees'), scale: num('factor') }, []) }), (a) => {
+    const g = S.geo(ctx.doc);
+    if (a.epsg !== undefined || a.name !== undefined) g.crs = { epsg: a.epsg ?? g.crs?.epsg ?? null, name: a.name ?? g.crs?.name ?? '' };
+    if (a.grid) g.grid = a.grid;
+    return g;
+  }, true);
+
+  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points') }), (a) => {
+    const doc = ctx.doc;
+    const g = S.geo(doc);
+    const old = g.base || [0, 0, 0];
+    let nb;
+    if (a.auto) {
+      const pts = S.points(doc);
+      if (!pts.length) throw new Error('No points to centre on.');
+      const avg = (k) => pts.reduce((s, p) => s + p.point[k], 0) / pts.length;
+      nb = [Math.round(avg('e')), Math.round(avg('n')), Math.round(avg('z'))];
+    } else nb = [a.e ?? old[0], a.n ?? old[1], a.z ?? old[2]];
+    const d = [old[0] - nb[0], old[2] - nb[2], -(old[1] - nb[1])]; // local shift
+    for (const e of doc.entities) if (!e.parent && !S.isPoint(e) && !S.isLinework(e)) e.position = D.round3(G.add(e.position, d));
+    g.base = nb;
+    S.placePoints(doc);
+    return { base: nb };
+  }, true);
+
+  def('terrain', 'set_units', 'Units for survey input and output (internally always metres): length m, ft (international) or usft (US survey); angles deg, dms or gon.', obj({ length: str('length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {
+    const g = S.geo(ctx.doc);
+    if (a.length) g.units = a.length;
+    if (a.angles) g.angles = a.angles;
+    return { units: g.units, angles: g.angles };
+  }, true);
+
+  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', obj({ name: str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: str('or: COGO from this point'), bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), (a) => {
+    const doc = ctx.doc;
+    const g = S.geo(doc);
+    const k = S.UNITS[g.units] || 1;
+    let c;
+    if (a.at) c = S.toProject(doc, a.at);
+    else if (a.from) {
+      const [p] = pointsByRefs([a.from]);
+      const b = (S.parseAngle(a.bearing ?? 0, g.angles) * Math.PI) / 180;
+      const dist = (a.distance ?? 0) * k;
+      c = { n: p.point.n + dist * Math.cos(b), e: p.point.e + dist * Math.sin(b), z: p.point.z + (a.dz ?? 0) * k };
+    } else {
+      if (a.n === undefined || a.e === undefined) throw new Error('Give n and e (and z), or at, or from + bearing + distance.');
+      c = { n: a.n * k, e: a.e * k, z: (a.z ?? 0) * k };
+      if (a.grid) c = S.gridToProject(doc, c);
+    }
+    const p = S.addPoint(doc, { ...c, name: a.name, code: a.code || '', desc: a.desc || '', attrs: a.attrs || {} });
+    afterPoints();
+    ctx.selection.set([p.id]);
+    return fmtPt(p);
+  }, true);
+
+  def('terrain', 'edit_points', 'Change survey points: set code, description, attributes or coordinates, or raise / lower them (raise in project units). Pick them by names/ids or by code.', obj({ points: { type: 'array', items: { type: 'string' }, description: 'names or ids (default: selection)' }, where_code: str('or: every point with this code'), code: str('new code'), desc: str('new description'), attrs: obj({}, []), n: num('Northing'), e: num('Easting'), z: num('Elevation'), raise: num('add to the elevation') }), (a) => {
+    const doc = ctx.doc;
+    const k = S.UNITS[S.geo(doc).units] || 1;
+    const pts = a.where_code ? S.points(doc).filter((p) => S.parseCode(p.point.code).code === a.where_code.toUpperCase()) : pointsByRefs(a.points || ctx.selection.get());
+    if (!pts.length) throw new Error('No points match.');
+    for (const p of pts) {
+      if (a.code !== undefined) p.point.code = a.code;
+      if (a.desc !== undefined) p.point.desc = a.desc;
+      if (a.attrs) p.point.attrs = { ...(p.point.attrs || {}), ...a.attrs };
+      for (const c of ['n', 'e', 'z']) if (a[c] !== undefined) p.point[c] = a[c] * k;
+      if (a.raise) p.point.z += a.raise * k;
+      p.position = D.round3(S.toLocal(doc, p.point));
+      p.material.color = S.codeColor(doc, p.point.code);
+    }
+    afterPoints();
+    return { edited: pts.length, points: pts.slice(0, 50).map(fmtPt) };
+  }, true);
+
+  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text): format gives the column order (PNEZD, PENZD, NEZ…; P name, N northing, E easting, Z elevation, D code), header lines are skipped, units convert to metres. Coded points are processed through the feature library.', obj({ path: str('absolute path of a .csv / .txt file'), text: str('or: the file contents'), format: str('column order, default PNEZD'), delimiter: str('default: detected'), units: str('length unit of the file (default: the project\'s)', Object.keys(S.UNITS)), grid: bool('coordinates are in the site grid') }), async (a) => {
+    const doc = ctx.doc;
+    let text = a.text;
+    if (!text) {
+      if (!a.path) throw new Error('Give path or text.');
+      if (!ctx.io?.readText) throw new Error('Reading files needs the desktop app; pass text instead.');
+      text = await ctx.io.readText(a.path);
+    }
+    const { rows, skipped } = S.parsePoints(text, { format: a.format || 'PNEZD', delimiter: a.delimiter, units: a.units || S.geo(doc).units });
+    if (!rows.length) throw new Error('No points found: check the format (column order) and delimiter.');
+    const made = [];
+    const renamed = [];
+    for (const r of rows) {
+      const c = a.grid ? S.gridToProject(doc, r) : r;
+      let name = r.name;
+      if (name !== undefined && doc.entities.some((x) => S.isPoint(x) && x.name === name)) (renamed.push(name), (name = undefined));
+      made.push(S.addPoint(doc, { ...c, name, code: r.code, desc: r.desc }));
+    }
+    const codes = afterPoints();
+    return { imported: made.length, skipped_lines: skipped, renamed_duplicates: renamed, base: S.geo(doc).base, ...(codes ? { lines: codes.lines, objects: codes.objects, warnings: codes.warnings.slice(0, 20) } : {}) };
+  }, true);
+
+  def('terrain', 'export_points', 'Export survey points as CSV text (and to a file when path is given): format column order, project units.', obj({ path: str('absolute .csv / .txt path'), format: str('default PNEZD'), points: { type: 'array', items: { type: 'string' }, description: 'only these' }, units: str('default: the project\'s', Object.keys(S.UNITS)) }), async (a) => {
+    const doc = ctx.doc;
+    const pts = a.points ? pointsByRefs(a.points) : S.points(doc);
+    const text = S.formatPoints(doc, pts, { format: a.format || 'PNEZD', units: a.units || S.geo(doc).units });
+    if (a.path) {
+      if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app; omit path to get the text.');
+      await ctx.io.writeText(a.path, text);
+    }
+    return { points: pts.length, ...(a.path ? { written: a.path } : { text }) };
+  });
+
+  def('terrain', 'query_points', 'Find survey points by code, name pattern, elevation range or distance from a point. Returns names and coordinates (project units).', obj({ code: str('feature code'), name: str('glob, e.g. "MH*"'), near: { description: 'a point name, or [x, z] / [x, y, z] in the model' }, radius: num('m'), min_z: num('elevation at least'), max_z: num('elevation at most'), limit: num('default 200') }), (a) => {
+    const doc = ctx.doc;
+    let pts = S.points(doc);
+    if (a.code) pts = pts.filter((p) => S.parseCode(p.point.code).code === a.code.toUpperCase());
+    if (a.name) {
+      const re = new RegExp(`^${a.name.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`, 'i');
+      pts = pts.filter((p) => re.test(p.name));
+    }
+    if (a.min_z !== undefined) pts = pts.filter((p) => p.point.z >= a.min_z);
+    if (a.max_z !== undefined) pts = pts.filter((p) => p.point.z <= a.max_z);
+    let c = null;
+    if (a.near !== undefined) {
+      c = Array.isArray(a.near) ? (a.near.length === 2 ? [a.near[0], 0, a.near[1]] : a.near) : pointsByRefs([a.near])[0].position;
+      pts = pts.map((p) => [p, Math.hypot(p.position[0] - c[0], p.position[2] - c[2])]).filter(([, d]) => a.radius === undefined || d <= a.radius).sort((x, y) => x[1] - y[1]).map(([p]) => p);
+    }
+    return { count: pts.length, points: pts.slice(0, a.limit || 200).map(fmtPt) };
+  });
+
+  const addLine = (a, kind) => {
+    const doc = ctx.doc;
+    const pts = pointsByRefs(a.points || ctx.selection.get());
+    if (pts.length < 2) throw new Error('A line needs at least 2 points.');
+    const l = D.addEntity(doc, {
+      type: 'linework',
+      name: a.name || D.uniqueName(doc, kind === 'boundary' ? (a.kind === 'hole' ? 'Hole' : 'Boundary') : 'Breakline'),
+      line: { points: pts.map((p) => p.id), kind, ...(kind === 'breakline' ? { mode: a.mode || 'hard' } : { boundary: a.kind || 'outer' }), closed: kind === 'boundary' ? true : !!a.closed, smooth: !!a.smooth },
+      tag: a.tag || 'Untagged',
+      material: { color: kind === 'boundary' ? '#2f6f86' : '#c8553d' },
+    });
+    ctx.selection.set([l.id]);
+    return summary(doc, l);
+  };
+  def('terrain', 'add_breakline', 'Join survey points into a breakline: the surface follows it (kerbs, ditches, top/toe of bank). It references the points, so moving one moves the line and the surface. smooth: a curve through them.', obj({ points: { type: 'array', items: { type: 'string' }, description: 'point names/ids in order (default: selection)' }, mode: str('hard: no triangle crosses it; soft: honoured but smoothed', ['hard', 'soft']), closed: bool('loop'), smooth: bool('curve through the points'), name: common.name, tag: common.tag }), (a) => addLine(a, 'breakline'), true);
+  def('terrain', 'add_boundary', 'A surface boundary through survey points: outer (the surface stops there) or a hole (buildings, ponds).', obj({ points: { type: 'array', items: { type: 'string' }, description: 'point names/ids in order (default: selection)' }, kind: str('outer (default) or hole', ['outer', 'hole']), smooth: bool('curve through the points'), name: common.name, tag: common.tag }), (a) => addLine(a, 'boundary'), true);
+  def('terrain', 'edit_linework', 'Edit a breakline / boundary / line: append or insert points, remove points, reverse, split at a point (makes two), join another onto its end, or set all points.', obj({ id, action: str('what to do', ['append', 'insert', 'remove', 'reverse', 'split', 'join', 'set', 'smooth']), points: { type: 'array', items: { type: 'string' }, description: 'point names/ids' }, at: num('insert / split index'), with: str('join: the other linework'), smooth: bool('smooth: on or off') }, ['id', 'action']), (a) => {
+    const doc = ctx.doc;
+    const [l] = D.resolve(doc, a.id);
+    if (!S.isLinework(l)) throw new Error(`${l.name} is not linework.`);
+    const ids = a.points ? pointsByRefs(a.points).map((p) => p.id) : [];
+    const L = l.line;
+    if (a.action === 'append') L.points.push(...ids);
+    else if (a.action === 'insert') L.points.splice(a.at ?? 0, 0, ...ids);
+    else if (a.action === 'remove') L.points = L.points.filter((x) => !ids.includes(x));
+    else if (a.action === 'reverse') L.points.reverse();
+    else if (a.action === 'set') L.points = ids;
+    else if (a.action === 'smooth') L.smooth = a.smooth !== false;
+    else if (a.action === 'split') {
+      const i = a.at ?? (ids[0] ? L.points.indexOf(ids[0]) : -1);
+      if (i <= 0 || i >= L.points.length - 1) throw new Error('Split at an inner point (index or point).');
+      const rest = D.duplicateEntity(doc, l);
+      rest.name = D.uniqueName(doc, l.name);
+      rest.line.points = L.points.slice(i);
+      L.points = L.points.slice(0, i + 1);
+    } else if (a.action === 'join') {
+      const [o] = D.resolve(doc, a.with);
+      if (!S.isLinework(o)) throw new Error(`${o.name} is not linework.`);
+      L.points.push(...o.line.points.filter((x, k) => !(k === 0 && x === L.points.at(-1))));
+      D.removeEntity(doc, o);
+    }
+    if (L.points.length < 2) throw new Error('A line needs at least 2 points.');
+    return summary(doc, l);
+  }, true);
+
+  const surfaceParams = (a) => {
+    const p = {};
+    if (a.points !== undefined) p.points = Array.isArray(a.points) ? pointsByRefs(a.points).map((x) => x.id) : typeof a.points === 'string' && a.points !== 'all' ? { codes: a.points.split(/[,\s]+/) } : a.points;
+    if (a.codes) p.points = { codes: a.codes };
+    for (const k of ['breaklines', 'boundaries']) if (a[k] !== undefined) p[k] = Array.isArray(a[k]) ? D.resolve(ctx.doc, a[k]).map((x) => x.id) : a[k];
+    if (a.exclude) p.exclude = pointsByRefs(a.exclude).map((x) => x.id);
+    for (const k of ['max_edge', 'min_z', 'max_z']) if (a[k] !== undefined) p[k] = a[k];
+    return p;
+  };
+  const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
+  def('terrain', 'create_surface', 'A TIN surface (constrained Delaunay) from survey points, breaklines and boundaries. It stays live: move, add or delete a point or a line and it rebuilds. Several surfaces can live side by side (existing ground, design, as-built).', obj({ name: common.name, ...SRC, color: common.color, tag: common.tag }), (a) => {
+    const doc = ctx.doc;
+    const params = surfaceParams(a);
+    R.getGenerator('surface').run({ params, inputs: [], doc }); // bad sources throw before anything changes
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag || 'Untagged', material: { color: a.color || '#8fae7a', roughness: 0.95 } });
+    R.derive(doc, e, 'surface', params, []);
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), surface: { ...TR.surfaceStats(e.mesh), points: e.derived.report.points, duplicates: e.derived.report.duplicates.length, crossing_lines: e.derived.report.crossings.length } };
+  }, true);
+
+  def('terrain', 'set_surface_sources', 'Change what a surface is made from (points, codes, breaklines, boundaries, excluded points, max edge, elevation range).', obj({ id, ...SRC }, ['id']), (a) => {
+    const s = surfaceOf(a.id);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
+    return reg.commands.get('set_params').run({ id: s.id, params: { ...s.derived.params, ...surfaceParams(a) } });
+  }, true);
+
+  def('terrain', 'rebuild_surface', 'Rebuild a surface now (it also rebuilds by itself when its sources change).', obj({ id }, ['id']), (a) => {
+    const s = surfaceOf(a.id);
+    if (!s.derived) throw new Error(`${s.name} is not a surface.`);
+    R.regenerate(ctx.doc, s);
+    return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh) };
+  }, true);
+
+  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'swap', 'add_point', 'restore']), at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(a.id);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
+    const p = { ...s.derived.params };
+    if (a.action === 'restore') delete p.deleted, delete p.swaps;
+    else if (a.action === 'delete') p.deleted = [...(p.deleted || []), a.at];
+    else if (a.action === 'swap') p.swaps = [...(p.swaps || []), pointsByRefs([a.a, a.b]).map((x) => x.id)];
+    else {
+      const y = surfaceSampler(doc, s).z(a.at[0], a.at[1]);
+      if (y === null) throw new Error('That point is outside the surface.');
+      const pt = S.addPoint(doc, { ...S.toProject(doc, [a.at[0], y, a.at[1]]), name: a.name, code: a.code || '' });
+      if (Array.isArray(p.points)) p.points = [...p.points, pt.id];
+    }
+    if (!a.at && ['delete', 'add_point'].includes(a.action)) throw new Error('Give at: [x, z].');
+    s.derived.params = p;
+    R.regenerate(doc, s);
+    return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
+  }, true);
+
+  def('terrain', 'check_surface', 'Quality checks on a surface: spikes and pits (points far off their neighbours), duplicate points, crossing breaklines, long thin triangles. Each issue names the points to fix (edit_points, delete, or set_surface_sources exclude).', obj({ id, spike: num('flag points more than this far off their neighbours, m (default: automatic)'), min_angle: num('thin-triangle limit, degrees (default 2)') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(a.id);
+    const rep = s.derived?.report || {};
+    const w = D.worldMesh(doc, s);
+    const name = (id) => D.getEntity(doc, id)?.name;
+    const issues = TR.checkMesh(w, { vertexIds: rep.vertexIds || [], spike: a.spike ?? null, minAngle: a.min_angle ?? 2 }).map((i) => (i.point ? { ...i, name: name(i.point), message: `Point ${name(i.point)}: ${i.message}` } : i));
+    for (const d of rep.duplicates || []) issues.push({ kind: 'duplicate', severity: 'warning', point: d.dropped, kept: d.kept, message: `Points ${name(d.kept)} and ${name(d.dropped)} are at the same place${d.dz ? ` (${Math.abs(d.dz)} m apart in height)` : ''}; ${name(d.dropped)} was left out.` });
+    const lines = surfaceSources(doc, s.derived?.params || {}).breaklines;
+    for (const c of TR.crossings(lines.map((l) => S.lineworkPath(doc, l)))) issues.push({ kind: 'crossing_breaklines', severity: 'error', lines: [lines[c.a].id, lines[c.b].id], at: c.at, message: `Breaklines ${lines[c.a].name} and ${lines[c.b].name} cross at [${c.at.join(', ')}].` });
+    return { surface: s.name, issues, ...TR.surfaceStats(w) };
+  });
+
+  // feature library
+  const processCodes = () => {
+    const doc = ctx.doc;
+    for (const e of doc.entities.filter((x) => x.fromCodes)) if (D.getEntity(doc, e.id)) D.removeEntity(doc, e);
+    const plan = S.planCodes(doc);
+    for (const l of plan.lines)
+      D.addEntity(doc, { type: 'linework', name: `${l.code}${l.string !== '1' ? ` ${l.string}` : ''}`, fromCodes: true, line: { points: l.points, kind: l.def.breakline ? 'breakline' : 'line', mode: 'hard', closed: l.closed, smooth: l.smooth }, tag: l.def.layer || 'Untagged', material: { color: l.def.color || S.codeColor(doc, l.code) } });
+    for (const o of plan.objects) {
+      const h = +o.point.point.attrs?.[o.def.object.height_attr] || o.def.object.height || 4;
+      const type = o.def.object.type || 'tree';
+      const mesh = type === 'tree' ? G.translate(G.cone(h * 0.3, h * 0.7, 12), [0, h * 0.3, 0]) : type === 'post' ? G.cylinder(0.05, h, 8) : G.cylinder(0.5, 0.15, 24);
+      const extra = type === 'tree' ? G.cylinder(h * 0.05, h * 0.3, 8) : null;
+      const m = extra ? { v: [...mesh.v, ...extra.v], f: [...mesh.f, ...extra.f.map((f) => f.map((i) => i + mesh.v.length))] } : mesh;
+      D.addEntity(doc, { name: `${o.code} ${o.point.name}`, fromCodes: true, mesh: m, position: [...o.point.position], tag: o.def.layer || 'Untagged', material: { color: o.def.color || (type === 'tree' ? '#4c7a5a' : '#9aa3ab') } });
+    }
+    for (const p of S.points(doc)) {
+      p.material.color = S.codeColor(doc, p.point.code);
+      const layer = doc.featureCodes?.[S.parseCode(p.point.code).code]?.layer;
+      if (layer) {
+        p.tag = layer;
+        if (!doc.tags.some((t) => t.name === layer)) doc.tags.push({ name: layer, visible: true });
+      }
+    }
+    return { lines: plan.lines.length, objects: plan.objects.length, warnings: plan.warnings.map((w) => w.message) };
+  };
+  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines), place an object (tree, post, manhole) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), description: str('what it is'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole']), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), options: { type: 'array', items: { type: 'string' } }, required: bool('') }, ['name']), description: 'attribute fields' } }, ['code']), (a) => {
+    const doc = ctx.doc;
+    const code = a.code.toUpperCase();
+    const old = (doc.featureCodes ||= {})[code] || {};
+    const def = { ...old };
+    for (const k of ['description', 'layer', 'color', 'line', 'breakline', 'object', 'attrs']) if (a[k] !== undefined) def[k] = a[k];
+    doc.featureCodes[code] = def;
+    return { code, ...def, processed: processCodes() };
+  }, true);
+  def('terrain', 'load_feature_library', 'Load a feature library (JSON { CODE: { … } }) from a file or inline, merged into the model\'s, then reprocess the points.', obj({ path: str('absolute .json path'), library: obj({}, []), replace: bool('replace the current library instead of merging') }), async (a) => {
+    const doc = ctx.doc;
+    let lib = a.library;
+    if (!lib) {
+      if (!a.path || !ctx.io?.readText) throw new Error('Give library, or a path (in the desktop app).');
+      lib = JSON.parse(await ctx.io.readText(a.path));
+    }
+    const up = Object.fromEntries(Object.entries(lib).map(([k, v]) => [k.toUpperCase(), v]));
+    doc.featureCodes = a.replace ? up : { ...(doc.featureCodes || {}), ...up };
+    return { codes: Object.keys(doc.featureCodes), processed: processCodes() };
+  }, true);
+  def('terrain', 'export_feature_library', 'The feature library as JSON (and to a file with path).', obj({ path: str('absolute .json path') }), async (a) => {
+    const lib = ctx.doc.featureCodes || {};
+    if (a.path) await ctx.io.writeText(a.path, JSON.stringify(lib, null, 2));
+    return { codes: Object.keys(lib).length, library: lib };
+  });
+  def('terrain', 'process_codes', 'Run the feature library over the points again: lines, breaklines, objects, layers and colours (it also runs after importing or editing points). Returns warnings for unknown codes and missing attributes.', obj({}), () => processCodes(), true);
+
+  // earthworks
+  const designSampler = (a) => {
+    if (a.elevation !== undefined) return a.elevation - (S.geo(ctx.doc).base?.[2] || 0);
+    return surfaceSampler(ctx.doc, surfaceOf(a.design));
+  };
+  const withinPoly = (ref) => {
+    if (!ref) return null;
+    const [l] = D.resolve(ctx.doc, ref);
+    if (!S.isLinework(l)) throw new Error(`${l.name} is not a boundary.`);
+    return S.lineworkPath(ctx.doc, l).map((q) => [q[0], q[2]]);
+  };
+  const volumes = (a) => {
+    const doc = ctx.doc;
+    const ex = surfaceSampler(doc, surfaceOf(a.existing));
+    let design = a.base === 'boundary' ? null : designSampler(a);
+    if (a.base === 'boundary') {
+      // stockpile: the base is a surface through the boundary's own points
+      if (!a.within) throw new Error('base: "boundary" needs within (the boundary around the pile).');
+      const [l] = D.resolve(doc, a.within);
+      const pts = S.lineworkPath(doc, l);
+      const { faces } = TR.triangulate(pts, { outer: [pts.map((q) => [q[0], q[2]])] });
+      design = TR.sampler({ v: pts, f: faces });
+    }
+    if (a.design === undefined && a.elevation === undefined && a.base !== 'boundary') throw new Error('Give design (a surface), elevation, or base: "boundary".');
+    const r = TR.cutFill(ex, design, { within: withinPoly(a.within), cell: a.cell || 0 });
+    const bulk = a.bulking ?? 1;
+    const shrink = a.shrinkage ?? 1;
+    return { ...r, adjusted: { cut_loose: r4(r.cut * bulk), fill_compacted_need: r4(r.fill / shrink) } };
+  };
+  const VOL = { existing: str('existing ground surface'), design: str('design surface'), elevation: num('or: a flat design elevation (project)'), base: str('stockpile: "boundary" (a surface through the boundary points)', ['boundary']), within: str('a boundary to measure inside'), cell: num('grid cell, m (default: automatic)'), bulking: num('cut volume factor, e.g. 1.25'), shrinkage: num('fill factor, e.g. 0.9') };
+  def('terrain', 'cut_fill', 'Earthworks between two surfaces (or a surface and a flat elevation): cut, fill, net and area, with bulking / shrinkage, and a coloured cut/fill map (red cut, blue fill). Stockpiles: base "boundary".', obj({ ...VOL, map: bool('make the cut/fill map (default true)'), name: common.name }, ['existing']), (a) => {
+    const doc = ctx.doc;
+    const r = volumes(a);
+    const out = { cut: r.cut, fill: r.fill, net: r.net, area: r.area, cell: r.cell, adjusted: r.adjusted };
+    if (a.map !== false && r.cells.length) {
+      // colours saturate at the 95th percentile, so a few deep cells do not wash out the rest
+      const mags = r.cells.map((c) => Math.abs(c.h)).sort((x, y) => x - y);
+      const scale = Math.max(0.05, mags[Math.floor(mags.length * 0.95)] || 0);
+      const ground = surfaceSampler(doc, surfaceOf(a.existing)).z;
+      const v = [];
+      const f = [];
+      const fc = [];
+      const h = r.cell / 2;
+      for (const c of r.cells) {
+        // draped on the existing ground (a little above it), so the map reads as one sheet
+        const at = (x, z) => [x, (ground(x, z) ?? c.e) + 0.05, z];
+        const i = v.length;
+        v.push(at(c.x - h, c.z - h), at(c.x + h, c.z - h), at(c.x + h, c.z + h), at(c.x - h, c.z + h));
+        f.push([i, i + 3, i + 2], [i, i + 2, i + 1]);
+        fc.push(TR.cutFillColor(c.h, scale));
+        fc.push(TR.cutFillColor(c.h, scale));
+      }
+      const { mesh, origin } = G.recenter({ v, f });
+      mesh.fc = fc;
+      const m = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Cut/fill map'), mesh, position: D.round3(origin), material: { color: '#ffffff', roughness: 1 } });
+      out.map = m.id;
+      out.legend = { cut: '#c44536 (red)', fill: '#2f6fb8 (blue)', scale_m: r4(scale) };
+    }
+    return out;
+  }, true);
+
+  def('terrain', 'volume_report', 'Earthwork volumes as a table: one row per region (boundaries) or the whole surface, with CSV text and an optional file.', obj({ ...VOL, regions: { type: 'array', items: { type: 'string' }, description: 'boundaries, one row each' }, path: str('absolute .csv path') }, ['existing']), async (a) => {
+    const rows = (a.regions?.length ? a.regions : [a.within || null]).map((reg2) => {
+      const r = volumes({ ...a, within: reg2 });
+      return { region: reg2 ? D.resolve(ctx.doc, reg2)[0].name : 'All', cut: r.cut, fill: r.fill, net: r.net, area: r.area, cut_loose: r.adjusted.cut_loose, fill_need: r.adjusted.fill_compacted_need };
+    });
+    const csv = `region,cut_m3,fill_m3,net_m3,area_m2,cut_loose_m3,fill_need_m3\n${rows.map((r) => [r.region, r.cut, r.fill, r.net, r.area, r.cut_loose, r.fill_need].join(',')).join('\n')}\n`;
+    if (a.path) await ctx.io.writeText(a.path, csv);
+    return { rows, csv };
+  });
+
+  def('terrain', 'cut_fill_at', 'Cut or fill at one place: the design and existing elevations there and the difference.', obj({ design: str('design surface'), existing: str('existing surface'), at: { description: 'a point name, or [x, z] in the model' } }, ['design', 'existing', 'at']), (a) => {
+    const doc = ctx.doc;
+    const p = Array.isArray(a.at) ? [a.at[0], 0, a.at.at(-1)] : pointsByRefs([a.at])[0].position;
+    const base = S.geo(doc).base?.[2] || 0;
+    const d = surfaceSampler(doc, surfaceOf(a.design)).z(p[0], p[2]);
+    const e = surfaceSampler(doc, surfaceOf(a.existing)).z(p[0], p[2]);
+    if (d === null || e === null) throw new Error('That place is outside one of the surfaces.');
+    const h = d - e;
+    return { design_z: r4(d + base), existing_z: r4(e + base), difference: r4(h), says: h > 0 ? `fill ${r4(h)} m` : `cut ${r4(-h)} m` };
+  });
+
+  // alignments and corridors
+  const alignmentPoints = (a) => {
+    const doc = ctx.doc;
+    const pis = a.points.map((q) => (Array.isArray(q) ? (q.length === 3 ? [q[0], q[2]] : q) : [pointsByRefs([q])[0].position[0], pointsByRefs([q])[0].position[2]]));
+    const k = S.UNITS[S.geo(doc).units] || 1;
+    const base = S.geo(doc).base?.[2] || 0;
+    const geom = TR.alignmentGeometry({ pis, radii: [0, ...(a.radii || [])], pvis: (a.pvis || []).map(([s, z]) => [s * k, z * k - base]), curves: [0, ...(a.curves || [])].map((x) => x * k), start: (a.start_station || 0) * k, step: a.step || 1 });
+    const ground = a.surface ? surfaceSampler(doc, surfaceOf(a.surface)).z : null;
+    return { geom, points: geom.plan.map(([x, z, s]) => [x, geom.elevation(s) ?? (ground ? ground(x, z) : null) ?? 0, z]) };
+  };
+  const ALIGN = { points: { type: 'array', description: 'points of intersection: names, [x, z] or [x, y, z]' }, radii: { type: 'array', items: { type: 'number' }, description: 'arc radius at each inner point, m (0 = none)' }, pvis: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'vertical: [[station, elevation], …] (project units)' }, curves: { type: 'array', items: { type: 'number' }, description: 'vertical curve length at each inner PVI' }, start_station: num('station at the start, default 0'), surface: str('no vertical: follow this ground'), step: num('sampling, m (default 1)') };
+  def('terrain', 'create_alignment', 'A horizontal alignment (straights with circular arcs at the points of intersection) with a vertical profile (grades and parabolic vertical curves, or following a surface). It is a curve: corridors and animate_along_path use it; stations are labelled.', obj({ name: common.name, ...ALIGN, station_interval: num('label every, m (default 20)') }, ['points']), (a) => {
+    const doc = ctx.doc;
+    const { geom, points: pts } = alignmentPoints(a);
+    const res = reg.commands.get('create_curve').run({ points: pts.map(D.round3), kind: 'polyline', name: a.name || D.uniqueName(doc, 'Alignment'), color: '#d2453c' });
+    const e = D.getEntity(doc, res.id);
+    e.alignment = { ...a, length: r4(geom.length), interval: a.station_interval || 20 };
+    return { ...summary(doc, e), length: r4(geom.length) };
+  }, true);
+  def('terrain', 'set_alignment', 'Change an alignment (points, radii, vertical profile…); corridors built on it follow.', obj({ id, ...ALIGN, station_interval: num('label every, m') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const [e] = D.resolve(doc, a.id);
+    if (!e.alignment) throw new Error(`${e.name} is not an alignment.`);
+    const next = { ...e.alignment, ...Object.fromEntries(Object.entries(a).filter(([k, v]) => k !== 'id' && v !== undefined)) };
+    const { geom, points: pts } = alignmentPoints(next);
+    reg.commands.get('set_curve').run({ id: e.id, points: pts.map(D.round3) });
+    e.alignment = { ...next, length: r4(geom.length), interval: next.station_interval || next.interval || 20 };
+    return { ...summary(doc, e), length: r4(geom.length) };
+  }, true);
+  def('terrain', 'create_corridor', 'A road / channel / embankment: a cross-section template (lanes with crossfall, shoulders, cut and fill batter slopes H:V) swept along an alignment, daylighting to the ground surface. Live: it follows the alignment and the ground.', obj({ alignment: str('alignment'), surface: str('existing ground to daylight to'), template: obj({ lanes: { type: 'array', items: obj({ width: num('m'), crossfall: num('%') }, []) }, shoulder: obj({ width: num('m'), crossfall: num('%') }, []), cut_slope: num('H:V, default 2'), fill_slope: num('H:V, default 3') }, []), interval: num('m between sections, default 5'), name: common.name, color: common.color }, ['alignment']), (a) => {
+    const doc = ctx.doc;
+    const [al] = D.resolve(doc, a.alignment);
+    if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
+    const inputs = [al.id, ...(a.surface ? [surfaceOf(a.surface).id] : [])];
+    const params = { template: a.template || {}, interval: a.interval || 5 };
+    R.getGenerator('corridor').run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Corridor'), material: { color: a.color || '#6b6f74', roughness: 0.95 } });
+    R.derive(doc, e, 'corridor', params, inputs);
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), surface: TR.surfaceStats(e.mesh) };
+  }, true);
+
+  // quick field designs
+  const makeDesign = (gen, params, name, color) => {
+    const doc = ctx.doc;
+    R.getGenerator(gen).run({ params, inputs: [], doc });
+    const e = D.addEntity(doc, { name: name || D.uniqueName(doc, gen.replace('design_', '').replace(/_/g, ' ')), material: { color: color || '#e8bc5e', roughness: 0.9 } });
+    R.derive(doc, e, gen, params, []);
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), surface: TR.surfaceStats(e.mesh) };
+  };
+  const P3 = (d) => ({ description: `${d}: a point name or [x, y, z] in the model` });
+  def('terrain', 'design_line_slope', 'Design surface along a line with a cross slope either side (a pad or road edge).', obj({ from: P3('start'), to: P3('end'), left: num('m, default 5'), right: num('m, default 5'), left_slope: num('%, default −2'), right_slope: num('%, default −2'), name: common.name, color: common.color }, ['from', 'to']), (a) => makeDesign('design_line_slope', { from: designRef(a.from), to: designRef(a.to), left: a.left ?? 5, right: a.right ?? 5, left_slope: a.left_slope ?? -2, right_slope: a.right_slope ?? -2 }, a.name, a.color), true);
+  def('terrain', 'design_plane', 'Design plane through three points, or through a point with a slope (%) falling towards a bearing (degrees from north).', obj({ points: { type: 'array', description: 'three point names or [x, y, z]' }, point: P3('or a point'), slope: num('%'), bearing: { description: 'degrees from north, or DMS' }, size: { type: 'array', items: { type: 'number' }, description: '[width, depth] m, default [20, 20]' }, name: common.name, color: common.color }), (a) =>
+    makeDesign('design_plane', { ...(a.points ? { points: a.points.map(designRef) } : { point: designRef(a.point), slope: a.slope ?? 0, bearing: S.parseAngle(a.bearing ?? 0, S.geo(ctx.doc).angles) }), size: a.size || [20, 20] }, a.name, a.color), true);
+  def('terrain', 'design_trench', 'A trench or ditch from one point to another: bottom width, depth below the ground (or invert levels / a grade), side slopes up to the ground surface. "1.2 m deep trench from MH1 to MH2 at 1% fall with 1:1 sides".', obj({ from: P3('start (e.g. MH1)'), to: P3('end'), bottom: num('bottom width, m (default 0.6)'), depth: num('below the ground at the start, m (default 1)'), grade: num('fall from start to end, % (instead of depth at the end)'), invert_from: num('invert level at the start (project)'), invert_to: num('invert level at the end (project)'), side_slope: num('H:V, default 1'), surface: str('ground surface to cut from'), name: common.name, color: common.color }, ['from', 'to']), (a) => {
+    const doc = ctx.doc;
+    const base = S.geo(doc).base?.[2] || 0;
+    const from = designRef(a.from);
+    const to = designRef(a.to);
+    const p = { from, to, bottom: a.bottom ?? 0.6, depth: a.depth ?? 1, side_slope: a.side_slope ?? 1, ...(a.surface ? { surface: surfaceOf(a.surface).id } : {}) };
+    if (a.invert_from !== undefined) p.invert_a = a.invert_from - base;
+    if (a.invert_to !== undefined) p.invert_b = a.invert_to - base;
+    if (a.grade !== undefined) {
+      // invert at the end from the start's invert and the fall over the plan length
+      const A = refPoint(doc, from);
+      const B = refPoint(doc, to);
+      const g0 = p.surface ? surfaceSampler(doc, D.getEntity(doc, p.surface)).z(A[0], A[2]) ?? A[1] : A[1];
+      const ia = p.invert_a ?? g0 - p.depth;
+      p.invert_a = ia;
+      p.invert_b = ia - (Math.hypot(B[0] - A[0], B[2] - A[2]) * a.grade) / 100;
+    }
+    return makeDesign('design_trench', p, a.name || D.uniqueName(doc, 'Trench'), a.color || '#b58a57');
+  }, true);
+  def('terrain', 'design_offset_surface', 'A copy of a surface moved up or down (e.g. 0.3 m below existing ground for a topsoil strip); it follows the source.', obj({ surface: str('source surface'), offset: num('m, negative is below'), name: common.name, color: common.color }, ['surface', 'offset']), (a) => makeDesign('design_offset_surface', { surface: surfaceOf(a.surface).id, offset: a.offset }, a.name, a.color), true);
+  def('terrain', 'design_road', 'A simple road surface: centreline points, width, crossfall falling both ways from the crown.', obj({ centre: { type: 'array', description: 'centreline point names or [x, y, z]' }, width: num('m, default 7'), crossfall: num('%, default −2.5'), name: common.name, color: common.color }, ['centre']), (a) => makeDesign('design_road', { centre: a.centre.map(designRef), width: a.width ?? 7, crossfall: a.crossfall ?? -2.5 }, a.name, a.color || '#3c3f44'), true);
+
   // ---------------------------------------------------------------- curves, sweeps, profiles
   def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
     const doc = ctx.doc;
@@ -1188,9 +1669,9 @@ function registerCore(reg, ctx) {
     ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
     return ctx.view?.getCamera();
   });
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position.', obj({ edges: bool(''), xray: bool(''), wireframe: bool(''), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);

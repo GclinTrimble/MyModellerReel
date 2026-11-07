@@ -14,6 +14,7 @@ import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
 import { IO } from './io.js';
+import { drawLabels } from './labels.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -320,5 +321,6 @@ document.getElementById('api-pill').textContent = `API :${app.info.apiPort} · M
 canvas.focus();
 for (const p of await native.invoke('plugins:list')) await loadPlugin(p);
 app.ui.refresh();
+app.viewport.listeners.add(() => drawLabels(app));
 // Keep the camera in the document so saves and the AI know the current view.
 app.viewport.controls.addEventListener('end', () => (store.doc.camera = app.viewport.getCamera()));

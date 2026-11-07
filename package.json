@@ -1,7 +1,7 @@
 {
   "name": "mymodellerreel",
   "productName": "MyModellerReel",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "AI-first 3D modeller and animation sequencer of the My…Reel family. Push/pull modelling, keyframe animation, GLB native, MCP + HTTP API.",
   "main": "src/main/main.cjs",
   "type": "module",
