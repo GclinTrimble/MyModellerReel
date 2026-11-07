@@ -437,6 +437,7 @@ export class UI {
     return h(
       'div.panel',
       {},
+      ...this.accountCard(),
       h('h3', {}, 'AI'),
       h(
         'label.field',
@@ -455,7 +456,52 @@ export class UI {
       h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),
       h('h3', {}, 'Appearance'),
       h('label.row', {}, h('input', { type: 'checkbox', checked: document.documentElement.classList.contains('dark'), onchange: () => app.toggleTheme() }), 'Dark theme'),
+      app.startup.supported &&
+        h(
+          'label.row',
+          {},
+          h('input', { type: 'checkbox', id: 'pref-startup', checked: app.startup.enabled, onchange: async (e) => (app.startup = await window.native.invoke('startup:set', e.target.checked)) }),
+          'Start MyModellerReel when Windows starts',
+        ),
     );
+  }
+
+  /** Settings › Account (#115): the MyStudioReel sign-in shared by every Reel app on this PC (MySnipReel's wording). */
+  accountCard() {
+    const s = this.app.account;
+    if (!s?.configured) return [];
+    const act = (channel) => async () => {
+      this.app.account = await window.native.invoke(channel);
+      this.renderDock();
+    };
+    const problem = s.problem ? h('div.small.acct-problem', { role: 'alert' }, s.problem) : null;
+    let body;
+    if (s.signingIn) body = [h('div.row', {}, h('span', {}, 'Finish signing in in your browser'), h('button.btn', { id: 'account-cancel', onclick: act('account:cancel') }, 'Cancel'))];
+    else if (!s.signedIn)
+      body = [
+        h('div.small.muted', {}, 'Sign in once with your MyStudioReel account and every Reel app on this PC is signed in.'),
+        problem,
+        h('div.row', {}, h('button.btn.primary', { id: 'account-sign-in', onclick: act('account:sign-in') }, icon('user-circle'), 'Sign in with Google')),
+      ];
+    else {
+      const who = s.name || s.email || '?';
+      const other = s.otherDevice;
+      body = [
+        h('div.acct-user', {}, h('span.acct-avatar', { 'aria-hidden': 'true' }, who.trim()[0].toUpperCase()), h('div', {}, s.name && h('strong', {}, s.name), s.email && h('div.small.muted', {}, s.email))),
+        h('div.small', {}, s.plan === 'pro' ? 'MyStudioReel Pro, on this PC' : s.plan === 'free' ? 'Free plan' : 'Checking your licence…'),
+        other &&
+          h(
+            'div.small',
+            {},
+            `Your licence is in use on ${other.name}. Use it here and ${other.name} switches to Free at its next check. A licence can move up to 3 times in 30 days.`,
+          ),
+        other && h('div.row', {}, h('button.btn', { id: 'account-take-over', onclick: act('account:take-over') }, icon('desktop'), 'Use on this PC instead')),
+        problem,
+        h('div.row', {}, h('button.btn', { id: 'account-sign-out', onclick: act('account:sign-out') }, icon('sign-out'), 'Sign out')),
+        h('div.small.muted', {}, 'Signing out signs out every Reel app on this PC.'),
+      ];
+    }
+    return [h('h3', {}, 'Account'), h('div.card', { id: 'pref-account' }, body)];
   }
 
   // ---------------------------------------------------------------- status, toasts, dialogs
