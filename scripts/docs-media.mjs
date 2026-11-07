@@ -56,6 +56,7 @@ const fresh = async () => {
   await run('new_model');
   await js("window.mmr.app.ai.setPropose(false); return 1;");
 };
+const hidePoints = async () => run('set_properties', { ids: (await run('get_scene')).entities.filter((e) => e.type === 'point').map((e) => e.id), visible: false });
 const panel = (tab) => js(`window.mmr.app.ui.show('${tab}'); return 1;`);
 
 const PAGES = {
@@ -300,6 +301,100 @@ const PAGES = {
     await clean();
     await js('window.mmr.app.ui.reviewDialog({ use_ai: false, views: false }); return 1;');
     await shot('');
+  },
+  async 'read-the-terrain'() {
+    await fresh();
+    await run('import_points', { path: `${SAMPLES}/site-points.csv` });
+    await run('create_surface', { name: 'Existing ground' });
+    await hidePoints();
+    await camera([75, 45, 30], [28, 0, -24]);
+    await none();
+    await shot('The existing ground');
+    await run('surface_contours', { id: 'Existing ground', interval: 0.25, major_every: 4 });
+    await none();
+    await shot('Site › Contours: every 0.25 m, a labelled major line every 1 m');
+    await run('analyze_surface', { id: 'Existing ground', kind: 'slope', thresholds: [5, 10, 15, 25] });
+    await run('select', { ids: ['Existing ground'] });
+    await panel('entity');
+    await shot('Site › Analysis colours: slope classes, the legend in the Entity panel');
+    await run('create_curve', { points: [[2, 0, -4], [26, 0, -22], [54, 0, -44]], name: 'Access road' });
+    await run('select', { ids: ['Access road'] });
+    await js("window.mmr.app.ui.actions.profile.run(); return 1;");
+    await shot('');
+    await clean();
+    await js("window.mmr.app.reg.run('cross_sections', { path: 'Access road', interval: 10 }).then((r) => window.mmr.app.ui.sectionsDialog(r, 3)); return 1;");
+    await shot('');
+  },
+  async 'design-a-pad'() {
+    await fresh();
+    await run('import_points', { path: `${SAMPLES}/site-points.csv` });
+    await run('create_surface', { name: 'Existing ground' });
+    await hidePoints();
+    await run('create_curve', { points: [[16, 0, -14], [38, 0, -14], [38, 0, -32], [16, 0, -32]], closed: true, name: 'Pad outline' });
+    await camera([75, 45, 30], [28, 0, -24]);
+    await none();
+    await shot('A closed outline for the pad, on the existing ground');
+    await run('create_pad', { outline: 'Pad outline', elevation: 103, surface: 'Existing ground', cut_slope: 2, fill_slope: 3, merge: true, name: 'Pad' });
+    await run('set_properties', { ids: ['Existing ground'], visible: false });
+    await none();
+    await shot('Site › Pad with batters: top at 103.0, 2:1 cut, 3:1 fill, merged into a design surface');
+    await run('set_batter', { id: 'Pad', elevation: 102.4 });
+    await none();
+    await shot('Lower it to 102.4: the batters and the design surface follow');
+    await run('set_properties', { ids: ['Existing ground'], visible: true });
+    const cf = await run('cut_fill', { existing: 'Existing ground', design: 'Design surface', name: 'Pad cut/fill' });
+    await run('set_properties', { ids: ['Existing ground', 'Design surface', 'Pad'], visible: false });
+    await none();
+    await run('set_style', { edges: false });
+    await shot(`Cut / fill against the design surface: cut ${Math.round(cf.cut)} m³, fill ${Math.round(cf.fill)} m³`);
+    await run('set_style', { edges: true });
+  },
+  async 'sculpt-a-terrain'() {
+    await fresh();
+    await run('create_terrain', { width: 60, depth: 60, spacing: 1, name: 'Ground', color: '#9fb38a' });
+    await camera([48, 30, 48], [0, 1, 0]);
+    await none();
+    await shot('Site › New terrain to sculpt: a flat 60 × 60 m grid');
+    await run('sculpt_terrain', { id: 'Ground', at: [0, 0, 0], operation: 'raise', radius: 22, inner: 4, strength: 6, falloff: 'smooth' });
+    await run('sculpt_terrain', { id: 'Ground', at: [-18, 0, 16], operation: 'lower', radius: 10, strength: 3, falloff: 'smooth' });
+    await run('surface_contours', { id: 'Ground', interval: 0.5, major_every: 4 });
+    await run('sculpt_terrain', { id: 'Ground', at: [9, 0, 9], operation: 'terrace', radius: 9, step: 0.75 });
+    await none();
+    await shot('Sculpt tool (V): raise a mound, lower a hollow, terrace a slope');
+    await run('create_curve', { points: [[-6, 5, -6], [6, 5, -6], [6, 5, 6], [-6, 5, 6]], closed: true, name: 'Platform' });
+    await run('stamp', { id: 'Ground', outline: 'Platform', elevation: 4.5, width: 4 });
+    await run('set_properties', { ids: ['Platform'], visible: false });
+    await none();
+    await shot('Site › Stamp a platform: flat at 4.5 m, blended into the mound');
+    await run('create_box', { width: 8, height: 3, depth: 6, position: [0, 8, 0], name: 'Pavilion', color: '#e9e4d8' });
+    await run('drape', { ids: ['Pavilion'], surface: 'Ground' });
+    await none();
+    await shot('Site › Drape: the pavilion sits on the platform');
+  },
+  async 'bring-in-field-and-gis-data'() {
+    await fresh();
+    await run('import', { path: `${SAMPLES}/field.jxl` });
+    await run('set_style', { point_labels: 'code' });
+    await run('set_view', { preset: 'iso' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('File › Import a JobXML: points with their codes and attributes');
+    await run('import', { path: `${SAMPLES}/library.fxl` });
+    await run('set_style', { point_labels: 'name' });
+    await panel('outliner');
+    await none();
+    await shot('Import the FXL: codes get their layers and colours, the kerb joins up');
+    await run('import', { path: `${SAMPLES}/parcels.geojson` });
+    await camera([95, 90, 70], [45, 0, -40]);
+    await none();
+    await js("window.mmr.app.ui.attributeTable('Parcels'); return 1;");
+    await shot('');
+    await clean();
+    await run('import_terrain', { path: `${SAMPLES}/terrain.asc`, name: 'DEM' });
+    await run('analyze_surface', { id: 'DEM', kind: 'elevation', bands: 8 });
+    await camera([170, 110, 170], [50, 0, 20]);
+    await none();
+    await shot('Site › Import terrain: an ASCII grid DEM, coloured by elevation');
   },
 };
 

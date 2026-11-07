@@ -11,6 +11,9 @@ export function geo(doc) {
 }
 
 /** Local model point of project coordinates (metres). */
+/** The coordinate system as text: "EPSG:2193", a name, or '' (it is stored as { epsg, name }). */
+export const crsLabel = (crs) => (!crs ? '' : typeof crs === 'string' ? crs : crs.epsg ? `EPSG:${crs.epsg}` : crs.name || '');
+
 export function toLocal(doc, { n, e, z }) {
   const b = geo(doc).base || [0, 0, 0];
   return [e - b[0], z - b[2], -(n - b[1])];

@@ -1,0 +1,101 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Lot 1",
+    "owner": "Riverside Ltd",
+    "zone": "Residential",
+    "layer": "Parcels"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       650000,
+       5400020
+      ],
+      [
+       650040,
+       5400020
+      ],
+      [
+       650040,
+       5400070
+      ],
+      [
+       650000,
+       5400070
+      ],
+      [
+       650000,
+       5400020
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Lot 2",
+    "owner": "Council",
+    "zone": "Reserve",
+    "layer": "Parcels"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       650040,
+       5400020
+      ],
+      [
+       650085,
+       5400020
+      ],
+      [
+       650085,
+       5400070
+      ],
+      [
+       650040,
+       5400070
+      ],
+      [
+       650040,
+       5400020
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Water main",
+    "diameter": 0.15,
+    "material": "PE",
+    "layer": "Utilities"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      649990,
+      5400015,
+      100.8
+     ],
+     [
+      650095,
+      5400015,
+      101.4
+     ]
+    ]
+   }
+  }
+ ]
+}

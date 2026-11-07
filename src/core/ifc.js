@@ -71,7 +71,7 @@ export function writeIfc(doc, { ents, opts = {} }) {
   const project = add(`IFCPROJECT(${str(guid('project'))},$,${str(opts.name || 'MyModellerReel model')},$,$,$,$,(${ctx}),${ua})`);
   const g = S.geo(doc);
   if (g.base) {
-    const crs = add(`IFCPROJECTEDCRS(${str(g.crs || 'Local grid')},$,$,$,$,$,$)`);
+    const crs = add(`IFCPROJECTEDCRS(${str(S.crsLabel(g.crs) || 'Local grid')},$,$,$,$,$,$)`);
     add(`IFCMAPCONVERSION(${ctx},${crs},${real(g.base[0])},${real(g.base[1])},${real(g.base[2])},1.,0.,1.)`);
   }
   const place = (rel) => add(`IFCLOCALPLACEMENT(${rel},${axis})`);

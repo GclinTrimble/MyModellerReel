@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FeatureDefinitionLibrary Version="6">
+  <Layers><Layer Name="Vegetation" Color="#2e7d32"/><Layer Name="Kerbs" Color="#c8553d"/><Layer Name="Control" Color="#1d262c"/></Layers>
+  <FeatureDefinitions>
+    <PointFeatureDefinition Code="CP" Layer="Control" Description="Control point"/>
+    <PointFeatureDefinition Code="TREE" Layer="Vegetation" Description="Tree">
+      <Attributes><DoubleAttribute Name="Height" Required="true"/><ListAttribute Name="Species"><Item>Oak</Item><Item>Birch</Item><Item>Lime</Item></ListAttribute></Attributes>
+    </PointFeatureDefinition>
+    <LineFeatureDefinition Code="KERB" Layer="Kerbs" Description="Kerb line"/>
+  </FeatureDefinitions>
+</FeatureDefinitionLibrary>

@@ -320,3 +320,35 @@ test('formats: DXF in, attribute typed in the layer table, IFC out and back in t
   assert.equal(q.features[0].attributes['Pset_MyModellerReel.species'], 'quercus');
   assert.ok(await w.evaluate(() => window.mmr.app.viewport.objs.size > 3));
 });
+
+test('terrain depth: sculpt with the brush tool, a profile chart, contours with a legend', async () => {
+  await ok('new_model');
+  await ok('create_terrain', { width: 40, depth: 40, spacing: 1, elevation: 0, name: 'Ground' });
+  await ok('set_view', { preset: 'iso' });
+  await ok('zoom_extents', {});
+  const [sx, sy] = await w.evaluate(() => {
+    const p = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(0, 0, 0));
+    return [p.x, p.y];
+  });
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  await w.keyboard.press('v');
+  await w.fill('#vcb', 'raise 6 1');
+  await w.press('#vcb', 'Enter');
+  await w.mouse.move(sx, sy);
+  await w.mouse.down();
+  await w.mouse.up();
+  await w.waitForFunction(() => Math.max(...window.mmr.doc.entities.find((e) => e.name === 'Ground').mesh.v.map((p) => p[1])) > 0.9);
+  await w.keyboard.press('Escape');
+  await w.keyboard.press(' ');
+  await ok('create_curve', { points: [[-15, 0, 0], [15, 0, 0]], name: 'Cut line' });
+  await ok('select', { ids: ['Cut line'] });
+  await w.evaluate(() => window.mmr.app.ui.actions.profile.run());
+  await w.locator('dialog[open] svg path').first().waitFor();
+  assert.match(await w.locator('dialog[open] h3').textContent(), /Profile · 30\.0 m/);
+  await w.keyboard.press('Escape');
+  await ok('surface_contours', { id: 'Ground', interval: 0.25, major_every: 2 });
+  await ok('analyze_surface', { id: 'Ground', kind: 'elevation', bands: 4 });
+  await ok('select', { ids: ['Ground'] });
+  await w.click('[data-tab="entity"]');
+  assert.equal(await w.locator('.legend-row').count(), 4);
+});

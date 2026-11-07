@@ -54,6 +54,14 @@ export function drawLabels(app) {
       const text = mode === 'code' ? pt.code : mode === 'name_z' ? `${e.name}  ${pt.z.toFixed(3)}` : mode === 'all' ? `${e.name} ${pt.code} ${pt.z.toFixed(2)}` : e.name;
       if (text) label(e.position, text, '#1e3a4c');
     }
+  // major contours: their elevation at the middle of the line (#121)
+  const groups = new Map(doc.entities.filter((e) => e.contours).map((g) => [g.id, g]));
+  for (const e of doc.entities) {
+    if (n > MAX || !e.curve || !e.meta?.major || !groups.has(e.parent) || !e.visible || tagOn.get(e.tag) === false || !groups.get(e.parent).visible) continue;
+    const pts = e.curve.points;
+    const p = pts[Math.floor(pts.length / 2)];
+    label([p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]], e.meta.elevation.toFixed(1), '#6b4e2e');
+  }
   // alignment stations: 0+000, 0+020, …
   for (const e of doc.entities) {
     if (!e.alignment || !e.curve || !e.visible) continue;

@@ -247,6 +247,27 @@ export class UI {
       boundary: { label: 'Boundary through the selected points', icon: 'polygon', run: run('add_boundary', {}) },
       surface: { label: 'Create surface (TIN)…', icon: 'mountains', run: form('create_surface', { name: 'Existing ground' }) },
       checkSurface: { label: 'Check surface', icon: 'list-checks', run: () => this.checkSurfaceDialog(sel()[0]) },
+      contours: { label: 'Contours…', icon: 'wave-sine', run: form('surface_contours', () => ({ id: sel()[0], interval: 1, major_every: 5 })) },
+      analyze: { label: 'Analysis colours (slope, elevation, aspect)…', icon: 'palette', run: form('analyze_surface', () => ({ id: sel()[0], kind: 'slope' })) },
+      profile: { label: 'Profile along the selected line', icon: 'chart-line', run: () => app.reg.run('surface_profile', { path: sel()[0], interval: 1 }).then((r) => this.profileDialog(r)).catch((e) => this.toast(e.message, 'danger')) },
+      sections: { label: 'Cross-sections along the selected line', icon: 'columns', run: () => app.reg.run('cross_sections', { path: sel()[0] }).then((r) => this.sectionsDialog(r)).catch((e) => this.toast(e.message, 'danger')) },
+      pad: { label: 'Pad with batters…', icon: 'stack', run: form('create_pad', () => ({ outline: sel()[0], cut_slope: 2, fill_slope: 2, merge: true })) },
+      smooth: { label: 'Smooth surface…', icon: 'drop', run: form('smooth_surface', () => ({ id: sel()[0], levels: 1 })) },
+      fromContours: { label: 'Surface from contours…', icon: 'mountains', run: form('terrain_from_contours', { spacing: 2 }) },
+      contourZ: { label: 'Assign contour elevations…', icon: 'arrows-down-up', run: form('assign_contour_elevations', { interval: 1 }) },
+      newTerrain: { label: 'New terrain to sculpt…', icon: 'square', run: form('create_terrain', { width: 100, depth: 100, spacing: 2 }) },
+      stamp: { label: 'Stamp a platform…', icon: 'stamp', run: form('stamp') },
+      drape: { label: 'Drape onto a surface…', icon: 'arrow-line-down', run: form('drape') },
+      water: { label: 'Water level…', icon: 'waves', run: form('water_level') },
+      importTerrain: { label: 'Import terrain (GeoTIFF, ASCII grid)…', icon: 'globe-hemisphere-west', run: async () => {
+        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Elevation grids', extensions: ['tif', 'tiff', 'asc'] }] });
+        if (path) app.reg.run('import_terrain', { path }).then((r) => (this.toast(`${r.name}: ${r.triangles} triangles`), app.reg.run('zoom_extents', { ids: [r.id] }))).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      drapeImage: { label: 'Drape an image on a surface…', icon: 'image', run: form('drape_image') },
+      textToPoints: { label: 'Spot heights to points…', icon: 'map-pin', run: form('text_to_points', () => ({ id: sel()[0] })) },
+      labelContours: { label: 'Contour heights from labels…', icon: 'tag', run: form('label_contours') },
+      exportGeojson: { label: 'Export GeoJSON…', icon: 'export', run: run('export', { format: 'geojson' }) },
+      exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
       volumeReport: { label: 'Volume report…', icon: 'table', run: form('volume_report') },
       alignment: { label: 'Alignment…', icon: 'path', run: form('create_alignment') },
@@ -280,14 +301,14 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
-      Site: ['survey', 'importPoints', 'exportPoints', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
-      Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
+      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
@@ -600,7 +621,7 @@ export class UI {
     const feats = doc.entities.filter((e) => e.tag === layer && !e.parent);
     // survey points show their code and coordinates too
     const pts = feats.some((e) => e.point) ? ['code', 'N', 'E', 'Z'] : [];
-    const cols = [...pts, ...new Set([...Object.keys(t?.schema || {}), ...feats.flatMap((e) => Object.keys(e.meta || {}))])];
+    const cols = [...pts, ...new Set([...Object.keys(t?.schema || {}), ...feats.flatMap((e) => Object.keys(e.meta || {}))])].filter((c) => c !== 'name'); // the name is the first column already
     const PT = { code: (e) => e.point?.code, N: (e) => e.point?.n, E: (e) => e.point?.e, Z: (e) => e.point?.z };
     const val = (e, c) => (c === 'name' ? e.name : PT[c] && pts.length ? PT[c](e) : e.meta?.[c]);
     const rows = feats
@@ -629,6 +650,64 @@ export class UI {
         h('div.qty.attr', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['name', ...cols].map((c) => h('th', { onclick: () => (this.closeModal?.(), this.attributeTable(layer, c, filter)), title: 'Sort', style: { cursor: 'pointer' } }, c + (c === sortBy ? ' ▲' : ''))))), h('tbody', {}, rows.slice(0, 500).map((e) => h('tr', {}, h('td', {}, e.name), ...cols.map((c) => h('td', {}, cell(e, c)))))))),
       ),
     );
+  }
+
+  /** An analysis legend (#121) under a coloured surface. */
+  legend(e) {
+    const a = e.analysis;
+    if (!a?.legend) return null;
+    return h('div.legend', {}, h('div.small.muted', {}, a.kind), ...a.legend.map((l) => h('div.legend-row', {}, h('i', { style: { background: l.color } }), h('span.small', {}, l.label))));
+  }
+
+  /** A long section chart (#122): chainage across, elevation up, one line per surface; save as SVG. */
+  profileDialog(r) {
+    const W = 760;
+    const H = 300;
+    const pad = 44;
+    const vals = r.samples.flatMap((s) => r.surfaces.map((n) => s[n])).filter((v) => v !== null);
+    if (!vals.length) return this.toast('The line does not cross a surface.', 'danger');
+    const [lo, hi] = [Math.min(...vals), Math.max(...vals)];
+    const span = hi - lo || 1;
+    const X = (s) => pad + ((W - pad * 1.5) * s) / (r.length || 1);
+    const Y = (z) => H - pad - ((H - pad * 1.6) * (z - lo)) / span;
+    const COLORS = ['#2f6f86', '#c8553d', '#4c7a5a', '#8a4b3a'];
+    const ns = 'http://www.w3.org/2000/svg';
+    const el = (n, attrs, text) => {
+      const x = document.createElementNS(ns, n);
+      for (const [k, v] of Object.entries(attrs)) x.setAttribute(k, v);
+      if (text !== undefined) x.textContent = text;
+      return x;
+    };
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': `Profile, ${r.length.toFixed(1)} m` });
+    svg.append(el('rect', { x: 0, y: 0, width: W, height: H, fill: '#ffffff' }));
+    for (let k = 0; k <= 4; k++) {
+      const z = lo + (span * k) / 4;
+      svg.append(el('line', { x1: pad, x2: W - pad / 2, y1: Y(z), y2: Y(z), stroke: '#e3e0d8' }), el('text', { x: 4, y: Y(z) + 4, 'font-size': 11, fill: '#5f6b72' }, z.toFixed(2)));
+    }
+    const step = Math.pow(10, Math.floor(Math.log10(r.length / 5 || 1)));
+    for (let s = 0; s <= r.length + 1e-9; s += step * (r.length / step > 10 ? 2 : 1)) svg.append(el('text', { x: X(s) - 10, y: H - pad + 18, 'font-size': 11, fill: '#5f6b72' }, s.toFixed(0)));
+    r.surfaces.forEach((n, i) => {
+      const d = r.samples.filter((s) => s[n] !== null).map((s, k) => `${k ? 'L' : 'M'}${X(s.chainage).toFixed(1)},${Y(s[n]).toFixed(1)}`).join(' ');
+      svg.append(el('path', { d, fill: 'none', stroke: COLORS[i % 4], 'stroke-width': 2 }), el('text', { x: W - 150, y: 18 + i * 16, 'font-size': 12, fill: COLORS[i % 4] }, n));
+    });
+    const save = async () => {
+      const path = await window.native.invoke('file:save-dialog', { defaultPath: 'Profile.svg', filters: [{ name: 'SVG', extensions: ['svg'] }] });
+      if (path) await this.app.io.writeText(path, new XMLSerializer().serializeToString(svg));
+    };
+    this.modal(`Profile · ${r.length.toFixed(1)} m`, h('div', {}, svg, h('p.small.muted', {}, 'Chainage (m) across, elevation up. surface_profile returns the numbers; csv saves them.')), [['Close', null]]).then(() => {});
+    document.querySelector('#modal footer')?.prepend(h('button.btn', { onclick: save }, icon('export'), 'Save SVG'));
+  }
+
+  /** Cross-sections (#122): one at a time, Previous / Next. */
+  sectionsDialog(r, i = 0) {
+    const x = r.sections[i];
+    const prof = { length: x.points.at(-1).offset - x.points[0].offset, surfaces: r.surfaces, samples: x.points.map((q) => ({ ...q, chainage: q.offset - x.points[0].offset })) };
+    this.closeModal();
+    this.profileDialog(prof);
+    const head = document.querySelector('#modal h3');
+    if (head) head.textContent = `Cross-section at ${x.station.toFixed(1)} m (${i + 1} / ${r.sections.length}) · left to right`;
+    const foot = document.querySelector('#modal footer');
+    foot?.prepend(h('button.btn', { disabled: i === 0, onclick: () => this.sectionsDialog(r, i - 1) }, 'Previous'), h('button.btn', { disabled: i === r.sections.length - 1, onclick: () => this.sectionsDialog(r, i + 1) }, 'Next'));
   }
 
   /** A read-only result in a dialog (counts, text lists). */
@@ -698,6 +777,7 @@ export class UI {
         ...['left', 'right', 'center', 'bottom', 'top'].map((p) => h('button.btn', { onclick: () => run('set_pivot', { id: e.id, pivot: p }) }, p)),
       ),
       this.paramsCard(e),
+      e.analysis && !e.derived?.report ? h('div.card', {}, h('div.overline', {}, 'Analysis'), this.legend(e)) : null,
       e.underlay ? null : matFields,
       this.metaCard(e),
       tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
@@ -750,6 +830,7 @@ export class UI {
         'div.card',
         {},
         h('div.overline', {}, `Surface · ${tri} triangles · ${e.derived.report.points} points`),
+        this.legend(e),
         e.derived.error ? h('div.small.param-error', { role: 'alert' }, e.derived.error) : null,
         h('div.row.wrap', {}, h('button.btn', { onclick: () => this.checkSurfaceDialog(e.id) }, icon('list-checks'), 'Check'), h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: e.id }) }, icon('chart-bar'), 'Cut / fill…')),
       );

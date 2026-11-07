@@ -27,8 +27,12 @@ import { HOWTOS, findHowtos } from './howto.js';
 import './landxml.js';
 import './dxf.js';
 import './ifc.js';
+import './trimble.js';
+import './gis.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
+import * as SW from './sitework.js';
+import * as SF from './surfaces.js';
 import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
@@ -138,7 +142,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -2563,7 +2567,7 @@ function registerCore(reg, ctx) {
   // ---------------------------------------------------------------- files: models and exchange formats (#152)
   const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'png', 'video'];
   def('file', 'list_formats', 'File formats this app reads and writes, with their options (LandXML, IFC, DXF and models).', obj({}), () => [...F.listFormats(), { id: 'glb / gltf / obj / stl / fbx', label: '3D models (insert)', import: true, export: true }]);
-  def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)') }), async (a) => {
+  def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), Trimble JobXML (points) and FXL (feature library), GeoJSON and Shapefile (features with attributes), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | jxl | fxl | geojson | shp | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)') }), async (a) => {
     const doc = ctx.doc;
     if (!a.path && a.text === undefined) {
       a.path = await needIO().pick('import', false);
@@ -2580,26 +2584,35 @@ function registerCore(reg, ctx) {
     if (fmt.binary && typeof data === 'string') data = new TextEncoder().encode(data);
     const report = F.newReport();
     const before = new Set(doc.entities.map((e) => e.id));
-    const extra = await fmt.read(data, { doc, cmd: (n, x) => reg.commands.get(n).run(x), report, opts: a });
+    const extra = await fmt.read(data, { doc, cmd: (n, x) => reg.commands.get(n).run(x), report, opts: a, io: ctx.io });
     const made = doc.entities.filter((e) => !before.has(e.id) && (!e.parent || before.has(e.parent)));
-    if (!made.length) throw new Error(`Nothing to import in that ${fmt.id.toUpperCase()} file${report.done().skipped.length ? `: ${report.done().skipped.map((x) => x.what).join('; ')}` : ''}.`);
+    if (!made.length && !Object.keys(report.done().created).length) throw new Error(`Nothing to import in that ${fmt.id.toUpperCase()} file${report.done().skipped.length ? `: ${report.done().skipped.map((x) => x.what).join('; ')}` : ''}.`);
     ctx.selection.set(made.filter((e) => !S.isPoint(e)).map((e) => e.id).slice(0, 2000));
     return report.done({ format: fmt.id, file: a.path ? String(a.path).split(/[\\/]/).pop() : undefined, ...(extra || {}) });
   }, true);
-  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file') }, ['format']), async (a) => {
+  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks), geojson and shp (points, lines, polygons with attributes). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf, geojson, shp'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file') }, ['format']), async (a) => {
     const fmt = F.getFormat(a.format);
     if (!fmt) {
       if (!MODEL_FORMATS.includes(a.format)) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
       return needIO().exportAs(a.format, a.path);
     }
-    if (!fmt.write) throw new Error(`${fmt.label}: import only.`);
+    if (!fmt.write && !fmt.writeFiles) throw new Error(`${fmt.label}: import only.`);
     const doc = ctx.doc;
     const ents = a.selection ? [...new Set(targets(ctx, {}).flatMap((e) => [e, ...D.descendants(doc, e.id)]))] : doc.entities;
     if (!ents.length) throw new Error('Nothing to export (the selection is empty).');
-    const text = fmt.write(doc, { ents, opts: { ...a, version: ctx.version } });
     const io = needIO();
     const path = a.path || (await io.pick(fmt.id, true, `Model.${fmt.extensions[0]}`));
     if (!path) return { cancelled: true };
+    if (fmt.writeFiles) {
+      // several files (a shapefile is .shp + .shx + .dbf, one set per geometry kind)
+      const files = fmt.writeFiles(doc, { ents, opts: a });
+      if (!Object.keys(files).length) throw new Error(`Nothing in the ${a.selection ? 'selection' : 'model'} that a ${fmt.id} file can hold.`);
+      const stem = path.replace(/[.][A-Za-z0-9]+$/, '');
+      const written = [];
+      for (const [suffix, bytes] of Object.entries(files)) await io.writeText(stem + suffix, bytes), written.push(stem + suffix);
+      return { paths: written, format: fmt.id, entities: ents.length };
+    }
+    const text = fmt.write(doc, { ents, opts: { ...a, version: ctx.version } });
     await io.writeText(path, text);
     return { path, format: fmt.id, bytes: text.length, entities: ents.length };
   }, true);
@@ -2721,6 +2734,277 @@ function registerCore(reg, ctx) {
     const ids = Clip.pasteEntities(ctx.doc, clip, { offset: a.offset || [0, 0, 0], parent });
     ctx.selection.set(ids);
     return { pasted: ids.length, ids };
+  }, true);
+
+  // ---------------------------------------------------------------- terrain depth (#121, #122, #123, #120, #34, #35, #37, #132, #146)
+  const allSurfaces = () => ctx.doc.entities.filter((e) => e.mesh && (e.derived?.generator === 'surface' || e.meta?.surface || ['design_surface', 'smoothed_surface', 'contour_surface'].includes(e.derived?.generator)));
+  const pathOf = (ref) => {
+    if (Array.isArray(ref)) return ref;
+    const [c] = D.resolve(ctx.doc, ref);
+    if (!c.curve && !c.line) throw new Error(`${c.name} is not a curve, alignment or line.`);
+    return c.curve ? D.curvePoints(ctx.doc, c) : S.lineworkPath(ctx.doc, c);
+  };
+  const projZ = (y) => y + (S.geo(ctx.doc).base?.[2] ?? 0);
+  const modelY = (z) => z - (S.geo(ctx.doc).base?.[2] ?? 0);
+  const csvOut = async (path, text) => {
+    if (!path) return null;
+    if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app.');
+    await ctx.io.writeText(path, text);
+    return path;
+  };
+
+  def('terrain', 'surface_contours', 'Contour lines of a surface every interval (major lines every n), live: they follow the surface. Labels show on major lines. Run again to change the interval.', obj({ id, interval: num('m, default 1'), major_every: num('a major line every n (default 5)'), base: num('a level the contours line up with (project, default 0)'), smooth: num('rounding passes 0–3 (default 1)'), layer: str('layer (default "Contours")'), name: common.name }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(a.id);
+    let g = doc.entities.find((e) => e.contours?.surface === s.id);
+    if (!g) {
+      L.ensureLayer(doc, a.layer || 'Contours');
+      g = D.addEntity(doc, { type: 'group', name: a.name || D.uniqueName(doc, `${s.name} contours`), tag: a.layer || 'Contours', contours: { surface: s.id } });
+    }
+    Object.assign(g.contours, { interval: a.interval ?? g.contours.interval ?? 1, major_every: a.major_every ?? g.contours.major_every ?? 5, base: a.base ?? g.contours.base ?? 0, smooth: a.smooth ?? g.contours.smooth ?? 1, stamp: null });
+    SW.syncTerrain(doc);
+    return { id: g.id, name: g.name, levels: g.contours.levels, lines: D.childrenOf(doc, g.id).length };
+  }, true);
+  def('terrain', 'export_contours', 'Write a contour group as DXF 3D polylines at their elevations (project coordinates).', obj({ id: str('contour group'), path: str('absolute .dxf path') }, ['id', 'path']), async (a) => {
+    const [g] = D.resolve(ctx.doc, a.id);
+    if (!g.contours) throw new Error(`${g.name} is not a contour group (surface_contours makes one).`);
+    const text = F.getFormat('dxf').write(ctx.doc, { ents: D.descendants(ctx.doc, g.id), opts: { coordinates: 'project' } });
+    await csvOut(a.path, text);
+    return { path: a.path, lines: D.childrenOf(ctx.doc, g.id).length };
+  });
+  def('terrain', 'analyze_surface', 'Colour a surface by elevation bands, slope classes (% or degrees, your thresholds), aspect (the way it faces), or its difference to another surface; returns the legend. Live. kind "none" removes it.', obj({ id, kind: str('elevation | slope | aspect | difference | none', ['elevation', 'slope', 'aspect', 'difference', 'none']), bands: num('elevation: number of bands (default 8)'), thresholds: { type: 'array', items: { type: 'number' }, description: 'slope: class limits (default 2, 5, 10, 20, 33)' }, units: str('slope: percent | degrees', ['percent', 'degrees']), other: str('difference: the other surface') }, ['id', 'kind']), (a) => {
+    const e = surfaceOf(a.id);
+    if (a.kind === 'none') {
+      delete e.analysis;
+      if (e.mesh.fc) e.mesh = { v: e.mesh.v, f: e.mesh.f };
+      return { id: e.id, analysis: 'none' };
+    }
+    e.analysis = { kind: a.kind, ...(a.bands ? { bands: a.bands } : {}), ...(a.thresholds ? { thresholds: a.thresholds } : {}), ...(a.units ? { units: a.units } : {}), ...(a.other ? { other: surfaceOf(a.other).id } : {}) };
+    SW.syncTerrain(ctx.doc);
+    return { id: e.id, kind: a.kind, legend: e.analysis.legend };
+  }, true);
+  def('terrain', 'surface_profile', 'A long section: heights of one or more surfaces along a curve, alignment or points, every interval. Returns the samples (chainage, elevations) and can save a CSV.', obj({ path: { description: 'curve / alignment id or name, or [[x, y, z], …]' }, surfaces: { type: 'array', items: { type: 'string' }, description: 'default: every surface' }, interval: num('m, default 1'), csv: str('absolute .csv path to save') }, ['path']), async (a) => {
+    const surfs = a.surfaces ? a.surfaces.map(surfaceOf) : allSurfaces();
+    if (!surfs.length) throw new Error('No surface to cut: make one first.');
+    const p = SF.profile(pathOf(a.path), surfs.map((s) => SW.surfaceSampler(ctx.doc, s).z), a.interval || 1);
+    const rows = p.samples.map((q) => ({ chainage: r4(q.s), x: r4(q.x), z: r4(q.z), ...Object.fromEntries(surfs.map((s, i) => [s.name, q.values[i] === null ? null : r4(projZ(q.values[i]))])) }));
+    const csv = [['chainage', ...surfs.map((s) => s.name)].join(','), ...rows.map((r) => [r.chainage, ...surfs.map((s) => r[s.name] ?? '')].join(','))].join('\n');
+    await csvOut(a.csv, csv);
+    return { length: r4(p.length), surfaces: surfs.map((s) => s.name), samples: rows };
+  });
+  def('terrain', 'cross_sections', 'Cross-sections square to an alignment or curve every interval, from left to right offset, with the heights of one or more surfaces. Returns the sections and can save a CSV.', obj({ path: { description: 'alignment / curve id or name, or points' }, surfaces: { type: 'array', items: { type: 'string' } }, interval: num('m between sections (default 10)'), left: num('m (default 20)'), right: num('m (default 20)'), step: num('m between samples (default 1)'), csv: str('absolute .csv path') }, ['path']), async (a) => {
+    const surfs = a.surfaces ? a.surfaces.map(surfaceOf) : allSurfaces();
+    if (!surfs.length) throw new Error('No surface to cut: make one first.');
+    const xs = SF.sections(pathOf(a.path), surfs.map((s) => SW.surfaceSampler(ctx.doc, s).z), { interval: a.interval || 10, left: a.left ?? 20, right: a.right ?? 20, step: a.step || 1 });
+    const out = xs.map((x) => ({ station: x.station, points: x.points.map((q) => ({ offset: q.offset, ...Object.fromEntries(surfs.map((s, i) => [s.name, q.values[i] === null ? null : r4(projZ(q.values[i]))])) })) }));
+    const csv = ['station,offset,' + surfs.map((s) => s.name).join(','), ...out.flatMap((x) => x.points.map((q) => [x.station, q.offset, ...surfs.map((s) => q[s.name] ?? '')].join(',')))].join('\n');
+    await csvOut(a.csv, csv);
+    return { surfaces: surfs.map((s) => s.name), sections: out };
+  });
+  def('terrain', 'create_pad', 'A building pad or platform: a top at an elevation (or with a grade) inside a closed curve, with cut and fill batter slopes (H:V) running out to the ground (daylighting). Live: change the outline, level or slopes and it follows. merge: also a design surface (ground + pads) for volumes.', obj({ outline: { description: 'a closed curve id / name, or [[x, y, z], …]' }, elevation: num('project elevation of the top'), grade: num('%, default 0'), bearing: num('direction the grade rises, degrees from north'), cut_slope: num('H:V, default 2'), fill_slope: num('H:V, default 2'), surface: str('the ground'), merge: bool('also make the merged design surface'), name: common.name, color: common.color }, ['outline', 'elevation', 'surface']), (a) => {
+    const doc = ctx.doc;
+    const ground = surfaceOf(a.surface);
+    const curve = Array.isArray(a.outline) ? null : D.resolve(doc, a.outline)[0];
+    if (curve && !curve.curve) throw new Error(`${curve.name} is not a curve.`);
+    const params = { elevation: modelY(a.elevation), grade: a.grade || 0, bearing: a.bearing || 0, cut_slope: a.cut_slope || 2, fill_slope: a.fill_slope || 2, ...(curve ? {} : { outline: a.outline }) };
+    const inputs = [curve?.id ?? null, ground.id].filter(Boolean);
+    if (!curve) inputs.unshift(null);
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Pad'), material: { color: a.color || '#c9b38f', roughness: 0.9 }, meta: { surface: true } });
+    R.derive(doc, e, 'pad', params, curve ? [curve.id, ground.id] : []);
+    if (!curve) {
+      e.derived.inputs = [];
+      e.derived.params.outline = a.outline;
+    }
+    let merged = null;
+    if (a.merge) {
+      merged = doc.entities.find((x) => x.derived?.generator === 'design_surface' && x.derived.inputs[0] === ground.id);
+      if (merged) {
+        merged.derived.inputs.push(e.id);
+        R.regenerate(doc, merged);
+      } else {
+        merged = D.addEntity(doc, { name: D.uniqueName(doc, 'Design surface'), material: { color: '#b7c99a', roughness: 0.95 }, meta: { surface: true } });
+        R.derive(doc, merged, 'design_surface', {}, [ground.id, e.id]);
+      }
+    }
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), ...(merged ? { design_surface: merged.name } : {}) };
+  }, true);
+  def('terrain', 'set_batter', 'Change a pad: its elevation, grade, or cut and fill batter slopes.', obj({ id, elevation: num('project elevation'), grade: num('%'), bearing: num('degrees'), cut_slope: num('H:V'), fill_slope: num('H:V') }, ['id']), (a) => {
+    const [e] = D.resolve(ctx.doc, a.id);
+    if (e.derived?.generator !== 'pad') throw new Error(`${e.name} is not a pad.`);
+    for (const k of ['grade', 'bearing', 'cut_slope', 'fill_slope']) if (a[k] !== undefined) e.derived.params[k] = a[k];
+    if (a.elevation !== undefined) e.derived.params.elevation = modelY(a.elevation);
+    R.regenerate(ctx.doc, e);
+    return summary(ctx.doc, e);
+  }, true);
+  def('terrain', 'smooth_surface', 'A smoother copy of a surface for presentation or design: subdivided and smoothed between the surveyed points, which stay exactly where they are. Live on the source surface.', obj({ id, levels: num('subdivisions 1–3 (default 1)'), iterations: num('passes (default 10)'), strength: num('0–1 (default 0.5)'), keep_points: bool('surveyed points stay (default true)'), hide_source: bool('hide the original (default true)'), name: common.name }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(a.id);
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, `${s.name} smoothed`), tag: s.tag, material: { ...s.material }, meta: { surface: true } });
+    R.derive(doc, e, 'smoothed_surface', { levels: a.levels ?? 1, iterations: a.iterations ?? 10, strength: a.strength ?? 0.5, keep_points: a.keep_points !== false }, [s.id]);
+    if (a.hide_source !== false) s.visible = false;
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), triangles: e.mesh.f.length };
+  }, true);
+  def('terrain', 'assign_contour_elevations', 'Give contour lines their heights in one go: in the order given, from start, every interval (project elevations).', obj({ ids, start: num('elevation of the first'), interval: num('step between lines (default 1)') }, ['start']), (a) => {
+    const ents = targets(ctx, a);
+    ents.forEach((e, i) => {
+      if (!e.curve) throw new Error(`${e.name} is not a curve.`);
+      const y = modelY(a.start + i * (a.interval ?? 1));
+      setPts(e, curve2d(e).pts3.map((p) => [p[0], y, p[2]]));
+    });
+    return { lines: ents.length };
+  }, true);
+  def('terrain', 'terrain_from_contours', 'A surface from contour lines (curves at their heights: imported from DXF, extracted from a PDF, or drawn). Flat triangles between two points of one contour are lifted; live: edit a contour and the surface follows.', obj({ ...LW, spacing: num('resample every m (default 2)'), weed: num('drop points within m of a straight line (default 0.05)'), name: common.name }), (a) => {
+    const doc = ctx.doc;
+    const ents = DW.curvesOf(doc, a.layer ? [] : targets(ctx, a), a.layer);
+    if (ents.length < 2) throw new Error('Give two or more contour lines.');
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface from contours'), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true } });
+    R.derive(doc, e, 'contour_surface', { spacing: a.spacing ?? 2, weed: a.weed ?? 0.05 }, ents.map((c) => c.id));
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), triangles: e.mesh.f.length };
+  }, true);
+  def('terrain', 'create_terrain', 'A flat grid of ground to sculpt (sculpt_terrain), width × depth m with cells of spacing m, at an elevation.', obj({ width: num('m (default 100)'), depth: num('m (default 100)'), spacing: num('m (default 2)'), elevation: num('project elevation (default 0)'), name: common.name, color: common.color }), (a) => {
+    const doc = ctx.doc;
+    const m = SF.gridMesh(a.width || 100, a.depth || 100, a.spacing || 2, modelY(a.elevation ?? (S.geo(doc).base?.[2] ?? 0)));
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Terrain'), mesh: m, material: { color: a.color || '#8fae7a', roughness: 0.95 }, meta: { surface: true } });
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), points: m.v.length };
+  }, true);
+  const BRUSH = { at: v3('world point on the surface (centre of the brush)'), radius: num('outer radius, m (default 5)'), inner: num('full-strength radius, m (default 0)'), shape: str('circle | ellipse | square', ['circle', 'ellipse', 'square']), ratio: num('ellipse: short / long (default 0.5)'), angle: num('ellipse / square: turn, degrees'), falloff: str('linear | smooth | sharp | plateau', ['linear', 'smooth', 'sharp', 'plateau']), strength: num('m per stroke (default 0.5)') };
+  def('terrain', 'sculpt_terrain', 'Brush a surface: raise, lower, flatten (to a height), smooth, noise or terrace, with a shape, radius, falloff and strength. On a survey surface the stroke is a design adjustment on top: the surveyed points do not move.', obj({ id, operation: str('raise | lower | flatten | smooth | noise | terrace', ['raise', 'lower', 'flatten', 'smooth', 'noise', 'terrace']), ...BRUSH, height: num('flatten: project elevation (default: the average under the brush)'), step: num('terrace: step height, m (default 1)') }, ['id', 'at']), (a) => {
+    const doc = ctx.doc;
+    const e = surfaceOf(a.id);
+    const op = { at: [a.at[0], a.at[2]], operation: a.operation || 'raise', radius: a.radius ?? 5, inner: a.inner ?? 0, shape: a.shape || 'circle', ratio: a.ratio ?? 0.5, angle: a.angle ?? 0, falloff: a.falloff || 'smooth', strength: a.strength ?? 0.5, ...(a.height !== undefined ? { height: modelY(a.height) } : {}), step: a.step ?? 1 };
+    if (e.derived) {
+      if (e.derived.generator !== 'surface') throw new Error(`${e.name} is made from other things: sculpt its source, or bake it first.`);
+      (e.derived.params.adjustments ||= []).push(op);
+      R.regenerate(doc, e);
+      return { id: e.id, adjustments: e.derived.params.adjustments.length };
+    }
+    // a plain mesh: work in its world frame, then back into its local frame
+    const w = D.worldMesh(doc, e);
+    const out = SF.sculpt(w, op);
+    const inv = D.worldMatrix(doc, e).clone().invert().elements;
+    e.mesh = { v: out.v.map((p) => [0, 1, 2].map((k) => inv[k] * p[0] + inv[4 + k] * p[1] + inv[8 + k] * p[2] + inv[12 + k])), f: out.f };
+    return { id: e.id, touched: out.touched };
+  }, true);
+  def('terrain', 'stamp', 'Press a flat platform into a surface: inside a closed curve at an elevation, blending to the ground over a width.', obj({ id, outline: str('closed curve'), elevation: num('project elevation'), width: num('blend width outside, m (default 3)') }, ['id', 'outline', 'elevation']), (a) => {
+    const doc = ctx.doc;
+    const e = surfaceOf(a.id);
+    const outline = pathOf(a.outline);
+    const op = { outline, y: modelY(a.elevation), width: a.width ?? 3 };
+    if (e.derived?.generator === 'surface') {
+      (e.derived.params.adjustments ||= []).push(op);
+      R.regenerate(doc, e);
+      return { id: e.id, adjustments: e.derived.params.adjustments.length };
+    }
+    if (e.derived) throw new Error(`${e.name} is made from other things: bake it first.`);
+    const out = SF.stampMesh(D.worldMesh(doc, e), outline, op);
+    const inv = D.worldMatrix(doc, e).clone().invert().elements;
+    e.mesh = { v: out.v.map((p) => [0, 1, 2].map((k) => inv[k] * p[0] + inv[4 + k] * p[1] + inv[8 + k] * p[2] + inv[12 + k])), f: out.f };
+    return { id: e.id, touched: out.touched };
+  }, true);
+  def('terrain', 'drape', 'Set things onto a surface: curves take its heights point by point; shapes and groups sit on it (their base at the height under their middle).', obj({ ids, surface: str('the surface'), offset: num('m above it (default 0)') }, ['surface']), (a) => {
+    const doc = ctx.doc;
+    const z = SW.surfaceSampler(doc, surfaceOf(a.surface)).z;
+    const off = a.offset || 0;
+    let n = 0;
+    for (const e of targets(ctx, a)) {
+      if (e.curve) {
+        setPts(e, curve2d(e).pts3.map((p) => [p[0], (z(p[0], p[2]) ?? p[1]) + off, p[2]]));
+        n++;
+      } else {
+        const b = D.worldBox(doc, e);
+        const h = z((b.min[0] + b.max[0]) / 2, (b.min[2] + b.max[2]) / 2);
+        if (h === null) continue;
+        e.position = D.round3([e.position[0], e.position[1] + h + off - b.min[1], e.position[2]]);
+        n++;
+      }
+    }
+    return { draped: n };
+  }, true);
+  def('terrain', 'water_level', 'A water plane over a surface, rising (or falling) between two project elevations over time: floods, ponds, tides on the timeline.', obj({ surface: str('the surface it covers'), from: num('project elevation at the start'), to: num('at the end'), start: T('default 0'), end: T('default start + 4 s'), name: common.name, color: common.color }, ['surface', 'from', 'to']), (a) => {
+    const doc = ctx.doc;
+    const b = D.worldBox(doc, surfaceOf(a.surface));
+    const [w, d] = [b.max[0] - b.min[0], b.max[2] - b.min[2]];
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Water'), mesh: G.box(w, 0.02, d), position: D.round3([(b.min[0] + b.max[0]) / 2, modelY(a.from), (b.min[2] + b.max[2]) / 2]), material: { color: a.color || '#3a86c8', opacity: 0.55, roughness: 0.1, metalness: 0.1 } });
+    const start = at(a.start, 0);
+    const end = a.end !== undefined ? at(a.end, start + 4) : start + 4;
+    A.setKey(doc, e.id, 'position', start, [...e.position]);
+    A.setKey(doc, e.id, 'position', end, [e.position[0], modelY(a.to), e.position[2]]);
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), start, end };
+  }, true);
+  def('terrain', 'import_terrain', 'Real terrain from an elevation grid: GeoTIFF DEM (.tif) or ESRI ASCII grid (.asc), in project coordinates (no reprojection). Big grids are thinned to max_points.', obj({ path: str('absolute path of a .tif / .tiff / .asc'), step: num('use every n-th sample (default: automatic)'), max_points: num('default 250000'), name: common.name }, ['path']), async (a) => {
+    const doc = ctx.doc;
+    let grid;
+    if (/\.asc$/i.test(a.path)) grid = SF.parseAsciiGrid(await needIO().readText(a.path));
+    else {
+      if (!ctx.io?.demRead) throw new Error('Reading GeoTIFF needs the desktop app.');
+      grid = await ctx.io.demRead(new Uint8Array(await ctx.io.readBinary(a.path)));
+      if (!grid.affine) throw new Error('That TIFF has no georeferencing (no GeoTIFF tags).');
+    }
+    const g = S.geo(doc);
+    if (!g.base) {
+      const [cx, cy] = [grid.affine[0] * grid.width / 2 + grid.affine[2], grid.affine[4] * grid.height / 2 + grid.affine[5]];
+      const vals = [...grid.values].filter((x) => x !== grid.nodata && Number.isFinite(x) && x > -1e30);
+      g.base = [Math.round(cx / 100) * 100, Math.round(cy / 100) * 100, Math.round(vals.reduce((s, x) => s + x, 0) / (vals.length || 1))];
+    }
+    const { mesh, step } = SF.demMesh(grid, (E, N, Z) => S.toLocal(doc, { e: E, n: N, z: Z }), { step: a.step || 1, max_points: a.max_points || 250000 });
+    const { mesh: m, origin } = G.recenter(mesh);
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, String(a.path).split(/[\\/]/).pop().replace(/\.\w+$/, '')), mesh: m, position: D.round3(origin), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true, source: 'DEM' } });
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), samples: `${grid.width} × ${grid.height}`, step, triangles: m.f.length };
+  }, true);
+  def('terrain', 'drape_image', 'Lay a placed image or PDF page (an underlay) onto a surface, like an aerial photo on the ground. "none" takes it off.', obj({ surface: str('the surface'), underlay: str('underlay id / name, or "none"') }, ['surface', 'underlay']), (a) => {
+    const e = surfaceOf(a.surface);
+    if (a.underlay === 'none') {
+      delete e.drape;
+      return { surface: e.name, drape: 'none' };
+    }
+    const u = underlayOf(a.underlay);
+    e.drape = { underlay: u.id };
+    u.visible = false;
+    return { surface: e.name, drape: u.name };
+  }, true);
+  def('drawings', 'text_to_points', 'Survey points from spot heights printed on a PDF: each label matching the pattern becomes a point at its spot, with its number as the elevation.', obj({ id: str('the PDF underlay'), contains: str('regex the labels match (default: numbers like 101.25)'), code: str('code of the new points (default SPOT)'), window: WINDOW }, ['id']), async (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const c = await pdfContent(e);
+    const re = new RegExp(a.contains || '^[+-]?\\d+(?:[.,]\\d+)?$');
+    const w = winOf(e, a.window);
+    const texts = c.texts.filter((t) => re.test(t.str) && (!w || DW.filterPaths([{ pts: [t.at], color: '', width: 0 }], { window: w }).kept.length));
+    const made = [];
+    for (const t of DW.textsInWorld(doc, e, texts)) {
+      const z = DW.numberIn(t.str);
+      if (z === null) continue;
+      const p = S.toProject(doc, t.at);
+      made.push(S.addPoint(doc, { n: p.n, e: p.e, z, code: a.code || 'SPOT', desc: t.str }));
+    }
+    if (!made.length) throw new Error('No spot heights found (check contains, or the window).');
+    ctx.selection.set(made.map((p) => p.id));
+    return { points: made.length };
+  }, true);
+  def('drawings', 'label_contours', 'Give contour lines their heights from the labels on a PDF: each line takes the number of the nearest label (within max_distance).', obj({ ...LW, underlay: str('the PDF underlay'), contains: str('regex (default numbers)'), max_distance: num('m (default 5)') }, ['underlay']), async (a) => {
+    const doc = ctx.doc;
+    const ents = DW.curvesOf(doc, a.layer ? [] : targets(ctx, a), a.layer);
+    const e = underlayOf(a.underlay);
+    const re = new RegExp(a.contains || '^[+-]?\\d+(?:[.,]\\d+)?$');
+    const labels = DW.textsInWorld(doc, e, (await pdfContent(e)).texts.filter((t) => re.test(t.str))).map((t) => ({ at: t.at, z: DW.numberIn(t.str) }));
+    let done = 0;
+    for (const c of ents) {
+      const P = DR.flat(curve2d(c).pts3);
+      let best = null;
+      for (const l of labels) {
+        const d = DR.nearest(P, [l.at[0], -l.at[2]], !!c.curve.closed).d;
+        if (d <= (a.max_distance ?? 5) && (!best || d < best.d)) best = { d, z: l.z };
+      }
+      if (!best) continue;
+      setPts(c, curve2d(c).pts3.map((p) => [p[0], modelY(best.z), p[2]]));
+      done++;
+    }
+    return { labelled: done, of: ents.length };
   }, true);
 
   // ---------------------------------------------------------------- feature layers and their attribute table (#125)

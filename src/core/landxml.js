@@ -67,8 +67,8 @@ export function readLandXml(text, { doc, cmd, report, opts = {} }) {
   const k = (UNIT[fileUnit] || 1) / S.UNITS[g.units || 'm'];
   const cs = X.kid(lx, 'CoordinateSystem');
   const crs = cs?.attrs.epsgCode ? `EPSG:${cs.attrs.epsgCode}` : cs?.attrs.name;
-  if (crs && !g.crs) g.crs = crs;
-  else if (crs && g.crs && g.crs !== crs) report.warn(`The file is in ${crs}, the project in ${g.crs}: coordinates are used as they are (no reprojection).`);
+  if (crs && !g.crs) g.crs = { epsg: cs.attrs.epsgCode ? +cs.attrs.epsgCode : null, name: cs.attrs.name || cs.attrs.desc || '' };
+  else if (crs && g.crs && S.crsLabel(g.crs) !== crs && g.crs.name !== crs) report.warn(`The file is in ${crs}, the project in ${S.crsLabel(g.crs)}: coordinates are used as they are (no reprojection).`);
   const world = (n, e, z = 0) => S.toLocal(doc, { n, e, z });
   const layer = (name) => (report.layer(name), L.ensureLayer(doc, name).name);
   const names = new Set(S.points(doc).map((p) => p.name));
@@ -193,7 +193,7 @@ export function writeLandXml(doc, { ents, opts = {} }) {
   const unit = { m: 'meter', ft: 'foot', usft: 'USSurveyFoot' }[g.units || 'm'];
   const tree = X.el('LandXML', { xmlns: 'http://www.landxml.org/schema/LandXML-1.2', version: '1.2', date: new Date().toISOString().slice(0, 10), time: new Date().toISOString().slice(11, 19), language: 'English', readOnly: 'false' }, [
     X.el('Units', {}, [unit === 'meter' ? X.el('Metric', { linearUnit: 'meter', areaUnit: 'squareMeter', volumeUnit: 'cubicMeter', angularUnit: 'decimal degrees', directionUnit: 'decimal degrees' }) : X.el('Imperial', { linearUnit: unit, areaUnit: 'squareFoot', volumeUnit: 'cubicYard', angularUnit: 'decimal degrees', directionUnit: 'decimal degrees' })]),
-    g.crs ? X.el('CoordinateSystem', /^EPSG:\d+$/.test(g.crs) ? { epsgCode: g.crs.slice(5) } : { name: g.crs }) : null,
+    g.crs ? X.el('CoordinateSystem', { ...(g.crs.epsg ? { epsgCode: g.crs.epsg } : {}), ...(g.crs.name ? { name: g.crs.name } : {}) }) : null,
     X.el('Project', { name: opts.name || 'MyModellerReel model' }),
     X.el('Application', { name: 'MyModellerReel', manufacturer: 'MyModellerReel', version: opts.version || '' }),
     pts.length ? X.el('CgPoints', {}, pts.map((p) => X.el('CgPoint', { name: p.name, code: p.point.code || undefined, desc: p.point.desc || undefined }, nez(D.worldMatrix(doc, p).elements.slice(12, 15))))) : null,

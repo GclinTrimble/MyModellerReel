@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JOBFile jobName="Riverside topo" version="5.70">
+  <FieldBook>
+    <PointRecord ID="1"><Name>CP1</Name><Code>CP</Code><Method>Topo</Method><Grid><North>5400000.000</North><East>650000.000</East><Elevation>102.000</Elevation></Grid></PointRecord>
+    <PointRecord ID="2"><Name>CP2</Name><Code>CP</Code><Method>Topo</Method><Grid><North>5400000.000</North><East>650100.000</East><Elevation>102.600</Elevation></Grid></PointRecord>
+    <PointRecord ID="3"><Name>T1</Name><Code>TREE</Code><Method>Topo</Method><Grid><North>5400035.000</North><East>650020.000</East><Elevation>103.100</Elevation></Grid><Features><Feature Name="TREE"><Attribute><Name>Height</Name><Value>7.5</Value></Attribute><Attribute><Name>Species</Name><Value>Oak</Value></Attribute></Feature></Features></PointRecord>
+    <PointRecord ID="4"><Name>T2</Name><Code>TREE</Code><Method>Topo</Method><Grid><North>5400060.000</North><East>650045.000</East><Elevation>103.900</Elevation></Grid><Features><Feature Name="TREE"><Attribute><Name>Height</Name><Value>5</Value></Attribute><Attribute><Name>Species</Name><Value>Birch</Value></Attribute></Feature></Features></PointRecord>
+    <PointRecord ID="5"><Name>T3</Name><Code>TREE</Code><Method>Topo</Method><Grid><North>5400030.000</North><East>650080.000</East><Elevation>102.900</Elevation></Grid><Features><Feature Name="TREE"><Attribute><Name>Height</Name><Value>6</Value></Attribute><Attribute><Name>Species</Name><Value>Oak</Value></Attribute></Feature></Features></PointRecord>
+    <PointRecord ID="6"><Name>K1</Name><Code>KERB B</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650010.000</East><Elevation>101.400</Elevation></Grid></PointRecord>
+    <PointRecord ID="7"><Name>K2</Name><Code>KERB</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650025.000</East><Elevation>101.520</Elevation></Grid></PointRecord>
+    <PointRecord ID="8"><Name>K3</Name><Code>KERB</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650040.000</East><Elevation>101.640</Elevation></Grid></PointRecord>
+    <PointRecord ID="9"><Name>K4</Name><Code>KERB</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650055.000</East><Elevation>101.760</Elevation></Grid></PointRecord>
+    <PointRecord ID="10"><Name>K5</Name><Code>KERB</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650070.000</East><Elevation>101.880</Elevation></Grid></PointRecord>
+    <PointRecord ID="11"><Name>K6</Name><Code>KERB E</Code><Method>Topo</Method><Grid><North>5400010.000</North><East>650085.000</East><Elevation>102.000</Elevation></Grid></PointRecord>
+  </FieldBook>
+</JOBFile>

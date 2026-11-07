@@ -5,6 +5,7 @@ import * as D from './document.js';
 import * as S from './survey.js';
 import * as TR from './terrain.js';
 import { registerGenerator } from './derived.js';
+import * as SF from './surfaces.js';
 
 const wpos = (doc, e) => D.worldMatrix(doc, e).elements.slice(12, 15);
 const key = (x, z) => `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
@@ -124,12 +125,17 @@ const world = (fn) => (args) => {
 registerGenerator('surface', {
   description: 'TIN surface from survey points, breaklines and boundaries (stays live)',
   world: true,
-  params: { points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand' },
+  params: { points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand', adjustments: 'sculpt / stamp operations applied on top (design adjustments)' },
   inputsFrom: (p, doc) => {
     const s = surfaceSources(doc, p);
     return [...s.points, ...s.breaklines, ...s.boundaries].map((x) => x.id);
   },
-  run: world(({ params, doc }) => buildSurface(doc, params)),
+  run: world(({ params, doc }) => {
+    const r = buildSurface(doc, params);
+    // sculpting a survey surface is a design adjustment on top: the surveyed points themselves never move
+    for (const op of params.adjustments || []) r.mesh = op.outline ? SF.stampMesh(r.mesh, op.outline, op) : SF.sculpt(r.mesh, op);
+    return r;
+  }),
 });
 
 registerGenerator('corridor', {
@@ -168,3 +174,103 @@ design('design_offset_surface', 'A surface moved up or down (e.g. a topsoil stri
   return { v: m.v.map((q) => [q[0], q[1] + (p.offset || 0), q[2]]), f: m.f.map((f) => [...f]) };
 }, (p) => [p.surface]);
 design('design_road', 'Simple road: centreline, width, crossfall', { centre: 'points', width: 'm', crossfall: '%' }, (p, doc) => TR.roadDesign(p.centre.map((q) => refPoint(doc, q)), p));
+
+// ---------------------------------------------------------------- terrain depth (#121, #123, #120, #34, #35)
+const inRing = (ring, x, z) => {
+  let c = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) if (ring[i][1] > z !== ring[j][1] > z && x < ((ring[j][0] - ring[i][0]) * (z - ring[i][1])) / (ring[j][1] - ring[i][1]) + ring[i][0]) c = !c;
+  return c;
+};
+
+/** A design pad: a top at an elevation (or a grade) inside a closed curve, batters out to the ground. */
+registerGenerator('pad', {
+  description: 'Building pad / platform with cut and fill batter slopes to the ground (daylighting); follows its outline and the ground',
+  world: true,
+  params: { elevation: 'model height of the top', grade: '%', bearing: 'degrees: the direction the grade rises', cut_slope: 'H:V', fill_slope: 'H:V', outline: '[[x, y, z], …] when there is no curve input' },
+  run: world(({ params: p, inputs, doc }) => {
+    const [curve, ground] = inputs;
+    const outline = curve ? D.curvePoints(doc, curve) : p.outline;
+    if (!outline) throw new Error('A pad needs an outline (a closed curve).');
+    const g = ground ? surfaceSampler(doc, ground).z : () => p.elevation;
+    return SF.padMesh(outline, { ...p, ground: g }).mesh;
+  }),
+});
+
+/** The ground with pads let into it: the ground outside each pad's daylight line, plus the pads. */
+registerGenerator('design_surface', {
+  description: 'Existing ground merged with design pads: one surface for volumes and views',
+  world: true,
+  params: {},
+  run: world(({ inputs, doc }) => {
+    const [ground, ...pads] = inputs;
+    const gm = D.worldMesh(doc, ground);
+    const padMeshes = pads.map((pd) => D.worldMesh(doc, pd));
+    // a pad mesh is its top face, then its daylight ring
+    const rings = padMeshes.map((m) => m.v.slice(m.f[0].length));
+    const holes = rings.map((r) => r.map((q) => [q[0], q[2]]));
+    const v = [...gm.v.filter((q) => !holes.some((h) => inRing(h, q[0], q[2]))), ...rings.flat()];
+    const { faces } = TR.triangulate(v, { holes });
+    const out = { v, f: [...faces] };
+    for (const m of padMeshes) {
+      const base = out.v.length;
+      out.v = [...out.v, ...m.v];
+      out.f.push(...m.f.map((f) => f.map((i) => i + base)));
+    }
+    return out;
+  }),
+});
+
+/** A smoother version of a surface: the surveyed points stay, the triangles between them are rounded. */
+registerGenerator('smoothed_surface', {
+  description: 'A surface subdivided and smoothed between its surveyed points (which stay where they are)',
+  world: true,
+  params: { levels: 'subdivisions (1–3)', iterations: 'smoothing passes', strength: '0–1', keep_points: 'surveyed points stay (default true)' },
+  run: world(({ params: p, inputs, doc }) => SF.smoothMesh(D.worldMesh(doc, inputs[0]), { levels: Math.min(3, p.levels ?? 1), iterations: p.iterations ?? 10, strength: p.strength ?? 0.5, keep: p.keep_points !== false })),
+});
+
+/** A surface from contour lines (curves at their elevations); edit a contour and it rebuilds. */
+registerGenerator('contour_surface', {
+  description: 'TIN from contour lines, with flat triangles lifted; follows the contours',
+  world: true,
+  params: { spacing: 'resample the contours every m', weed: 'drop contour points closer than m to a straight line' },
+  run: world(({ params: p, inputs, doc }) => SF.contourSurface(inputs.map((c) => ({ pts: D.curvePoints(doc, c).slice(0, c.curve.closed ? -1 : undefined), closed: !!c.curve.closed })), p).mesh),
+});
+
+/** A cheap fingerprint of where a mesh's points are (it changes when the surface is rebuilt or moved). */
+function stampOf(e) {
+  let h = e.mesh.v.length;
+  const step = Math.max(1, Math.floor(e.mesh.v.length / 500));
+  for (let i = 0; i < e.mesh.v.length; i += step) h = (h * 31 + e.mesh.v[i][0] * 7 + e.mesh.v[i][1] * 13 + e.mesh.v[i][2] * 17) % 1e9;
+  return `${h.toFixed(3)}|${e.position.join(',')}|${e.mesh.f.length}`;
+}
+
+/** After every change: contour groups and analysis colours follow their surfaces. */
+export function syncTerrain(doc) {
+  const baseZ = S.geo(doc).base?.[2] ?? 0;
+  for (const g of doc.entities.filter((x) => x.contours)) {
+    const s = D.getEntity(doc, g.contours.surface);
+    if (!s?.mesh) continue;
+    const c = g.contours;
+    const st = `${stampOf(s)}|${c.interval}|${c.major_every}|${c.smooth}|${c.base}`;
+    if (c.stamp === st) continue;
+    for (const old of D.childrenOf(doc, g.id)) D.removeEntity(doc, old);
+    const levels = SF.contours(D.worldMesh(doc, s), { interval: c.interval, base: (c.base ?? 0) - baseZ, major_every: c.major_every ?? 5, smooth: c.smooth ?? 0 });
+    for (const lv of levels)
+      for (const l of lv.lines) {
+        const { mesh, origin } = G.recenter({ v: l.pts.map(D.round3), f: [] });
+        const z = Math.round((lv.z + baseZ) * 1000) / 1000;
+        D.addEntity(doc, { type: 'curve', parent: g.id, name: z.toFixed(2), tag: g.tag, curve: { kind: 'polyline', points: mesh.v, closed: l.closed }, position: D.round3(origin), material: { color: lv.major ? '#6b4e2e' : '#a88a63' }, meta: { elevation: z, ...(lv.major ? { major: true } : {}) } });
+      }
+    c.stamp = st;
+    c.levels = levels.length;
+  }
+  for (const e of doc.entities.filter((x) => x.analysis && x.mesh)) {
+    const other = e.analysis.other && D.getEntity(doc, e.analysis.other);
+    const st = stampOf(e) + (other?.mesh ? stampOf(other) : '');
+    if (e.analysis.stamp === st && e.mesh.fc) continue;
+    const r = SF.analyze(D.worldMesh(doc, e), { ...e.analysis, base: baseZ, other: other?.mesh ? surfaceSampler(doc, other).z : null });
+    e.mesh = { ...e.mesh, fc: r.fc };
+    e.analysis.legend = r.legend;
+    e.analysis.stamp = st;
+  }
+}

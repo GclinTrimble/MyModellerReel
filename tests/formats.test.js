@@ -37,7 +37,7 @@ test('LandXML (Civil 3D style): surface without its hidden face, breakline, alig
   assert.deepEqual(r.created, { surfaces: 1, triangles: 2, breaklines: 1, alignments: 1 });
   assert.ok(r.warnings.some((w) => /Spiral/.test(w)));
   assert.ok(r.skipped.some((s) => /Parcels/.test(s.what)));
-  assert.equal(S.geo(ctx.doc).crs, 'EPSG:32631');
+  assert.equal(S.crsLabel(S.geo(ctx.doc).crs), 'EPSG:32631');
   const eg = byName(ctx, 'EG');
   assert.equal(eg.mesh.f.length, 2);
   const box = D.worldBox(ctx.doc, eg);

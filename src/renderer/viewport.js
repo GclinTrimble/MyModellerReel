@@ -7,6 +7,7 @@ import * as A from '../core/animation.js';
 import { samplePoints } from '../core/curves.js';
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry } from './underlays.js';
+import { invert as invertAffine } from '../core/underlay.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -51,6 +52,26 @@ export function applyTransform(obj, e) {
  * Build the object tree for a document. Used by the viewport and by exporters (edges: false).
  * cache (the viewport's): geometry per mesh object, so an edit re-uploads only the shapes it changed.
  */
+/** A surface's geometry with UVs onto an underlay's picture (#132): each vertex looks up its spot on the drawing. */
+function drapedGeometry(geometry, e, u) {
+  const g = geometry.clone();
+  const pos = g.attributes.position;
+  const inv = invertAffine(u.underlay.affine);
+  const [ox, , oz] = e.position;
+  const up = u.position;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    const X = pos.getX(i) + ox - up[0];
+    const Y = -(pos.getZ(i) + oz - up[2]);
+    const s = inv[0] * X + inv[1] * Y + inv[2];
+    const t = inv[3] * X + inv[4] * Y + inv[5];
+    uv[i * 2] = s / u.underlay.size[0];
+    uv[i * 2 + 1] = 1 - t / u.underlay.size[1];
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return g;
+}
+
 export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null } = {}) {
   const root = new THREE.Group();
   root.name = 'Model';
@@ -68,7 +89,9 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     let o;
     if (e.mesh) {
       const g = geo(e.mesh);
-      o = new THREE.Mesh(g.geometry, makeMaterial(e.byLayer ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc }));
+      const drape = e.drape && underlay ? doc.entities.find((x) => x.id === e.drape.underlay && x.underlay) : null;
+      o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape }));
+      if (drape) (o.material.map = underlay(drape).material.map), (o.material.color.set('#ffffff')), (o.userData.draped = true);
       o.material.clippingPlanes = clipping;
       o.castShadow = o.receiveShadow = true;
       if (wireframe) o.material.visible = false;
@@ -346,7 +369,7 @@ export class Viewport {
         o.material.opacity = doc.settings.xray ? Math.min(op, 0.45) : op;
         o.material.transparent = op < 1 || doc.settings.xray;
         o.material.depthWrite = !o.material.transparent;
-        if (!o.userData.underlay) o.material.color.set(p.color || L.colorOf(doc, e));
+        if (!o.userData.underlay && !o.userData.draped) o.material.color.set(p.color || (e.mesh?.fc ? '#ffffff' : L.colorOf(doc, e))); // colour maps show as given
         for (const c of o.children) if (c.userData.isEdges) c.material.opacity = op, (c.material.transparent = op < 1);
       }
     }
@@ -606,7 +629,7 @@ export class Viewport {
 
 export function disposeTree(o, geometry = true) {
   o.traverse((x) => {
-    if (geometry || x.userData.isCurve || x.userData.underlay) x.geometry?.dispose();
+    if (geometry || x.userData.isCurve || x.userData.underlay || x.userData.draped) x.geometry?.dispose();
     if (x.material) [].concat(x.material).forEach((m) => m.dispose());
   });
 }

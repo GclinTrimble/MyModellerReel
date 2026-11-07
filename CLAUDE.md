@@ -26,7 +26,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   offset, trim, extend, fillet, join, simplify), `drawings.js` (underlay frames, extraction clean-up, the extrude
   generator), `assets.js` (PDF / image bytes kept out of the document JSON, packed into saved files), `formats.js` (the
   import / export registry and reports), `xml.js`, `landxml.js`, `dxf.js`, `ifc.js` (web-ifc reads; we write IFC),
-  `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
+  `surfaces.js` (contours, surface analysis, profiles, pads, smoothing, sculpting, DEM grids), `trimble.js` (JobXML and
+  FXL), `gis.js` (GeoJSON, Shapefile and DBF), `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
   pages' catalogue; the pages are `docs/how-to/*.md`).
 - Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.

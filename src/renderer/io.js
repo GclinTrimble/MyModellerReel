@@ -15,7 +15,7 @@ import { buildModel } from './viewport.js';
 import { renderVideo } from './render.js';
 import { stripForSave, hydrate } from '../core/components.js';
 import * as Assets from '../core/assets.js';
-import { tiffInfo } from './underlays.js';
+import { tiffInfo, demRead } from './underlays.js';
 
 const D2R = Math.PI / 180;
 const native = () => window.native;
@@ -28,10 +28,12 @@ const FILTERS = {
   png: [{ name: 'PNG image', extensions: ['png'] }],
   video: [{ name: 'MP4 video (H.264)', extensions: ['mp4'] }, { name: 'WebM video (VP9, can be transparent)', extensions: ['webm'] }, { name: 'Animated GIF', extensions: ['gif'] }, { name: 'PNG sequence', extensions: ['png'] }],
   models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
-  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'xml', 'landxml', 'ifc', 'dxf'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'xml', 'landxml', 'ifc', 'dxf', 'jxl', 'fxl', 'geojson', 'json', 'shp'] }, { name: 'Trimble JobXML / feature library', extensions: ['jxl', 'fxl'] }, { name: 'GeoJSON / Shapefile', extensions: ['geojson', 'json', 'shp'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
   landxml: [{ name: 'LandXML 1.2', extensions: ['xml'] }],
   ifc: [{ name: 'IFC', extensions: ['ifc'] }],
   dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
+  geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
+  shp: [{ name: 'Shapefile', extensions: ['shp'] }],
 };
 
 export class IO {
@@ -201,6 +203,11 @@ export class IO {
     await native().invoke('file:write', path, data);
     this.app.ui.toast(`Exported ${base(path)}`);
     return { exported: path };
+  }
+
+  /** A GeoTIFF elevation grid (#37). */
+  demRead(bytes) {
+    return demRead(bytes);
   }
 
   /** A how-to page's Markdown (#158). */

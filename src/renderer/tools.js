@@ -28,6 +28,7 @@ export const TOOLS = [
   { id: 'extend', label: 'Extend curves', key: 'Y', icon: 'arrow-line-right', group: 'draft' },
   { id: 'calibrate', label: 'Calibrate drawing (scale, orient)', key: 'I', icon: 'ruler', group: 'draft' },
   { id: 'control', label: 'Control points (georeference a drawing)', key: 'J', icon: 'crosshair', group: 'draft' },
+  { id: 'sculpt', label: 'Sculpt terrain (type: raise 5 0.5)', key: 'V', icon: 'paint-brush-broad', group: 'edit' },
   { id: 'pushpull', label: 'Push/Pull', key: 'P', icon: 'arrow-fat-lines-up', group: 'edit' },
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
@@ -233,11 +234,25 @@ class SelectTool {
   constructor(t) {
     this.t = t;
   }
+  /** Over a surface: its elevation and slope there, in the status bar. */
+  readout(ev) {
+    const now = performance.now();
+    if (now - (this.last || 0) < 60) return;
+    this.last = now;
+    const hit = this.t.vp.pick(ev);
+    const e = hit && this.t.app.entity(hit.entityId);
+    if (!e?.mesh || !(e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.report)) return this.shown && ((this.shown = false), this.t.status(this.hint));
+    const base = this.t.app.store.doc.geo?.base?.[2] ?? 0;
+    const n = hit.normal;
+    const slope = Math.hypot(n.x, n.z) / Math.max(1e-9, Math.abs(n.y));
+    this.shown = true;
+    this.t.status(`${e.name}: Z ${(hit.point.y + base).toFixed(3)} · slope ${(slope * 100).toFixed(1)} % (${((Math.atan(slope) * 180) / Math.PI).toFixed(1)}°)`);
+  }
   down(ev) {
     this.start = { x: ev.clientX, y: ev.clientY };
   }
   move(ev) {
-    if (!this.start) return;
+    if (!this.start) return this.readout(ev);
     const r = this.t.vp.canvas.getBoundingClientRect();
     const [x0, x1] = [this.start.x, ev.clientX].sort((a, b) => a - b);
     const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
@@ -936,6 +951,60 @@ class ControlTool {
   }
 }
 
+/** Sculpt (#35): click or drag on a surface; type the operation, radius and strength ("raise 5 0.5", "flatten 8", "smooth"). */
+class SculptTool {
+  hint = 'Click or drag on a surface to sculpt. Type: raise / lower / flatten / smooth / noise / terrace, then radius and strength (e.g. "lower 6 0.3"). Shift lowers.';
+  vcbLabel = 'Brush';
+  constructor(t) {
+    this.t = t;
+    this.op = 'raise';
+    this.radius = 5;
+    this.strength = 0.3;
+  }
+  ring(hit) {
+    this.t.vp.overlay.clear();
+    if (!hit) return;
+    const pts = Array.from({ length: 49 }, (_, k) => {
+      const a = (k / 48) * Math.PI * 2;
+      return V(hit.point.x + Math.cos(a) * this.radius, hit.point.y + 0.05, hit.point.z + Math.sin(a) * this.radius);
+    });
+    this.t.lines(pts, HIGHLIGHT);
+  }
+  move(ev) {
+    const hit = this.t.vp.pick(ev);
+    this.ring(hit);
+    if (this.down_ && hit && performance.now() - (this.t0 || 0) > 120) this.stroke(hit, ev);
+  }
+  async stroke(hit, ev) {
+    if (this.busy_) return;
+    this.busy_ = true;
+    this.t0 = performance.now();
+    try {
+      await this.t.run('sculpt_terrain', { id: this.t.app.pickTarget(hit.entityId), at: D.round3(hit.point.toArray()), operation: ev.shiftKey && this.op === 'raise' ? 'lower' : this.op, radius: this.radius, strength: this.strength });
+    } finally {
+      this.busy_ = false;
+    }
+  }
+  async down(ev) {
+    this.down_ = true;
+    const hit = this.t.vp.pick(ev);
+    if (hit) await this.stroke(hit, ev);
+  }
+  up() {
+    this.down_ = false;
+  }
+  vcb(text) {
+    const words = text.split(/[\s,]+/).filter(Boolean);
+    const op = words.find((w) => /^(raise|lower|flatten|smooth|noise|terrace)$/i.test(w));
+    if (op) this.op = op.toLowerCase();
+    // the first number is the radius, the second the strength
+    const [r, s] = words.map(Number).filter((x) => Number.isFinite(x) && x > 0);
+    if (r) this.radius = r;
+    if (s) this.strength = s;
+    this.t.status(`Brush: ${this.op}, radius ${fmt(this.radius)}, strength ${this.strength}`);
+  }
+}
+
 /** Zoom window: drag a box, the view zooms into it. */
 class ZoomWindowTool {
   hint = 'Drag a box around what you want to see up close.';
@@ -1085,6 +1154,7 @@ const IMPL = {
   control: ControlTool,
   trim: TrimTool,
   zoomwin: ZoomWindowTool,
+  sculpt: SculptTool,
   extend: ExtendTool,
   pushpull: PushPullTool,
   move: MoveTool,

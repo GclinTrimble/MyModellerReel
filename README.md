@@ -34,6 +34,10 @@ Electron's binary download is an install script; if your npm blocks install scri
   feature codes that turn field codes into breaklines and objects, live TIN surfaces with breaklines, boundaries and
   surface checks, cut/fill maps and volume reports, alignments with corridors that daylight to the ground, and quick
   designs (sloped line, plane, trench, road). A Survey tab lists and edits every point.
+- **Reading and shaping terrain**: live labelled contours, slope / elevation / aspect colours with a legend, profiles
+  and cross-sections as charts, building pads with cut and fill batters merged into a design surface, smoothing,
+  surfaces from contour lines, a sculpting brush (raise, lower, flatten, smooth, terrace), stamps, draping objects and
+  aerial images on the ground, water levels, and real terrain from GeoTIFF or ASCII grid DEMs.
 - **Drawings and georeferencing**: place PDF pages and images (world files, GeoTIFF) as underlays, calibrate them
   (a known distance, a bearing, a point) or georeference them from control points with residuals, in local project
   coordinates. Extract a PDF's vector linework by layer, colour and window; draft on it (offset, trim, extend, fillet,
@@ -47,7 +51,8 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Open formats**: LandXML (points, TIN surfaces, alignments with profiles, linework), IFC (BIM elements with
   storeys, property sets, layers and georeferencing, out as IFC4 or IFC4X3) and DXF (layers with colours and line
   types, polylines with arcs, blocks as components, 3D faces), in and out, with an import report. Feature layers
-  have an attribute table.
+  have an attribute table. Field and GIS data: Trimble JobXML (.jxl) and feature libraries (.fxl), GeoJSON and
+  Shapefiles (in and out, with attributes).
 - **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
   sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
   live arrays, recipes that rebuild a model with other values, and a macro recorder.

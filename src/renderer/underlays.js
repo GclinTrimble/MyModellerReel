@@ -23,6 +23,26 @@ async function loadGeoTiff() {
   return (geotiff = window.GeoTIFF);
 }
 
+/** A GeoTIFF elevation grid (#37): band 0 as heights, thinned to about max samples a side, with its placement. */
+export async function demRead(bytes, maxSide = 1200) {
+  const GT = await loadGeoTiff();
+  const img = await (await GT.fromArrayBuffer(bytes.slice().buffer)).getImage();
+  const [W, H] = [img.getWidth(), img.getHeight()];
+  const k = Math.max(1, Math.ceil(Math.max(W, H) / maxSide));
+  const [w, h] = [Math.floor(W / k), Math.floor(H / k)];
+  const [band] = await img.readRasters({ width: w, height: h, samples: [0], resampleMethod: 'nearest' });
+  let affine = null;
+  try {
+    const [ox, oy] = img.getOrigin();
+    const [rx, ry] = img.getResolution();
+    affine = [rx * (W / w), 0, ox, 0, ry * (H / h), oy];
+  } catch {
+    // no placement tags
+  }
+  const nd = img.getGDALNoData?.();
+  return { width: w, height: h, values: Float32Array.from(band), nodata: nd ?? -9999, affine };
+}
+
 /** Size and placement tags of a TIFF (for import_image). */
 export async function tiffInfo(bytes) {
   const GT = await loadGeoTiff();
