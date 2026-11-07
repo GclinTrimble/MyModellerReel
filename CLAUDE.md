@@ -20,8 +20,12 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
   (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files), `survey.js` (points,
   coordinates, codes, point files), `terrain.js` (TIN triangulation, sampling, cut/fill, alignments, corridors),
-  `sitework.js` (surface / corridor / design generators).
-- Entities: `type` mesh | group | curve | point | linework. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
+  `sitework.js` (surface / corridor / design generators), `layers.js` (the tag list is the layer list: colour, lock,
+  current layer, ByLayer, schemas, states), `underlay.js` (drawing ↔ plan affine, calibration, least-squares
+  georeferencing, world files), `pdf.js` (pdf.js reading: pages, layers, paths and text), `drafting.js` (2D polyline
+  offset, trim, extend, fillet, join, simplify), `drawings.js` (underlay frames, extraction clean-up, the extrude
+  generator), `assets.js` (PDF / image bytes kept out of the document JSON, packed into saved files).
+- Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
   one undo step and one journal entry with it, and it is rolled back whole even inside an AI turn.
@@ -30,7 +34,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
 - `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
-  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `captions.js` (2D caption drawing shared
+  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `underlays.js` (PDF pages and images as textures), `captions.js` (2D caption drawing shared
   by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 

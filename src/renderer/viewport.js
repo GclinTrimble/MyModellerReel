@@ -5,6 +5,8 @@ import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
 import { samplePoints } from '../core/curves.js';
+import * as L from '../core/layers.js';
+import { textureFor, underlayGeometry } from './underlays.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -49,7 +51,7 @@ export function applyTransform(obj, e) {
  * Build the object tree for a document. Used by the viewport and by exporters (edges: false).
  * cache (the viewport's): geometry per mesh object, so an edit re-uploads only the shapes it changed.
  */
-export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null } = {}) {
+export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null } = {}) {
   const root = new THREE.Group();
   root.name = 'Model';
   const objs = new Map();
@@ -85,12 +87,13 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     } else if (e.line) {
       const pts = e.line.points.map((id) => doc.entities.find((x) => x.id === id)).filter(Boolean).map((p) => new THREE.Vector3(...p.position));
       if (e.line.closed && pts.length > 2) pts.push(pts[0]);
-      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: e.material.color, clippingPlanes: clipping }));
+      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: L.colorOf(doc, e), clippingPlanes: clipping }));
       o.userData.isCurve = true;
     } else if (e.curve) {
-      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samplePoints(e.curve).map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: e.material.color, clippingPlanes: clipping }));
+      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samplePoints(e.curve).map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: L.colorOf(doc, e), clippingPlanes: clipping }));
       o.userData.isCurve = true;
-    } else o = new THREE.Group();
+    } else if (e.underlay && underlay) o = underlay(e);
+    else o = new THREE.Group();
     o.name = e.name;
     o.userData.entityId = e.id;
     if (e.meta) o.userData.meta = e.meta; // glTF extras: other tools see the metadata too
@@ -226,6 +229,7 @@ export class Viewport {
     this.grid.material.transparent = true;
     this.grid.material.opacity = 0.55;
     this.grid.position.y = -0.002;
+    this.grid.renderOrder = -20; // before underlays (-10), so a drawing on the ground covers the grid
     this.axes = new THREE.Group();
     for (const [k, dir] of Object.entries({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] })) {
       const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(...dir).multiplyScalar(60)]);
@@ -285,7 +289,7 @@ export class Viewport {
     this.modelRoot.clear();
     this.geoCache ||= { map: new WeakMap(), live: new Set() };
     this.geoCache.used = new Set();
-    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache });
+    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e) });
     // free the GPU buffers of shapes that are gone or changed
     for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose();
     this.geoCache.live = this.geoCache.used;
@@ -333,12 +337,12 @@ export class Viewport {
       o.scale.fromArray(p.scale || e.scale);
       const tagOn = doc.tags.find((t) => t.name === e.tag)?.visible !== false;
       o.visible = (p.visible ?? e.visible) && tagOn;
-      if (o.isMesh) {
+      if (o.isMesh && !o.userData.underlay) {
         const op = p.opacity ?? e.material.opacity;
         o.material.opacity = doc.settings.xray ? Math.min(op, 0.45) : op;
         o.material.transparent = op < 1 || doc.settings.xray;
         o.material.depthWrite = !o.material.transparent;
-        o.material.color.set(p.color || e.material.color);
+        if (!o.userData.underlay) o.material.color.set(p.color || L.colorOf(doc, e));
         for (const c of o.children) if (c.userData.isEdges) c.material.opacity = op, (c.material.transparent = op < 1);
       }
     }
@@ -360,8 +364,9 @@ export class Viewport {
       col.needsUpdate = true;
     }
     for (const [id, o] of this.objs) {
-      if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.color || '#2f6f86');
-      if (!o.isMesh) continue;
+      if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : L.colorOf(doc, doc.entities.find((e) => e.id === id)) || '#2f6f86');
+      if (o.userData.underlay) o.material.color.set(lit.has(id) ? '#f3dfb0' : '#ffffff');
+      if (!o.isMesh || o.userData.underlay) continue;
       const on = lit.has(id);
       const proposed = this.proposed.has(id);
       o.material.emissive.set(on ? '#2f6f86' : proposed ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.emissive || '#000000');
@@ -446,7 +451,7 @@ export class Viewport {
   pick(ev) {
     this.raycaster.setFromCamera(this.ndc(ev), this.camera);
     const meshes = [];
-    this.modelRoot.traverseVisible((o) => o.isMesh && o.material.visible !== false && meshes.push(o));
+    this.modelRoot.traverseVisible((o) => o.isMesh && !o.userData.underlay && o.material.visible !== false && meshes.push(o));
     const hits = this.raycaster.intersectObjects(meshes, false).filter((h) => !this.clipping?.some((p) => p.distanceToPoint(h.point) < 0));
     const h = hits[0];
     if (!h) return null;
@@ -461,6 +466,27 @@ export class Viewport {
     this.raycaster.params.Points.threshold = 0.01 * this.camera.position.distanceTo(this.controls.target);
     const h = this.raycaster.intersectObject(cloud, false)[0];
     return h ? { entityId: cloud.userData.pointIds[h.index], faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: cloud, survey: true } : null;
+  }
+
+  /** A drawing (underlay) under the mouse, using the ray pick() just set: they are skipped by pick() so drawing over them works. */
+  pickUnderlay(id = null) {
+    const list = [];
+    this.modelRoot.traverseVisible((o) => o.userData.underlay && (!id || o.userData.entityId === id) && list.push(o));
+    const h = this.raycaster.intersectObjects(list, false)[0];
+    return h ? { entityId: h.object.userData.entityId, faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: h.object, underlay: true } : null;
+  }
+
+  /** An underlay's textured sheet (its picture arrives when pdf.js / the image decoder is done). */
+  underlayObject(e) {
+    const u = e.underlay;
+    const tex = textureFor(u, this.renderer, (err) => {
+      if (err) window.mmr?.toast?.(`${e.name}: ${err.message}`, 'danger');
+      this.dirty = true;
+    });
+    const o = new THREE.Mesh(underlayGeometry(u), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: u.opacity ?? 1, depthWrite: false, toneMapped: false, clippingPlanes: this.clipping }));
+    o.renderOrder = -10 + (u.draw_order || 0);
+    o.userData.underlay = true;
+    return o;
   }
 
   /** The curve under the mouse (curves have no faces: faceIndex -1), using the ray pick() just set. */
@@ -491,7 +517,10 @@ export class Viewport {
     this.modelRoot.updateMatrixWorld(true);
     for (const [id, o] of this.objs) {
       const e = this.store.doc.entities.find((x) => x.id === id);
-      if (e?.curve && o.visible) for (const p of e.curve.points) pts.push({ p: new THREE.Vector3(...p).applyMatrix4(o.matrixWorld), kind: 'Endpoint' });
+      if (e?.curve && o.visible) {
+        const w = e.curve.points.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
+        w.forEach((p, k) => (pts.push({ p, kind: 'Endpoint' }), k && e.curve.kind === 'polyline' && pts.push({ p: p.clone().lerp(w[k - 1], 0.5), kind: 'Midpoint' })));
+      }
       if (!e?.mesh || !o.visible || e.mesh.v.length > 5000) continue;
       const w = e.mesh.v.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
       for (const p of w) pts.push({ p, kind: 'Endpoint' });
@@ -530,7 +559,7 @@ export class Viewport {
 
 export function disposeTree(o, geometry = true) {
   o.traverse((x) => {
-    if (geometry || x.userData.isCurve) x.geometry?.dispose();
+    if (geometry || x.userData.isCurve || x.userData.underlay) x.geometry?.dispose();
     if (x.material) [].concat(x.material).forEach((m) => m.dispose());
   });
 }

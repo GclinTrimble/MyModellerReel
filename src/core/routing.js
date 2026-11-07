@@ -12,6 +12,7 @@ export const TOOLSETS = {
   files: { categories: ['file'], names: ['report_quantities'] },
   insight: { categories: [], names: ['report_quantities', 'review_model', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
   ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
+  drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
 };
 
 /** Always offered: enough to look, undo and reach every other command. */

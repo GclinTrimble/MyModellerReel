@@ -13,6 +13,12 @@ import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
 import * as S from './survey.js';
+import * as L from './layers.js';
+import * as U from './underlay.js';
+import * as DR from './drafting.js';
+import * as DW from './drawings.js';
+import * as PDF from './pdf.js';
+import * as Assets from './assets.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
 import * as D from './document.js';
@@ -51,6 +57,14 @@ export const GUIDE = `MyModellerReel conventions:
   point), add_breakline / add_boundary, create_surface (a live TIN), check_surface, cut_fill / volume_report,
   create_alignment + create_corridor, design_line_slope / design_plane / design_trench / design_road, a feature library
   (define_feature_code) that turns coded points into lines and objects.
+- Drawings: import_pdf (scale "1:500") / import_image (world files, GeoTIFF) place underlays; calibrate_underlay
+  (scale by a known distance, orient by a bearing, move onto a survey point) or add_control_pair + georeference_underlay
+  (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
+  curves on layers (filter by PDF layer, colour, width, window); list_drawing_text reads spot heights. Drafting on
+  curves: offset_curve, trim, extend, fillet, chamfer, join_curves, break_curve, simplify_curve, divide_curve.
+  To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
+- Layers: create_layer / set_layer (colour, lock, current, globs like "C-ROAD/*"), move_to_layer, list_layers,
+  merge_layers, map_layers, save_layer_state / restore_layer_state. New geometry goes on the current layer.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
@@ -213,7 +227,7 @@ function place(ctx, mesh, args, defaults = {}, derived = null) {
     position: args.position || [0, 0, 0],
     rotation: args.rotation || [0, 0, 0],
     parent: args.parent ? D.resolve(doc, args.parent)[0].id : null,
-    tag: args.tag || 'Untagged',
+    tag: args.tag,
     material: args.color ? { color: args.color } : {},
   });
   if (derived) R.regenerate(doc, e);
@@ -594,7 +608,8 @@ function registerCore(reg, ctx) {
       if (a.name !== undefined) e.name = ents.length > 1 ? `${a.name} ${ents.indexOf(e) + 1}` : a.name;
       if (a.tag !== undefined) {
         e.tag = a.tag;
-        if (!doc.tags.some((t) => t.name === a.tag)) doc.tags.push({ name: a.tag, visible: true });
+        const t = L.ensureLayer(doc, a.tag);
+        if (t.schema) e.meta = L.applyDefaults(t, e.meta);
       }
       if (a.visible !== undefined) e.visible = a.visible;
       if (a.locked !== undefined) e.locked = a.locked;
@@ -607,6 +622,62 @@ function registerCore(reg, ctx) {
     if (!t) throw new Error(`No tag "${a.tag}".`);
     t.visible = a.visible;
     return t;
+  }, true);
+
+  // ---------------------------------------------------------------- layers (#138)
+  const LAYER = { color: common.color, locked: bool('lock: its entities cannot be picked or edited by hand'), line_type: str('continuous | dashed | dotted | center | hidden | a custom name'), line_weight: num('mm'), description: str('what goes on it'), schema: obj({}, []) };
+  LAYER.schema.description = 'feature layer attributes: { field: { type: "string"|"number"|"boolean", default, options: [...] } }';
+  def('layers', 'create_layer', 'Create a layer (tags are layers). "/" makes groups: "C-ROAD/Kerbs". current: true draws new geometry on it.', obj({ name: str('layer name'), ...LAYER, visible: bool('default true'), current: bool('make it the current layer') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    if (L.layerOf(doc, a.name)) throw new Error(`Layer "${a.name}" exists: use set_layer.`);
+    const t = L.ensureLayer(doc, a.name);
+    for (const k of [...L.FIELDS, 'visible']) if (a[k] !== undefined) t[k] = a[k];
+    if (a.current) doc.settings.current_layer = t.name;
+    return t;
+  }, true);
+  def('layers', 'set_layer', 'Change layers by name or glob ("C-ROAD/*"): rename, colour, show/hide, lock, line type / weight, description, attribute schema, make current.', obj({ name: str('layer name or glob'), rename: str('new name (one layer)'), ...LAYER, visible: bool('show / hide'), current: bool('make it the current layer') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const hit = L.find(doc, a.name);
+    if (a.rename !== undefined) {
+      if (hit.length > 1) throw new Error('rename takes one layer, not a glob.');
+      if (L.layerOf(doc, a.rename)) throw new Error(`Layer "${a.rename}" exists: use merge_layers.`);
+      for (const e of doc.entities) if (e.tag === hit[0].name) e.tag = a.rename;
+      if (doc.settings.current_layer === hit[0].name) doc.settings.current_layer = a.rename;
+      hit[0].name = a.rename;
+    }
+    for (const t of hit) for (const k of [...L.FIELDS, 'visible']) if (a[k] !== undefined) t[k] = a[k];
+    if (a.current) doc.settings.current_layer = hit[0].name;
+    return hit;
+  }, true);
+  def('layers', 'list_layers', 'Every layer with its colour, visibility, lock, line type, attribute schema, entity count and extent (world box).', obj({ name: str('glob filter') }), (a) => {
+    const all = L.listLayers(ctx.doc);
+    return a.name ? all.filter((t) => L.matcher(a.name)(t.name)) : all;
+  });
+  def('layers', 'move_to_layer', 'Put entities on a layer (created if new). by_layer: true makes them take the layer colour.', obj({ ids, layer: str('layer name'), by_layer: bool('use the layer colour') }, ['layer']), (a) => {
+    const doc = ctx.doc;
+    const t = L.ensureLayer(doc, a.layer);
+    const ents = targets(ctx, a);
+    for (const e of ents) {
+      e.tag = t.name;
+      if (a.by_layer !== undefined) e.byLayer = a.by_layer;
+      if (t.schema) e.meta = L.applyDefaults(t, e.meta);
+    }
+    return { layer: t.name, moved: ents.length };
+  }, true);
+  def('layers', 'merge_layers', 'Move everything on some layers (names or globs) onto one layer and remove the emptied ones.', obj({ from: { type: 'array', items: { type: 'string' }, description: 'layer names or globs' }, to: str('target layer (created if new)') }, ['from', 'to']), (a) => {
+    const names = [...new Set(a.from.flatMap((p) => L.find(ctx.doc, p).map((t) => t.name)))];
+    return { merged: names, into: a.to, moved: L.mergeLayers(ctx.doc, names, a.to) };
+  }, true);
+  def('layers', 'map_layers', 'Apply a layer mapping table: [{ from: glob, to: layer }], first match wins (used after imports: "0" → "Untagged", "*KERB*" → "Kerbs").', obj({ rules: { type: 'array', items: obj({ from: str('glob'), to: str('layer') }, ['from', 'to']) } }, ['rules']), (a) => ({ mapped: L.mapLayers(ctx.doc, a.rules) }), true);
+  def('layers', 'save_layer_state', 'Save the visibility, colour and lock of every layer under a name.', obj({ name: str('state name') }, ['name']), (a) => {
+    (ctx.doc.layerStates ||= {})[a.name] = L.captureState(ctx.doc);
+    return { states: Object.keys(ctx.doc.layerStates) };
+  }, true);
+  def('layers', 'restore_layer_state', 'Bring back a saved layer state.', obj({ name: str('state name') }, ['name']), (a) => {
+    const s = ctx.doc.layerStates?.[a.name];
+    if (!s) throw new Error(`No layer state "${a.name}". States: ${Object.keys(ctx.doc.layerStates || {}).join(', ') || 'none'}.`);
+    L.restoreState(ctx.doc, s);
+    return { restored: a.name };
   }, true);
 
   def('edit', 'boolean', 'Solid tools: union, subtract (cut tools out of target, e.g. window openings) or intersect. The result replaces target.', obj({ op: str('union | subtract | intersect', ['union', 'subtract', 'intersect']), target: str('entity to keep'), tools: ids, keep_tools: bool('keep the tool shapes, default false') }, ['op', 'target', 'tools']), (a) => {
@@ -680,7 +751,7 @@ function registerCore(reg, ctx) {
   def('edit', 'set_metadata', 'Attach key/values to entities (role: window, cost: 420, supplier, phase…). Drives select_where, quantities and 4D mapping. remove deletes keys.', obj({ ids, values: obj({}, []), remove: { type: 'array', items: { type: 'string' }, description: 'keys to delete' } }), (a) => {
     const ents = targets(ctx, a);
     for (const e of ents) {
-      e.meta = { ...(e.meta || {}), ...(a.values || {}) };
+      e.meta = { ...(e.meta || {}), ...L.checkAttributes(L.layerOf(ctx.doc, e.tag), a.values || {}) };
       for (const k of a.remove || []) delete e.meta[k];
       if (!Object.keys(e.meta).length) delete e.meta;
     }
@@ -1090,7 +1161,7 @@ function registerCore(reg, ctx) {
       type: 'linework',
       name: a.name || D.uniqueName(doc, kind === 'boundary' ? (a.kind === 'hole' ? 'Hole' : 'Boundary') : 'Breakline'),
       line: { points: pts.map((p) => p.id), kind, ...(kind === 'breakline' ? { mode: a.mode || 'hard' } : { boundary: a.kind || 'outer' }), closed: kind === 'boundary' ? true : !!a.closed, smooth: !!a.smooth },
-      tag: a.tag || 'Untagged',
+      tag: a.tag,
       material: { color: kind === 'boundary' ? '#2f6f86' : '#c8553d' },
     });
     ctx.selection.set([l.id]);
@@ -1141,7 +1212,7 @@ function registerCore(reg, ctx) {
     const doc = ctx.doc;
     const params = surfaceParams(a);
     R.getGenerator('surface').run({ params, inputs: [], doc }); // bad sources throw before anything changes
-    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag || 'Untagged', material: { color: a.color || '#8fae7a', roughness: 0.95 } });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag, material: { color: a.color || '#8fae7a', roughness: 0.95 } });
     R.derive(doc, e, 'surface', params, []);
     ctx.selection.set([e.id]);
     return { ...summary(doc, e), surface: { ...TR.surfaceStats(e.mesh), points: e.derived.report.points, duplicates: e.derived.report.duplicates.length, crossing_lines: e.derived.report.crossings.length } };
@@ -1404,6 +1475,459 @@ function registerCore(reg, ctx) {
   def('terrain', 'design_offset_surface', 'A copy of a surface moved up or down (e.g. 0.3 m below existing ground for a topsoil strip); it follows the source.', obj({ surface: str('source surface'), offset: num('m, negative is below'), name: common.name, color: common.color }, ['surface', 'offset']), (a) => makeDesign('design_offset_surface', { surface: surfaceOf(a.surface).id, offset: a.offset }, a.name, a.color), true);
   def('terrain', 'design_road', 'A simple road surface: centreline points, width, crossfall falling both ways from the crown.', obj({ centre: { type: 'array', description: 'centreline point names or [x, y, z]' }, width: num('m, default 7'), crossfall: num('%, default −2.5'), name: common.name, color: common.color }, ['centre']), (a) => makeDesign('design_road', { centre: a.centre.map(designRef), width: a.width ?? 7, crossfall: a.crossfall ?? -2.5 }, a.name, a.color || '#3c3f44'), true);
 
+  // ---------------------------------------------------------------- drawings: underlays, PDF, images, georeferencing (#140–#146)
+  const underlayOf = (ref) => {
+    const [e] = ref ? D.resolve(ctx.doc, ref) : targets(ctx, {});
+    if (!e || !DW.isUnderlay(e)) throw new Error(`${e?.name ?? 'That'} is not an underlay (a placed PDF page or image).`);
+    return e;
+  };
+  const ON_DRAWING = { description: 'a point on the drawing: [x, y, z] world (picked on it) or { u, v } in drawing units' };
+  const TARGET = { description: 'a survey point name, { n, e } (project coordinates) or [x, y, z] world' };
+  const PLACE = { scale: { description: 'drawing scale "1:500" (true size on the sheet × 500), or metres per unit (number)' }, dpi: num('scanned images: dots per inch (default 96)'), at: v3('world point for the top-left corner (default: centred on the origin)'), elevation: num('model height of the sheet (default 0)'), layer: str('layer for the underlay (default "Drawings")'), name: common.name };
+  const readBytes = async (path) => {
+    if (!ctx.io?.readBinary) throw new Error('Reading files needs the desktop app.');
+    return new Uint8Array(await ctx.io.readBinary(path));
+  };
+  const baseName = (p) => String(p).split(/[\\/]/).pop();
+  const makeUnderlay = (a, u, size, affine) => {
+    const doc = ctx.doc;
+    if (!affine) {
+      const s = typeof a.scale === 'number' ? a.scale : U.unitScale(u.kind, a.scale ?? 1, a.dpi);
+      affine = a.at ? U.placeAffine(s, [a.at[0], -a.at[2]]) : U.placeAffine(s, [(-size[0] * s) / 2, (size[1] * s) / 2]);
+    }
+    L.ensureLayer(doc, a.layer || 'Drawings');
+    return D.addEntity(doc, { type: 'underlay', name: a.name || D.uniqueName(doc, u.title), tag: a.layer || 'Drawings', position: [0, a.elevation ?? (a.at ? a.at[1] : 0), 0], underlay: { ...u, size, affine, opacity: 1, fade: 0, mono: false, control: [] }, material: { color: '#ffffff' } });
+  };
+  const underlayInfo = (e) => {
+    const u = e.underlay;
+    const [a, b, , d, ee] = u.affine;
+    return { ...summary(ctx.doc, e), kind: u.kind, ...(u.kind === 'pdf' ? { page: u.page } : {}), units: u.kind === 'pdf' ? 'points' : 'pixels', size_units: u.size, metres_per_unit: [r4(Math.hypot(a, d)), r4(Math.hypot(b, ee))], rotation: r4((Math.atan2(d, a) * -180) / Math.PI), opacity: u.opacity, control_pairs: u.control.length, ...(u.georef ? { georef: { method: u.georef.method, rms: r4(u.georef.rms) } } : {}) };
+  };
+
+  def('drawings', 'pdf_info', 'Pages (size in points) and layers of a PDF file, before importing it.', obj({ path: str('absolute path of a .pdf') }, ['path']), async (a) => {
+    const bytes = await readBytes(a.path);
+    return PDF.info(await PDF.open(bytes, Assets.put(bytes, { mime: 'application/pdf', name: baseName(a.path) })));
+  });
+  def('drawings', 'import_pdf', 'Place PDF pages as underlays (drawings lying in the model to trace and build on). scale "1:500" puts the sheet at true size. Then calibrate_underlay or georeference_underlay, and extract_linework.', obj({ path: str('absolute path of a .pdf'), pages: { type: 'array', items: { type: 'number' }, description: 'page numbers (default [1])' }, hide_layers: { type: 'array', items: { type: 'string' }, description: 'PDF layers to hide' }, ...PLACE }, ['path']), async (a) => {
+    const bytes = await readBytes(a.path);
+    const asset = Assets.put(bytes, { mime: 'application/pdf', name: baseName(a.path) });
+    const pdf = await PDF.open(bytes, asset);
+    const inf = await PDF.info(pdf);
+    const out = [];
+    let dx = 0;
+    for (const n of a.pages || [1]) {
+      const pg = inf.pages[n - 1];
+      if (!pg) throw new Error(`The PDF has ${inf.pages.length} page(s), not page ${n}.`);
+      const s = typeof a.scale === 'number' ? a.scale : U.unitScale('pdf', a.scale ?? 1);
+      const at = a.at ? [a.at[0] + dx, a.at[1] ?? 0, a.at[2]] : [-(pg.size[0] * s) / 2 + dx, 0, -(pg.size[1] * s) / 2];
+      const e = makeUnderlay({ ...a, at, name: a.name || `${baseName(a.path).replace(/\.pdf$/i, '')}${(a.pages || [1]).length > 1 ? ` p${n}` : ''}` }, { kind: 'pdf', asset, page: n, title: baseName(a.path), hidden_layers: a.hide_layers || [] }, pg.size, null);
+      dx += pg.size[0] * s * 1.05;
+      out.push(underlayInfo(e));
+    }
+    ctx.selection.set(out.map((x) => x.id));
+    return { underlays: out, layers: inf.layers.map((l) => l.name) };
+  }, true);
+  def('drawings', 'import_image', 'Place an image (PNG, JPG, TIFF / GeoTIFF) as an underlay. A world file next to it (.pgw, .jgw, .tfw, .wld) or GeoTIFF tags place it in project coordinates (local coordinates, no reprojection); otherwise scale it like a drawing.', obj({ path: str('absolute path of the image'), world_file: str('world file path (default: found next to the image)'), ...PLACE }, ['path']), async (a) => {
+    const doc = ctx.doc;
+    const bytes = await readBytes(a.path);
+    let info = DW.imageSize(bytes);
+    if (!info) throw new Error('Not an image this app reads: PNG, JPG, GIF, BMP or TIFF.');
+    let geoA = null;
+    if (info.tiff) {
+      if (!ctx.io?.tiffInfo) throw new Error('Reading TIFF needs the desktop app.');
+      const t = await ctx.io.tiffInfo(bytes);
+      info = { ...info, width: t.width, height: t.height };
+      geoA = U.affineFromGeoTiff(t.tags || {});
+    }
+    const ext = a.path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || '';
+    const wfs = a.world_file ? [a.world_file] : [`${ext[0]}${ext.at(-1)}w`, `${ext}w`, 'wld'].map((x) => a.path.replace(/\.\w+$/, `.${x}`));
+    let wfUsed = null;
+    for (const wf of wfs) {
+      try {
+        geoA = U.parseWorldFile(await ctx.io.readText(wf));
+        wfUsed = wf;
+        break;
+      } catch (err) {
+        if (a.world_file) throw new Error(`World file ${baseName(wf)}: ${err.message}`);
+      }
+    }
+    const size = [info.width, info.height];
+    const affine = geoA && !a.scale ? DW.projectToLocal(doc, geoA, size) : null;
+    const e = makeUnderlay(a, { kind: 'image', asset: Assets.put(bytes, { mime: info.mime, name: baseName(a.path) }), title: baseName(a.path) }, size, affine);
+    if (affine) e.underlay.georef = { method: wfUsed ? 'world file' : 'GeoTIFF', rms: 0 };
+    ctx.selection.set([e.id]);
+    return { ...underlayInfo(e), placed_by: wfUsed ? `world file ${baseName(wfUsed)}` : affine ? 'GeoTIFF tags' : 'scale' };
+  }, true);
+  def('drawings', 'list_underlays', 'Every underlay: kind, page, size, scale (metres per drawing unit), rotation, control points and georeference fit.', obj({}), () => ctx.doc.entities.filter(DW.isUnderlay).map(underlayInfo));
+  def('drawings', 'set_underlay', 'Change how an underlay shows: opacity, fade (towards white, 0–1), monochrome, height, crop (a polygon of world points, or "none"), draw order, hidden PDF layers.', obj({ id, opacity: num('0–1'), fade: num('0–1'), mono: bool('black and white'), elevation: num('model height'), clip: { description: '[[x, y, z], …] world points (picked on the drawing), [[u, v], …] drawing units with units: "drawing", or "none"' }, units: str('world (default) | drawing', ['world', 'drawing']), draw_order: num('higher draws over lower'), hide_layers: { type: 'array', items: { type: 'string' }, description: 'PDF layers to hide' } }), (a) => {
+    const e = underlayOf(a.id);
+    const u = e.underlay;
+    for (const k of ['opacity', 'fade', 'mono', 'draw_order']) if (a[k] !== undefined) u[k] = a[k];
+    if (a.hide_layers) u.hidden_layers = a.hide_layers;
+    if (a.elevation !== undefined) e.position[1] = a.elevation;
+    if (a.clip === 'none') delete u.clip;
+    else if (a.clip) {
+      if (a.clip.length < 3) throw new Error('A crop needs 3 points or more.');
+      u.clip = a.clip.map((p) => (a.units === 'drawing' ? [p[0], p[1]] : DW.sourcePoint(ctx.doc, e, p))).map((p) => p.map(r4));
+    }
+    return underlayInfo(e);
+  }, true);
+  def('drawings', 'calibrate_underlay', 'Put a drawing in place without coordinates: scale (two points and their real distance, or a drawing scale), orient (two points and the bearing of that line, 0 = north), move (a point on the drawing onto a survey point, { n, e } or a model point). Steps given together run in that order.', obj({ id, drawing_scale: str('"1:200": true size on the sheet × 200'), dpi: num('for images with drawing_scale'), scale: obj({ a: ON_DRAWING, b: ON_DRAWING, distance: num('real distance a → b, m') }, ['a', 'b', 'distance']), orient: obj({ a: ON_DRAWING, b: ON_DRAWING, bearing: num('degrees clockwise from north (0 = this line points north)') }, ['a', 'b', 'bearing']), move: obj({ from: ON_DRAWING, to: TARGET }, ['from', 'to']) }), (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const u = e.underlay;
+    const out = {};
+    if (a.drawing_scale) {
+      const s = U.unitScale(u.kind, a.drawing_scale, a.dpi);
+      const [a0, , , d0] = u.affine;
+      const k = s / Math.hypot(a0, d0);
+      const o = U.apply(u.affine, [0, 0]);
+      u.affine = U.compose([k, 0, o[0] * (1 - k), 0, k, o[1] * (1 - k)], u.affine);
+      out.drawing_scale = a.drawing_scale;
+    }
+    const src = (p) => DW.sourcePoint(doc, e, p);
+    if (a.scale) {
+      const r = U.calibrateScale(u.affine, src(a.scale.a), src(a.scale.b), a.scale.distance);
+      u.affine = r.affine;
+      out.scale_factor = r4(r.factor);
+    }
+    if (a.orient) {
+      const r = U.calibrateOrient(u.affine, src(a.orient.a), src(a.orient.b), a.orient.bearing);
+      u.affine = r.affine;
+      out.turned_degrees = r4(r.turned);
+    }
+    if (a.move) {
+      const r = U.calibrateMove(u.affine, src(a.move.from), DW.frame(doc, e).toLocalPlan(DW.targetWorld(doc, a.move.to)));
+      u.affine = r.affine;
+      out.moved = r.by.map(r4);
+    }
+    delete u.georef;
+    return { ...out, ...underlayInfo(e) };
+  }, true);
+  def('drawings', 'add_control_pair', 'Georeferencing: a point on the drawing matched to where it really is (a survey point name, { n, e } in project coordinates, or a model point). 2+ pairs, then georeference_underlay.', obj({ id, from: ON_DRAWING, to: TARGET, name: str('label, e.g. "GR1"') }, ['from', 'to']), (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const [u, v] = DW.sourcePoint(doc, e, a.from);
+    const g = S.geo(doc);
+    // like the first survey point, the first real coordinate sets the base point so the model stays near the origin
+    if (!g.base && Number.isFinite(a.to?.n)) g.base = [Math.round(a.to.e / 100) * 100, Math.round(a.to.n / 100) * 100, 0];
+    const w = DW.targetWorld(doc, a.to);
+    const { e: E, n: N } = S.toProject(doc, w);
+    e.underlay.control.push({ name: a.name || (typeof a.to === 'string' ? a.to : `CP${e.underlay.control.length + 1}`), u: r4(u), v: r4(v), e: r4(E), n: r4(N), enabled: true });
+    return { pairs: e.underlay.control.length, pair: e.underlay.control.at(-1) };
+  }, true);
+  def('drawings', 'edit_control_pair', 'Turn a control pair off / on, move either end, or remove it (by index from 0 or name).', obj({ id, pair: { description: 'index (0-based) or name' }, enabled: bool('use it in the fit'), from: ON_DRAWING, to: TARGET, remove: bool('delete it') }, ['pair']), (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const c = e.underlay.control;
+    const i = typeof a.pair === 'number' ? a.pair : c.findIndex((x) => x.name === a.pair);
+    if (!c[i]) throw new Error(`No control pair ${a.pair}: ${c.map((x, k) => `${k} ${x.name}`).join(', ') || 'none yet'}.`);
+    if (a.remove) return c.splice(i, 1), { pairs: c.length };
+    if (a.enabled !== undefined) c[i].enabled = a.enabled;
+    if (a.from) [c[i].u, c[i].v] = DW.sourcePoint(doc, e, a.from).map(r4);
+    if (a.to) Object.assign(c[i], (({ e: E, n: N }) => ({ e: r4(E), n: r4(N) }))(S.toProject(doc, DW.targetWorld(doc, a.to))));
+    return c[i];
+  }, true);
+  const georefReport = (e) => {
+    const g = e.underlay.georef;
+    if (!g?.residuals) return { georeferenced: !!g, ...(g ? { method: g.method } : {}), pairs: e.underlay.control.length };
+    const used = e.underlay.control.filter((c) => c.enabled);
+    return { method: g.method, rms: r4(g.rms), redundancy: g.redundancy, metres_per_unit: g.scale.map(r4), rotation: r4(g.rotation), pairs: used.map((c, i) => ({ name: c.name, dE: r4(g.residuals[i].dX), dN: r4(g.residuals[i].dY), d: r4(g.residuals[i].d), ...(i === g.worst && g.residuals.length > 2 && g.residuals[i].d > 2 * g.rms ? { flag: 'worst: check or turn off' } : {}) })) };
+  };
+  def('drawings', 'georeference_underlay', 'Fit the drawing to its control pairs by least squares, in local project coordinates: helmert (scale, rotation, shift; 2+ pairs) or affine (also skew, 3+ pairs). Returns residuals per pair and the RMS.', obj({ id, method: str('auto | similarity | helmert | affine', ['auto', 'similarity', 'helmert', 'affine']) }), (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const f = DW.frame(doc, e);
+    const pairs = e.underlay.control.filter((c) => c.enabled).map((c) => {
+      const [X, Y] = f.toLocalPlan(S.toLocal(doc, { n: c.n, e: c.e, z: 0 }));
+      return { u: c.u, v: c.v, X, Y };
+    });
+    const r = U.solve(pairs, a.method || 'auto');
+    e.underlay.affine = r.affine;
+    e.underlay.georef = { method: r.method, rms: r.rms, residuals: r.residuals, worst: r.worst, redundancy: r.redundancy, scale: r.scale, rotation: r.rotation };
+    return georefReport(e);
+  }, true);
+  def('drawings', 'georef_report', 'The georeference fit of an underlay: residual per control pair, RMS, the worst pair.', obj({ id }), (a) => georefReport(underlayOf(a.id)));
+  def('drawings', 'export_world_file', 'Write a world file (.pgw / .jgw / .tfw / .wld: six lines, project E / N) for an underlay, so GIS and CAD place the image too.', obj({ id, path: str('absolute path of the world file') }, ['path']), async (a) => {
+    const e = underlayOf(a.id);
+    const text = DW.worldFileOf(ctx.doc, e);
+    if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app.');
+    await ctx.io.writeText(a.path, text);
+    return { path: a.path, world_file: text.trim().split('\n') };
+  });
+
+  const pdfContent = async (e) => {
+    if (e.underlay.kind !== 'pdf') throw new Error(`${e.name} is an image: it has no vectors (trace it, or vectorise it).`);
+    return PDF.content(await PDF.open(Assets.bytes(e.underlay.asset), e.underlay.asset), e.underlay.page);
+  };
+  const WINDOW = { description: 'only inside this box: two opposite world corners [[x, y, z], [x, y, z]] picked on the drawing' };
+  const winOf = (e, w) => w && w.map((p) => DW.sourcePoint(ctx.doc, e, p));
+  def('drawings', 'pdf_linework_stats', 'What a PDF underlay holds before extracting: paths per PDF layer, colour and line width, hatching, fills, dashed lines, text count.', obj({ id, window: WINDOW }), async (a) => {
+    const e = underlayOf(a.id);
+    const c = await pdfContent(e);
+    const { kept } = DW.filterPaths(c.paths, { window: winOf(e, a.window), hatch: true, fills: true });
+    return { ...DW.pathStats(kept), texts: c.texts.length };
+  });
+  def('drawings', 'extract_linework', 'Turn a PDF underlay\'s vector lines into curves in the model (on the drawing, georeferenced with it): filter by PDF layer, colour, line width, dashes and a window; ends welded and joined into polylines, duplicates dropped, hatching skipped. Curves land on layers named after the PDF layers (or colours).', obj({ id, layers: { type: 'array', items: { type: 'string' }, description: 'PDF layers to keep' }, colors: { type: 'array', items: { type: 'string' }, description: 'stroke colours to keep, "#ff0000"' }, min_width: num('thinnest line kept, points'), max_width: num('thickest line kept, points'), dashed: bool('only dashed (true) or only solid (false)'), window: WINDOW, tolerance: num('weld / join distance, m (default 0.01)'), join: bool('join touching pieces (default true)'), hatch: bool('keep hatching too'), fills: bool('keep filled shapes\' outlines too'), layer: str('put everything on this layer instead'), prefix: str('layer name prefix (default "PDF ")'), elevation: num('model height of the curves (default: the drawing\'s)') }), async (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    const c = await pdfContent(e);
+    const { kept, skipped } = DW.filterPaths(c.paths, { ...a, window: winOf(e, a.window) });
+    const lines = DW.cleanLines(kept, e.underlay.affine, { tol: a.tolerance ?? 0.01, join: a.join !== false });
+    const f = DW.frame(doc, e);
+    const prefix = a.prefix ?? 'PDF ';
+    const made = [];
+    const y = a.elevation;
+    for (const l of lines) {
+      const pts = l.pts.map((p) => f.planToWorld(p)).map((p) => D.round3(y === undefined ? p : [p[0], y, p[2]]));
+      const layer = a.layer || `${prefix}${l.layer ?? l.color}`;
+      const t = L.ensureLayer(doc, layer);
+      if (!a.layer && !l.layer && !t.color) t.color = l.color;
+      if (!a.layer && l.layer && !t.color) t.color = l.color;
+      const { mesh, origin } = G.recenter({ v: pts, f: [] });
+      made.push(D.addEntity(doc, { type: 'curve', name: D.uniqueName(doc, layer.replace(prefix, '')), curve: { kind: 'polyline', points: mesh.v, closed: l.closed }, position: D.round3(origin), tag: layer, byLayer: true, material: { color: l.color }, meta: { source: e.name, width_pt: l.width, ...(l.dashed ? { dashed: true } : {}) } }));
+    }
+    ctx.selection.set(made.map((x) => x.id));
+    const byLayer = made.reduce((m, x) => ((m[x.tag] = (m[x.tag] || 0) + 1), m), {});
+    return { curves: made.length, from_paths: kept.length, skipped, layers: byLayer };
+  }, true);
+  def('drawings', 'list_drawing_text', 'The text on a PDF underlay with world positions: spot heights, labels, point numbers, titles. contains filters with a regex.', obj({ id, contains: str('regex, e.g. "^[+]?\\\\d+\\\\.\\\\d+$" for spot heights'), window: WINDOW, limit: num('default 500') }), async (a) => {
+    const e = underlayOf(a.id);
+    const c = await pdfContent(e);
+    const re = a.contains ? new RegExp(a.contains, 'i') : null;
+    const w = winOf(e, a.window);
+    const t = c.texts.filter((x) => (!re || re.test(x.str)) && (!w || DW.filterPaths([{ pts: [x.at], color: '', width: 0 }], { window: w }).kept.length));
+    return { count: t.length, texts: DW.textsInWorld(ctx.doc, e, t.slice(0, a.limit || 500)) };
+  });
+
+  // ---------------------------------------------------------------- drafting on curves (#147)
+  const curve2d = (e) => ({ e, pts3: D.curvePoints(ctx.doc, e), closed: !!e.curve.closed });
+  const setPts = (e, pts3, closed = e.curve.closed) => {
+    const { mesh, origin } = G.recenter({ v: pts3.map(D.round3), f: [] });
+    e.curve = { kind: 'polyline', points: mesh.v, closed: !!closed };
+    e.position = D.round3(origin);
+    e.rotation = [0, 0, 0];
+    e.scale = [1, 1, 1];
+  };
+  const newCurve = (from, pts3, closed, name) => {
+    const { mesh, origin } = G.recenter({ v: pts3.map(D.round3), f: [] });
+    return D.addEntity(ctx.doc, { type: 'curve', name: name || D.uniqueName(ctx.doc, from.name), curve: { kind: 'polyline', points: mesh.v, closed: !!closed }, position: D.round3(origin), tag: from.tag, byLayer: from.byLayer, material: { ...from.material }, ...(from.meta ? { meta: { ...from.meta } } : {}) });
+  };
+  const oneCurve = (ref) => {
+    const [e] = ref ? D.resolve(ctx.doc, ref) : targets(ctx, {});
+    if (!e?.curve) throw new Error(`${e?.name ?? 'That'} is not a curve.`);
+    return e;
+  };
+  const flat = (p) => [p[0], -p[2]];
+  const cutters = (except, refs) => (refs ? refs.map((r) => D.resolve(ctx.doc, r)[0]) : ctx.doc.entities.filter((x) => x.curve && x.visible && x.id !== except.id)).filter((x) => x.curve && x.id !== except.id).map((x) => {
+    const c = curve2d(x);
+    return DR.flat(c.closed ? [...c.pts3, c.pts3[0]] : c.pts3);
+  });
+  const BOUND = { type: 'array', items: { type: 'string' }, description: 'boundary curves (default: every other visible curve)' };
+  const AT = v3('a world point near the piece / end meant (picked)');
+
+  def('drafting', 'offset_curve', 'A parallel copy of a curve at a distance: left or right of its direction (seen from above), both sides, or through a point. Corners are mitred.', obj({ id, distance: num('m'), side: str('left | right | both (default left)', ['left', 'right', 'both']), through: v3('or: the copy passes through this world point'), name: common.name }), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    const P = DR.flat(c.pts3);
+    let ds;
+    if (a.through) {
+      const h = DR.nearest(P, flat(a.through), c.closed);
+      const P2 = c.closed ? [...P, P[0]] : P;
+      const t = [P2[h.i + 1][0] - P2[h.i][0], P2[h.i + 1][1] - P2[h.i][1]];
+      const q = flat(a.through);
+      ds = [Math.sign(t[0] * (q[1] - h.p[1]) - t[1] * (q[0] - h.p[0])) * h.d];
+    } else {
+      if (!(a.distance > 0)) throw new Error('Give distance (above 0) or through.');
+      ds = a.side === 'both' ? [a.distance, -a.distance] : [a.side === 'right' ? -a.distance : a.distance];
+    }
+    const made = ds.map((d, i) => newCurve(e, DR.lift(DR.offset(P, d, c.closed), c.pts3, c.closed), c.closed, a.name && ds.length > 1 ? `${a.name} ${i + 1}` : a.name));
+    ctx.selection.set(made.map((x) => x.id));
+    return made.map((x) => summary(ctx.doc, x));
+  }, true);
+  def('drafting', 'trim', 'Cut away the piece of a curve between its crossings with boundary curves, the piece nearest `at`.', obj({ id, at: AT, boundaries: BOUND }, ['at']), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    const pieces = DR.trim(DR.flat(c.pts3), cutters(e, a.boundaries), flat(a.at), c.closed);
+    if (!pieces.length) return D.removeEntity(ctx.doc, e), { removed: e.id };
+    setPts(e, DR.lift(pieces[0], c.pts3, c.closed), false);
+    const extra = pieces.slice(1).map((p) => newCurve(e, DR.lift(p, c.pts3, c.closed), false));
+    return [e, ...extra].map((x) => summary(ctx.doc, x));
+  }, true);
+  def('drafting', 'extend', 'Extend a curve\'s end straight on to the nearest boundary curve ahead.', obj({ id, end: { description: '"start", "end" (default) or a world point near the end' }, boundaries: BOUND }), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    if (c.closed) throw new Error(`${e.name} is closed: it has no ends.`);
+    const P = DR.extend(DR.flat(c.pts3), cutters(e, a.boundaries), Array.isArray(a.end) ? flat(a.end) : a.end || 'end');
+    setPts(e, DR.lift(P, c.pts3)); // the new end takes the height of the old one
+    return summary(ctx.doc, e);
+  }, true);
+  const corner = (name, cham) => (a) => {
+    const ents = targets(ctx, a);
+    if (!ents.length || ents.length > 2 || ents.some((x) => !x.curve)) throw new Error(`${name} takes one curve (its corners) or two curves (where they meet).`);
+    const dd = cham ? [a.distance, a.distance2 ?? a.distance] : null;
+    if (cham ? !(a.distance > 0) : !(a.radius > 0)) throw new Error(cham ? 'distance must be above 0.' : 'radius must be above 0.');
+    if (ents.length === 1) {
+      const c = curve2d(ents[0]);
+      setPts(ents[0], DR.lift(DR.fillet(DR.flat(c.pts3), a.radius, a.vertex ?? null, c.closed, dd), c.pts3, c.closed));
+      return summary(ctx.doc, ents[0]);
+    }
+    const [A, B] = ents.map(curve2d);
+    const P = DR.filletPair(DR.flat(A.pts3), DR.flat(B.pts3), a.radius, dd);
+    setPts(ents[0], DR.lift(P, [...A.pts3, ...B.pts3]), false);
+    D.removeEntity(ctx.doc, ents[1]);
+    ctx.selection.set([ents[0].id]);
+    return { ...summary(ctx.doc, ents[0]), joined: ents[1].name };
+  };
+  def('drafting', 'fillet', 'Round corners with a radius: every corner of one curve (or one, by vertex index), or where two curves meet (they are trimmed or stretched to the corner and joined).', obj({ ids, radius: num('m'), vertex: num('one corner only (index)') }, ['radius']), corner('fillet'), true);
+  def('drafting', 'chamfer', 'Cut corners straight: every corner of one curve (or one, by vertex), or where two curves meet.', obj({ ids, distance: num('m along the first side'), distance2: num('m along the second side (default the same)'), vertex: num('one corner only (index)') }, ['distance']), corner('chamfer', true), true);
+  def('drafting', 'join_curves', 'Join curves whose ends touch (within tolerance) into polylines; a chain that comes back to its start is closed.', obj({ ids, layer: str('or: every curve on layers matching this glob'), tolerance: num('m, default 0.01') }), (a) => {
+    const ents = DW.curvesOf(ctx.doc, a.layer ? [] : targets(ctx, a), a.layer);
+    const lines = ents.map((e) => ({ pts: curve2d(e).pts3, closed: !!e.curve.closed, key: 0, e }));
+    const tol = a.tolerance ?? 0.01;
+    const flatLines = lines.map((l) => ({ ...l, pts: DR.flat(l.pts) }));
+    const joined = DR.join(flatLines, tol);
+    const src3 = lines.flatMap((l) => l.pts);
+    for (const e of ents) D.removeEntity(ctx.doc, e);
+    const made = joined.map((j) => newCurve(j.e, DR.lift(j.pts, src3), j.closed, j.e.name));
+    ctx.selection.set(made.map((x) => x.id));
+    return { before: ents.length, after: made.length, closed: made.filter((x) => x.curve.closed).length };
+  }, true);
+  def('drafting', 'explode_curve', 'Split a polyline into one curve per straight piece.', obj({ id }), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    const P = c.closed ? [...c.pts3, c.pts3[0]] : c.pts3;
+    const made = P.slice(1).map((p, i) => newCurve(e, [P[i], p], false, `${e.name} ${i + 1}`));
+    D.removeEntity(ctx.doc, e);
+    ctx.selection.set(made.map((x) => x.id));
+    return { pieces: made.length };
+  }, true);
+  def('drafting', 'break_curve', 'Split a curve at a point (two curves), or take out the part between two points.', obj({ id, at: AT, at2: v3('second point: remove what lies between') }, ['at']), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    const pieces = DR.breakAt(DR.flat(c.pts3), flat(a.at), a.at2 ? flat(a.at2) : null, c.closed);
+    if (!pieces.length) throw new Error('Nothing left after that break.');
+    setPts(e, DR.lift(pieces[0], c.pts3, c.closed), false);
+    const extra = pieces.slice(1).map((p) => newCurve(e, DR.lift(p, c.pts3, c.closed), false));
+    return [e, ...extra].map((x) => summary(ctx.doc, x));
+  }, true);
+  def('drafting', 'simplify_curve', 'Fewer points, same shape within a tolerance (Douglas–Peucker); also merges straight runs.', obj({ ids, layer: str('or: every curve on layers matching this glob'), tolerance: num('m, default 0.05') }), (a) => {
+    const ents = DW.curvesOf(ctx.doc, a.layer ? [] : targets(ctx, a), a.layer);
+    let before = 0;
+    let after = 0;
+    for (const e of ents) {
+      const c = curve2d(e);
+      const P = DR.simplify(DR.flat(c.pts3), a.tolerance ?? 0.05, c.closed);
+      before += c.pts3.length;
+      after += P.length;
+      setPts(e, DR.lift(P, c.pts3, c.closed));
+    }
+    return { curves: ents.length, points_before: before, points_after: after };
+  }, true);
+  def('drafting', 'divide_curve', 'Points along a curve: count equal parts or every spacing metres. Makes survey points (with a code) unless points: false.', obj({ id, count: num('equal parts'), spacing: num('m between points'), points: bool('make survey points (default true)'), code: str('their code') }), (a) => {
+    const e = oneCurve(a.id);
+    const c = curve2d(e);
+    if (!(a.count > 0) && !(a.spacing > 0)) throw new Error('Give count or spacing.');
+    const pts = DR.lift(DR.divide(DR.flat(c.pts3), { count: a.count, spacing: a.spacing }, c.closed), c.pts3, c.closed).map(D.round3);
+    if (a.points === false) return { points: pts };
+    const made = pts.map((w) => S.addPoint(ctx.doc, { ...S.toProject(ctx.doc, w), code: a.code || '' }));
+    ctx.selection.set(made.map((x) => x.id));
+    return { points: made.map((p) => p.name) };
+  }, true);
+
+  // ---------------------------------------------------------------- linework to model (#148)
+  const LW = { ids, layer: str('or: every curve on layers matching this glob ("A-BLDG*")') };
+  def('drawings', 'elevate_linework', 'Give 2D linework heights: a constant elevation, draped on a surface, graded between start and end elevations, a slope from the start, or from spot-height text on a PDF underlay (a vertex takes the nearest label; vertices between labels grade evenly). Elevations are project Z.', obj({ ...LW, mode: str('constant | surface | grade | slope | text', ['constant', 'surface', 'grade', 'slope', 'text']), elevation: num('constant: project Z; slope: Z at the start'), start: num('grade: Z at the start'), end: num('grade: Z at the end'), slope: num('slope: % (+ up along the curve)'), surface: str('surface: the TIN to drape on'), underlay: str('text: the PDF underlay with spot heights'), contains: str('text: regex the labels match (default numbers)'), max_distance: num('text: farthest label, m (default 10)') }, ['mode']), async (a) => {
+    const doc = ctx.doc;
+    const ents = DW.curvesOf(doc, a.layer ? [] : targets(ctx, a), a.layer);
+    const baseZ = S.geo(doc).base?.[2] ?? 0;
+    let zAt;
+    if (a.mode === 'constant') zAt = () => a.elevation - baseZ;
+    else if (a.mode === 'surface') {
+      const smp = surfaceSampler(doc, surfaceOf(a.surface));
+      zAt = (p) => {
+        const z = smp.z(p[0], p[2]);
+        if (z === null || z === undefined || Number.isNaN(z)) throw new Error('Part of the linework lies off the surface.');
+        return z;
+      };
+    } else if (a.mode === 'text') {
+      const e = underlayOf(a.underlay);
+      const re = new RegExp(a.contains || '^[+-]?\\d+(?:[.,]\\d+)?$');
+      const labels = DW.textsInWorld(doc, e, (await pdfContent(e)).texts.filter((t) => re.test(t.str))).map((t) => ({ at: t.at, z: DW.numberIn(t.str) })).filter((t) => t.z !== null);
+      if (!labels.length) throw new Error('No spot-height labels found on that drawing (check contains).');
+      const max = a.max_distance ?? 10;
+      zAt = (p) => {
+        let best = null;
+        for (const t of labels) {
+          const d = Math.hypot(t.at[0] - p[0], t.at[2] - p[2]);
+          if (d <= max && (!best || d < best.d)) best = { d, z: t.z };
+        }
+        return best ? best.z - baseZ : null; // vertices without a label are filled in along the curve below
+      };
+    } else if (a.mode !== 'grade' && a.mode !== 'slope') throw new Error('mode: constant, surface, grade, slope or text.');
+    const skipped = [];
+    for (const e of ents) {
+      const c = curve2d(e);
+      const P = DR.flat(c.pts3);
+      const total = DR.length(P);
+      let s = 0;
+      const ch = [];
+      const ys = c.pts3.map((p, i) => {
+        if (i) s += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+        ch.push(s);
+        return a.mode === 'grade' ? a.start - baseZ + ((a.end - a.start) * s) / (total || 1) : a.mode === 'slope' ? a.elevation - baseZ + (s * a.slope) / 100 : zAt(p);
+      });
+      const known = ys.map((y, i) => (y === null ? -1 : i)).filter((i) => i >= 0);
+      if (!known.length) {
+        skipped.push(e.name);
+        continue;
+      }
+      // between labelled vertices: an even grade; beyond the first and last: level
+      ys.forEach((y, i) => {
+        if (y !== null) return;
+        const lo = known.findLast((k) => k < i);
+        const hi = known.find((k) => k > i);
+        ys[i] = lo === undefined ? ys[hi] : hi === undefined ? ys[lo] : ys[lo] + ((ys[hi] - ys[lo]) * (ch[i] - ch[lo])) / (ch[hi] - ch[lo] || 1);
+      });
+      setPts(e, c.pts3.map((p, i) => [p[0], ys[i], p[2]]));
+    }
+    if (skipped.length === ents.length) throw new Error(`No label within ${a.max_distance ?? 10} m of ${skipped.join(', ')}.`);
+    return { curves: ents.length - skipped.length, mode: a.mode, ...(skipped.length ? { skipped_no_labels: skipped } : {}) };
+  }, true);
+  def('drawings', 'linework_to_breaklines', 'Turn curves into survey breaklines (or surface boundaries): a survey point at each vertex, joined by a breakline the surfaces follow.', obj({ ...LW, kind: str('breakline (default) | boundary | hole', ['breakline', 'boundary', 'hole']), code: str('code of the new points (default BRK)') }), (a) => {
+    const doc = ctx.doc;
+    const ents = DW.curvesOf(doc, a.layer ? [] : targets(ctx, a), a.layer);
+    const made = [];
+    for (const e of ents) {
+      const c = curve2d(e);
+      const pts = c.pts3.map((w) => S.addPoint(doc, { ...S.toProject(doc, w), code: a.code || 'BRK' }));
+      const kind = a.kind === 'boundary' || a.kind === 'hole' ? 'boundary' : 'breakline';
+      made.push(D.addEntity(doc, { type: 'linework', name: D.uniqueName(doc, `${e.name} ${kind}`), tag: e.tag, line: { points: pts.map((p) => p.id), kind, closed: c.closed || kind === 'boundary', ...(kind === 'boundary' ? { boundary: a.kind === 'hole' ? 'hole' : 'outer' } : {}) }, material: { color: e.material.color } }));
+    }
+    ctx.selection.set(made.map((x) => x.id));
+    return { linework: made.map((x) => x.name), points: made.reduce((s, x) => s + x.line.points.length, 0) };
+  }, true);
+  def('drawings', 'extrude_linework', 'Extrude closed curves up into solids (footprints → buildings), each staying live on its curve.', obj({ ...LW, height: num('m'), color: common.color }, ['height']), (a) => {
+    const doc = ctx.doc;
+    const ents = DW.curvesOf(doc, a.layer ? [] : targets(ctx, a), a.layer).filter((e) => e.curve.closed);
+    if (!ents.length) throw new Error('No closed curves to extrude (join_curves can close chains).');
+    const made = ents.map((c) => {
+      const e = D.addEntity(doc, { name: D.uniqueName(doc, `${c.name} block`), tag: c.tag, material: { color: a.color || '#d9d4c7' } });
+      R.derive(doc, e, 'extrude_curve', { height: a.height }, [c.id]);
+      return e;
+    });
+    ctx.selection.set(made.map((x) => x.id));
+    return { solids: made.length };
+  }, true);
+  def('drawings', 'sweep_linework', 'Sweep a profile (kerb, wall, pipe…) along every picked curve; each sweep stays live on its curve.', obj({ ...LW, profile: { description: 'profile name (list_profiles) or [[u, v], …]' }, profile_params: obj({}, []), color: common.color }, ['profile']), async (a) => {
+    const ents = DW.curvesOf(ctx.doc, a.layer ? [] : targets(ctx, a), a.layer);
+    const made = [];
+    for (const c of ents) made.push((await reg.run('sweep', { path: c.id, profile: a.profile, profile_params: a.profile_params, color: a.color, tag: c.tag })).id);
+    ctx.selection.set(made);
+    return { sweeps: made.length };
+  }, true);
+  reg.commands.get('sweep_linework').compound = true;
+
   // ---------------------------------------------------------------- curves, sweeps, profiles
   def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
     const doc = ctx.doc;
@@ -1411,7 +1935,7 @@ function registerCore(reg, ctx) {
     C.checkCurve(curve);
     const { mesh, origin } = G.recenter({ v: a.points, f: [] });
     const count = doc.entities.filter((e) => e.type === 'curve').length + 1;
-    const e = D.addEntity(doc, { type: 'curve', name: a.name || `Curve ${count}`, curve: { ...curve, points: mesh.v }, position: D.round3(origin), tag: a.tag || 'Untagged', material: { color: a.color || '#2f6f86' } });
+    const e = D.addEntity(doc, { type: 'curve', name: a.name || `Curve ${count}`, curve: { ...curve, points: mesh.v }, position: D.round3(origin), tag: a.tag, material: { color: a.color || '#2f6f86' } });
     ctx.selection.set([e.id]);
     return summary(doc, e);
   }, true);
@@ -1429,7 +1953,7 @@ function registerCore(reg, ctx) {
       inputs = [c.id];
     }
     R.getGenerator('sweep').run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc }); // bad input throws before anything changes
-    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, `${typeof params.profile === 'string' ? params.profile.replace(/_/g, ' ') : 'Profile'} sweep`), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, `${typeof params.profile === 'string' ? params.profile.replace(/_/g, ' ') : 'Profile'} sweep`), tag: a.tag, material: a.color ? { color: a.color } : {} });
     R.derive(doc, e, 'sweep', params, inputs);
     ctx.selection.set([e.id]);
     return summary(doc, e);
@@ -1500,7 +2024,7 @@ function registerCore(reg, ctx) {
     const inputs = a.inputs ? D.resolve(doc, a.inputs).map((e) => e.id) : [];
     if (!gen.world && !inputs.length) return place(ctx, null, a, { name: a.generator.replace(/_/g, ' ') }, [a.generator, params]);
     gen.run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc });
-    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, a.generator.replace(/_/g, ' ')), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, a.generator.replace(/_/g, ' ')), tag: a.tag, material: a.color ? { color: a.color } : {} });
     R.derive(doc, e, a.generator, params, inputs);
     ctx.selection.set([e.id]);
     return summary(doc, e);

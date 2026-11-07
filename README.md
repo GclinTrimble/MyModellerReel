@@ -34,6 +34,11 @@ Electron's binary download is an install script; if your npm blocks install scri
   feature codes that turn field codes into breaklines and objects, live TIN surfaces with breaklines, boundaries and
   surface checks, cut/fill maps and volume reports, alignments with corridors that daylight to the ground, and quick
   designs (sloped line, plane, trench, road). A Survey tab lists and edits every point.
+- **Drawings and georeferencing**: place PDF pages and images (world files, GeoTIFF) as underlays, calibrate them
+  (a known distance, a bearing, a point) or georeference them from control points with residuals, in local project
+  coordinates. Extract a PDF's vector linework by layer, colour and window; draft on it (offset, trim, extend, fillet,
+  chamfer, join, break); then take it to 3D: heights from spot-level text, breaklines for the surface, buildings from
+  footprints, kerbs swept along lines. A layer panel with colours, locks, the current layer and saved states.
 - **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
   sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
   live arrays, recipes that rebuild a model with other values, and a macro recorder.

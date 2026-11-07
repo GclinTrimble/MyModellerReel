@@ -373,3 +373,9 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .code-chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); font-size: var(--my-text-xs); }
 .code-chip i { width: 8px; height: 8px; border-radius: 50%; }
 .btn.sm { min-height: 22px; padding: 0 var(--my-space-2); font-size: var(--my-text-xs); }
+
+/* ---------- drawings and layers (#138, #140) ---------- */
+.layer-row .layer-swatch { width: 16px; height: 16px; padding: 0; border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); background: none; cursor: pointer; flex: none; }
+.layer-row .layer-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.layer-row .layer-swatch::-webkit-color-swatch { border: 0; border-radius: 2px; }
+.info-pre { max-height: 50vh; overflow: auto; white-space: pre-wrap; font-family: var(--my-font-mono, monospace); background: var(--my-surface-2, transparent); padding: var(--my-space-2); border-radius: var(--my-radius-sm); }

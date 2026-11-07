@@ -225,3 +225,69 @@ test('survey: click a point in the cloud, edit an elevation in the Survey table,
   assert.ok(await w.evaluate((id) => !!window.mmr.app.viewport.objs.get(id).geometry.attributes.color, cf.map), 'the map is coloured per face');
   assert.ok(await w.evaluate(() => document.getElementById('label-layer').width > 0));
 });
+
+test('drawings: a PDF sheet on screen, calibrated and georeferenced with the mouse, extracted, trimmed; a locked layer', async () => {
+  const { makePdf } = await import('../fixtures/make-pdf.js');
+  const file = path.join(home, 'plan.pdf');
+  // a 100-point line on the Kerbs layer, a crossing line, a label
+  fs.writeFileSync(file, makePdf({ layers: ['Kerbs'], content: '/OC /oc1 BDC 1 0 0 RG 1 w 100 500 m 200 500 l S 150 450 m 150 550 l S EMC BT /F1 10 Tf 100 520 Td (101.25) Tj ET' }));
+  await ok('new_model');
+  const r = await ok('import_pdf', { path: file, scale: '1:100' });
+  const id = r.underlays[0].id;
+  await ok('set_view', { preset: 'top' });
+  await ok('zoom_extents', {});
+  await w.waitForFunction((i) => window.mmr.app.viewport.objs.get(i)?.material.map?.image?.width > 100, id, { timeout: 30000 });
+  // calibrate: click the two ends of the kerb line on the sheet, type its real length
+  const world = (u, v) => w.evaluate(([i, a, b]) => {
+    const e = window.mmr.doc.entities.find((x) => x.id === i);
+    const [A, B, C, D, E, F] = e.underlay.affine;
+    return [A * a + B * b + C, 0, -(D * a + E * b + F)];
+  }, [id, u, v]);
+  const screen = (p) => w.evaluate((q) => {
+    const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q));
+    return [s.x, s.y];
+  }, p);
+  const click = async (p) => {
+    const [sx, sy] = await screen(p);
+    await w.mouse.move(sx, sy);
+    await w.mouse.down();
+    await w.mouse.up();
+  };
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  await w.keyboard.press('i');
+  await click(await world(100, 342)); // page v is measured from the top: 842 − 500
+  await click(await world(200, 342));
+  await w.fill('#vcb', '50');
+  await w.press('#vcb', 'Enter');
+  await w.waitForFunction((i) => Math.abs(Math.hypot(...window.mmr.doc.entities.find((x) => x.id === i).underlay.affine.slice(0, 1), window.mmr.doc.entities.find((x) => x.id === i).underlay.affine[3]) - 0.5) < 0.01, id);
+  // a control point: click the line's start, type where it really is
+  await w.keyboard.press('j');
+  await click(await world(100, 342));
+  await w.fill('#vcb', '5400000, 650000');
+  await w.press('#vcb', 'Enter');
+  await w.waitForFunction((i) => window.mmr.doc.entities.find((x) => x.id === i).underlay.control.length === 1, id);
+  const start = await world(100, 342);
+  assert.ok(Math.hypot(start[0], start[2]) < 0.05, `the first control point moved the sheet onto the base point: ${start}`);
+  const ex = await ok('extract_linework', { id, layers: ['Kerbs'] });
+  assert.equal(ex.curves, 2);
+  // trim: click the right half of the kerb, the crossing line cuts it
+  await ok('zoom_extents', {});
+  await w.keyboard.press('w');
+  await click(await world(185, 342));
+  const kerb = (await ok('get_scene')).entities.filter((e) => e.type === 'curve').map((e) => e.length).sort((a, b) => a - b);
+  assert.ok(Math.abs(kerb[0] - 25) < 0.2, `trimmed to the crossing: ${kerb}`);
+  // the layer panel: lock the kerbs, the select tool skips them
+  await w.keyboard.press('Escape');
+  await w.keyboard.press(' ');
+  await w.click('[data-tab="outliner"]');
+  await w.getByRole('button', { name: 'Lock PDF Kerbs' }).click();
+  assert.equal((await ok('list_layers', { name: 'PDF Kerbs' }))[0].locked, true);
+  await ok('select', { mode: 'none' });
+  const vp = await w.locator('#viewport').boundingBox();
+  await w.mouse.move(vp.x + 30, vp.y + 30);
+  await w.mouse.down();
+  await w.mouse.move(vp.x + vp.width - 30, vp.y + vp.height - 30, { steps: 4 });
+  await w.mouse.up();
+  const picked = await w.evaluate(() => window.mmr.app.selection.map((i) => window.mmr.doc.entities.find((e) => e.id === i).tag));
+  assert.ok(picked.length && !picked.includes('PDF Kerbs'), `box select skips the locked layer: ${picked}`);
+});

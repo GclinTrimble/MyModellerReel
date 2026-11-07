@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const CHANNELS = new Set([
   'app:info', 'app:close-confirmed', 'settings:get', 'settings:set', 'window:title', 'shell:open-path', 'shell:open-url',
-  'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat',
+  'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:read-binary', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat',
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
 ]);
 

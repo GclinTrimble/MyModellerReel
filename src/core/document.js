@@ -1,5 +1,6 @@
 // The model document: plain JSON so it can be saved inside a GLB, diffed, sent to an AI and undone by snapshot.
 import { Matrix4, Euler, Quaternion, Vector3 } from 'three';
+import { corners } from './underlay.js';
 import { bbox } from './geometry.js';
 import { samplePoints } from './curves.js';
 
@@ -158,7 +159,6 @@ export function addEntity(doc, props) {
     rotation: [0, 0, 0],
     scale: [1, 1, 1],
     material: { color: DEFAULT_COLOR, opacity: 1, metalness: 0, roughness: 0.85 },
-    tag: 'Untagged',
     visible: true,
     locked: false,
     ...props,
@@ -166,6 +166,7 @@ export function addEntity(doc, props) {
   e.id = id;
   e.name ||= `${kind} ${count}`;
   e.material = { color: DEFAULT_COLOR, opacity: 1, metalness: 0, roughness: 0.85, ...(props.material || {}) };
+  e.tag ||= doc.settings.current_layer || 'Untagged';
   doc.entities.push(e);
   if (e.tag && !doc.tags.some((t) => t.name === e.tag)) doc.tags.push({ name: e.tag, visible: true });
   return e;
@@ -236,8 +237,8 @@ export function worldBox(doc, e) {
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const x of [e, ...descendants(doc, e.id)]) {
-    if (!x.mesh && !x.curve && x.type !== 'point' && !x.line) continue;
-    const pts = x.mesh ? null : x.curve ? samplePoints(x.curve) : x.line ? x.line.points.map((id) => getEntity(doc, id)).filter(Boolean).map((p) => worldMatrix(doc, p).elements.slice(12, 15)) : [[0, 0, 0]];
+    if (!x.mesh && !x.curve && x.type !== 'point' && !x.line && !x.underlay) continue;
+    const pts = x.mesh ? null : x.underlay ? corners(x.underlay.affine, x.underlay.size).map(([X, Y]) => [X, 0, -Y]) : x.curve ? samplePoints(x.curve) : x.line ? x.line.points.map((id) => getEntity(doc, id)).filter(Boolean).map((p) => worldMatrix(doc, p).elements.slice(12, 15)) : [[0, 0, 0]];
     if (pts && !pts.length) continue;
     const m = x.line ? new Matrix4() : worldMatrix(doc, x); // linework lives where its points are
     const b = bbox(x.mesh || { v: pts });

@@ -14,6 +14,8 @@ import * as A from '../core/animation.js';
 import { buildModel } from './viewport.js';
 import { renderVideo } from './render.js';
 import { stripForSave, hydrate } from '../core/components.js';
+import * as Assets from '../core/assets.js';
+import { tiffInfo } from './underlays.js';
 
 const D2R = Math.PI / 180;
 const native = () => window.native;
@@ -48,6 +50,7 @@ export class IO {
     scene.name = 'MyModellerReel';
     scene.add(root);
     if (withDoc) scene.userData.mymodellerreel = JSON.stringify(doc, stripForSave);
+    if (withDoc && doc.entities.some((e) => e.underlay)) scene.userData.mymodellerreel_assets = Assets.pack(doc); // the PDFs and images of underlays
     if (doc.geo?.base) scene.userData.georef = { base_point_enz: doc.geo.base, crs: doc.geo.crs, axes: 'x = Easting − base, y = Elevation − base, z = −(Northing − base)' };
     const animations = this.clips(doc, objs, scene);
     return new GLTFExporter().parseAsync(scene, { binary, animations, onlyVisible: false });
@@ -125,6 +128,7 @@ export class IO {
     const raw = gltf.scene?.userData?.mymodellerreel;
     if (raw) {
       const opened = JSON.parse(raw);
+      Assets.unpack(gltf.scene.userData.mymodellerreel_assets);
       hydrate(opened);
       this.app.store.replace(opened);
       this.app.afterOpen(path);
@@ -193,6 +197,16 @@ export class IO {
     await native().invoke('file:write', path, data);
     this.app.ui.toast(`Exported ${base(path)}`);
     return { exported: path };
+  }
+
+  /** Read a PDF or an image (underlays). */
+  async readBinary(path) {
+    return new Uint8Array(await native().invoke('file:read-binary', path));
+  }
+
+  /** Size and GeoTIFF tags of a TIFF. */
+  tiffInfo(bytes) {
+    return tiffInfo(bytes);
   }
 
   /** Read a text file (survey points, feature libraries). */

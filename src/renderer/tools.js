@@ -5,6 +5,7 @@ import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import { AXIS_COLORS, meshGeometry } from './viewport.js';
 import { arcThrough } from '../core/curves.js';
+import * as L from '../core/layers.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 const AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -22,6 +23,10 @@ export const TOOLS = [
   { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
   { id: 'arc', label: 'Arc (start, end, bulge)', key: 'A', icon: 'circle-half', group: 'draw' },
   { id: 'point', label: 'Survey point (click to add)', key: 'N', icon: 'map-pin', group: 'draw' },
+  { id: 'trim', label: 'Trim curves', key: 'W', icon: 'scissors', group: 'draft' },
+  { id: 'extend', label: 'Extend curves', key: 'Y', icon: 'arrow-line-right', group: 'draft' },
+  { id: 'calibrate', label: 'Calibrate drawing (scale, orient)', key: 'I', icon: 'ruler', group: 'draft' },
+  { id: 'control', label: 'Control points (georeference a drawing)', key: 'J', icon: 'crosshair', group: 'draft' },
   { id: 'pushpull', label: 'Push/Pull', key: 'P', icon: 'arrow-fat-lines-up', group: 'edit' },
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
@@ -157,6 +162,8 @@ export class Tools {
       if (p) return done({ point: p, kind: 'On plane', hit });
     }
     if (hit) return done({ point: hit.point.clone(), kind: 'On face', hit });
+    const u = vp.pickUnderlay();
+    if (u) return done({ point: u.point, kind: 'On drawing', hit: null });
     const p = ray.intersectPlane(fallback || new THREE.Plane(V(0, 1, 0), 0), new THREE.Vector3());
     return done({ point: p || from?.clone() || V(), kind: fallback ? 'Level' : 'On ground', hit: null });
   }
@@ -241,13 +248,13 @@ class SelectTool {
     let ids;
     if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) < 4) {
       const mesh = this.t.vp.pick(ev); // also aims the ray for the two below
-      const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve(); // a survey point wins over the surface under it
+      const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve() || this.t.vp.pickUnderlay(); // a survey point wins over the surface under it; drawings come last
       ids = hit ? [app.pickTarget(hit.entityId)] : [];
     } else {
       const [x0, x1] = [s.x, ev.clientX].sort((a, b) => a - b);
       const [y0, y1] = [s.y, ev.clientY].sort((a, b) => a - b);
       ids = app.store.doc.entities
-        .filter((e) => e.parent === app.context && !e.locked)
+        .filter((e) => e.parent === app.context && !L.isLocked(app.store.doc, e))
         .filter((e) => {
           const b = D.worldBox(app.store.doc, e);
           const p = this.t.vp.toScreen(V(...b.min).add(V(...b.max)).multiplyScalar(0.5));
@@ -464,7 +471,7 @@ class PushPullTool {
   start(hit) {
     const e = this.t.app.entity(hit.entityId);
     if (!e?.mesh) return false;
-    if (e.locked) throw new Error(`${e.name} is locked.`);
+    if (L.isLocked(this.t.app.store.doc, e)) throw new Error(`${e.name} is locked.`);
     const nf = V(...G.faceNormal(e.mesh, hit.faceIndex)).transformDirection(hit.object.matrixWorld);
     this.s = { id: e.id, fi: hit.faceIndex, mesh: e.mesh, object: hit.object, p0: hit.point.clone(), n: hit.normal.clone(), sign: Math.sign(nf.dot(hit.normal)) || 1 };
     hit.object.visible = false;
@@ -510,8 +517,9 @@ class XformBase {
     vp.modelRoot.updateMatrixWorld(true);
     this.ids = ids.filter((id) => {
       const e = this.t.app.entity(id);
-      if (e?.locked) this.t.app.ui.toast(`${e.name} is locked.`);
-      return e && !e.locked;
+      const locked = e && L.isLocked(this.t.app.store.doc, e);
+      if (locked) this.t.app.ui.toast(`${e.name} is locked${e.locked ? '' : ` (layer ${e.tag})`}.`);
+      return e && !locked;
     });
     if (!this.ids.length) return (this.ids = null), false;
     this.orig = this.ids.map((id) => ({ o: vp.objs.get(id), m: vp.objs.get(id).matrixWorld.clone() }));
@@ -811,6 +819,146 @@ class PointTool {
   }
 }
 
+/** Calibrate a drawing: click two points on it, then type their real distance (scale) or the bearing of A→B (orient). */
+class CalibrateTool {
+  hint = 'Click two points on a drawing, then type their real distance (12.5) to scale it, or the bearing of that line (90°, 0 = north) to turn it.';
+  vcbLabel = 'Distance / °';
+  constructor(t) {
+    this.t = t;
+  }
+  busy() {
+    return !!this.a;
+  }
+  cancel() {
+    this.a = this.b = this.id = null;
+    this.t.clear();
+  }
+  at(ev) {
+    const inf = this.t.infer(ev);
+    const u = this.t.vp.pickUnderlay(this.id);
+    return { p: inf.snapped || !u ? inf.point : u.point, u };
+  }
+  move(ev) {
+    if (!this.a || this.b) return;
+    const { p } = this.at(ev);
+    this.t.vp.overlay.clear();
+    this.t.lines([this.a, p], HIGHLIGHT);
+    this.t.status(`On the drawing it measures ${fmt(this.a.distanceTo(p))}. Click the second point.`);
+  }
+  down(ev) {
+    const { p, u } = this.at(ev);
+    if (!this.a || this.b) {
+      if (!u) throw new Error('Click on a drawing (import a PDF or an image first).');
+      this.cancel();
+      this.id = u.entityId;
+      this.a = p;
+      return;
+    }
+    this.b = p;
+    this.t.vp.overlay.clear();
+    this.t.lines([this.a, this.b], HIGHLIGHT);
+    this.t.status(`Measures ${fmt(this.a.distanceTo(this.b))} now: type the real distance, or a bearing like 90°.`);
+  }
+  async vcb(text) {
+    if (!this.b) throw new Error('Click two points on the drawing first.');
+    const [a, b] = [this.a, this.b].map((p) => D.round3(p.toArray()));
+    const deg = text.match(/^(-?[\d.]+)\s*(°|deg|d)$/i);
+    if (deg) await this.t.run('calibrate_underlay', { id: this.id, orient: { a, b, bearing: parseFloat(deg[1]) } });
+    else {
+      const d = parseLength(text);
+      if (!(d > 0)) throw new Error('Type a distance (12.5, 40m) or a bearing (90°).');
+      await this.t.run('calibrate_underlay', { id: this.id, scale: { a, b, distance: d } });
+    }
+    this.t.status(deg ? `Turned: that line now points ${deg[1]}°.` : `Scaled: that line is now ${text}.`);
+    this.cancel();
+  }
+}
+
+/** Control points: click a spot on the drawing, then where it really is (a survey point, an end) or type N, E. */
+class ControlTool {
+  hint = 'Click a spot on a drawing (a grid cross, a corner), then where it really is: a survey point or a model point, or type its N, E. Two or more georeference it.';
+  vcbLabel = 'N, E';
+  constructor(t) {
+    this.t = t;
+  }
+  busy() {
+    return !!this.from;
+  }
+  cancel() {
+    this.from = this.id = null;
+    this.t.clear();
+  }
+  move(ev) {
+    const inf = this.t.infer(ev);
+    if (!this.from) return;
+    this.t.vp.overlay.clear();
+    this.t.lines([this.from, inf.point], HIGHLIGHT);
+  }
+  async down(ev) {
+    if (!this.from) {
+      const inf = this.t.infer(ev);
+      const u = this.t.vp.pickUnderlay();
+      if (!u) throw new Error('Click on a drawing first.');
+      this.id = u.entityId;
+      this.from = inf.snapped ? inf.point : u.point;
+      return this.t.status('Now click where that spot really is, or type its N, E.');
+    }
+    this.t.vp.pick(ev);
+    const pt = this.t.vp.pickPoint();
+    const to = pt ? this.t.app.entity(pt.entityId).name : D.round3(this.t.infer(ev).point.toArray());
+    await this.add(to);
+  }
+  async vcb(text) {
+    if (!this.from) throw new Error('Click a spot on the drawing first.');
+    const [n, e] = text.split(/[\s,;]+/).map(Number);
+    if (!Number.isFinite(n) || !Number.isFinite(e)) throw new Error('Type the northing and easting: 5400120.5, 650310.2');
+    await this.add({ n, e });
+  }
+  async add(to) {
+    const id = this.id;
+    const from = D.round3(this.from.toArray());
+    const r = await this.t.run('add_control_pair', { id, from, to });
+    if (r.pairs === 1) {
+      await this.t.run('calibrate_underlay', { id, move: { from: { u: r.pair.u, v: r.pair.v }, to } });
+      this.t.status('First control point: the drawing moved onto it. Add a second to scale and turn it.');
+    } else {
+      const g = await this.t.run('georeference_underlay', { id });
+      const flag = g.pairs.find((p) => p.flag);
+      this.t.status(`Georeferenced from ${r.pairs} points (${g.method}): RMS ${fmt(g.rms)}${flag ? ` · check ${flag.name}` : ''}.`);
+    }
+    this.from = null;
+    this.t.clear();
+  }
+}
+
+/** Trim: click the piece of a curve to cut away between its crossings with the other curves. */
+class TrimTool {
+  hint = 'Click the piece of a curve to cut away; the other curves are the cutting edges.';
+  constructor(t) {
+    this.t = t;
+  }
+  async down(ev) {
+    this.t.vp.pick(ev);
+    const hit = this.t.vp.pickCurve();
+    if (!hit || !this.t.app.entity(hit.entityId)?.curve) return;
+    await this.t.run('trim', { id: hit.entityId, at: D.round3(hit.point.toArray()) });
+  }
+}
+
+/** Extend: click near the end of a curve to stretch it to the next curve ahead. */
+class ExtendTool {
+  hint = 'Click near the end of a curve to extend it to the next curve ahead.';
+  constructor(t) {
+    this.t = t;
+  }
+  async down(ev) {
+    this.t.vp.pick(ev);
+    const hit = this.t.vp.pickCurve();
+    if (!hit || !this.t.app.entity(hit.entityId)?.curve) return;
+    await this.t.run('extend', { id: hit.entityId, end: D.round3(hit.point.toArray()) });
+  }
+}
+
 /** Arc: click its start, its end, then where it bulges through (or type the bulge height). */
 class ArcTool extends DrawBase {
   hint = 'Click the start, then the end, then a point the arc passes through. Type a bulge height (sagitta) instead of the last click.';
@@ -900,6 +1048,10 @@ const IMPL = {
   curve: CurveTool,
   arc: ArcTool,
   point: PointTool,
+  calibrate: CalibrateTool,
+  control: ControlTool,
+  trim: TrimTool,
+  extend: ExtendTool,
   pushpull: PushPullTool,
   move: MoveTool,
   rotate: RotateTool,

@@ -186,6 +186,41 @@ export class UI {
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
       importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
+      importPdf: { label: 'Import PDF drawing…', icon: 'file-pdf', run: async () => {
+        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'PDF drawing', extensions: ['pdf'] }] });
+        if (path) this.commandDialog('import_pdf', { path, scale: '1:500', pages: [1] });
+      } },
+      importImage: { label: 'Import image (world file / GeoTIFF)…', icon: 'image', run: async () => {
+        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'tif', 'tiff', 'gif', 'bmp'] }] });
+        if (path) app.reg.run('import_image', { path }).then((r) => (this.toast(`${r.name}: placed by ${r.placed_by}`), app.reg.run('zoom_extents', { ids: [r.id] }))).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      drawingScale: { label: 'Set drawing scale…', icon: 'ruler', run: form('calibrate_underlay', () => ({ id: sel()[0], drawing_scale: '1:500' })) },
+      georef: { label: 'Georeference from control points', icon: 'crosshair-simple', run: () => app.reg.run('georeference_underlay', { id: sel()[0] }).then((g) => this.toast(`${g.method}: RMS ${fmt(g.rms)}`)).catch((e) => this.toast(e.message, 'danger')) },
+      georefReport: { label: 'Georeference report', icon: 'list-checks', run: () => this.georefDialog(sel()[0]) },
+      worldFile: { label: 'Export world file…', icon: 'export', run: async () => {
+        const e = app.entity(sel()[0]);
+        if (!e?.underlay) return this.toast('Select a drawing first.', 'danger');
+        const path = await window.native.invoke('file:save-dialog', { defaultPath: `${e.name}.wld`, filters: [{ name: 'World file', extensions: ['wld', 'pgw', 'jgw', 'tfw'] }] });
+        if (path) run('export_world_file', { id: e.id, path })();
+      } },
+      pdfStats: { label: 'What is in this PDF?', icon: 'info', run: () => app.reg.run('pdf_linework_stats', { id: sel()[0] }).then((r) => this.infoDialog('PDF content', r)).catch((e) => this.toast(e.message, 'danger')) },
+      extract: { label: 'Extract linework…', icon: 'path', run: form('extract_linework', () => ({ id: sel()[0] })) },
+      drawingText: { label: 'Text on the drawing', icon: 'text-t', run: () => app.reg.run('list_drawing_text', { id: sel()[0], limit: 200 }).then((r) => this.infoDialog(`${r.count} text labels`, r.texts.map((t) => `${t.str}   [${t.at.join(', ')}]`).join('\n'))).catch((e) => this.toast(e.message, 'danger')) },
+      offset: { label: 'Offset curve…', icon: 'arrows-in-line-horizontal', run: form('offset_curve', () => ({ id: sel()[0], distance: 1 })) },
+      fillet: { label: 'Fillet…', icon: 'circle-half', run: form('fillet', () => ({ radius: 1 })) },
+      chamfer: { label: 'Chamfer…', icon: 'line-segment', run: form('chamfer', () => ({ distance: 1 })) },
+      joinCurves: { label: 'Join curves', icon: 'link', run: () => app.reg.run('join_curves', {}).then((r) => this.toast(`${r.before} curves → ${r.after}`)).catch((e) => this.toast(e.message, 'danger')) },
+      explode: { label: 'Explode curve', icon: 'arrows-out-line-horizontal', run: run('explode_curve', {}) },
+      simplify: { label: 'Simplify curves…', icon: 'wave-sine', run: form('simplify_curve', { tolerance: 0.05 }) },
+      divide: { label: 'Divide curve into points…', icon: 'dots-three', run: form('divide_curve', () => ({ id: sel()[0], spacing: 10 })) },
+      elevate: { label: 'Elevate linework…', icon: 'arrow-fat-line-up', run: form('elevate_linework', { mode: 'constant' }) },
+      toBreaklines: { label: 'Linework to breaklines…', icon: 'line-segments', run: form('linework_to_breaklines', { kind: 'breakline' }) },
+      extrudeLines: { label: 'Extrude closed linework…', icon: 'cube', run: form('extrude_linework', { height: 6 }) },
+      sweepLines: { label: 'Sweep a profile along linework…', icon: 'path', run: form('sweep_linework', { profile: 'kerb' }) },
+      newLayer: { label: 'New layer…', icon: 'stack', run: form('create_layer', { current: true }) },
+      layerState: { label: 'Save layer state…', icon: 'floppy-disk-back', run: form('save_layer_state') },
+      restoreLayerState: { label: 'Restore layer state…', icon: 'clock-counter-clockwise', run: form('restore_layer_state') },
+      mapLayers: { label: 'Merge layers…', icon: 'stack-simple', run: form('merge_layers') },
       exportPoints: { label: 'Export points…', icon: 'export', run: async () => {
         const path = await window.native.invoke('file:save-dialog', { defaultPath: 'Points.csv', filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }] });
         if (path) run('export_points', { path })();
@@ -232,9 +267,10 @@ export class UI {
       Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
     };
@@ -395,7 +431,7 @@ export class UI {
           h(
             `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
             { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
-            icon(e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : 'cube'),
+            icon(e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : 'cube'),
             e.mesh || e.curve ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
             h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
             animated ? icon('film-strip') : null,
@@ -412,15 +448,54 @@ export class UI {
       {},
       h('div.row', {}, h('h3.grow', {}, 'Outliner'), h('span.muted.small', {}, `${doc.entities.length} entities`)),
       rows.length ? h('div.tree', {}, rows) : h('p.muted', {}, 'Nothing here yet. Draw with the tools on the left, or ask the AI to build something.'),
-      h('div.overline', {}, 'Tags'),
-      h(
-        'div.tree',
-        {},
-        doc.tags.map((t) =>
-          h('div.tree-row', {}, icon('tag'), h('span.name', {}, t.name), h('span.muted.small', {}, doc.entities.filter((e) => e.tag === t.name).length), h('button.icon-btn.sm', { title: t.visible ? 'Hide tag' : 'Show tag', 'aria-label': t.visible ? 'Hide tag' : 'Show tag', onclick: () => run('set_tag_visibility', { tag: t.name, visible: !t.visible }) }, icon(t.visible ? 'eye' : 'eye-slash'))),
-        ),
-      ),
+      h('div.row', {}, h('div.overline.grow', {}, 'Layers'), h('button.icon-btn.sm', { title: 'New layer', 'aria-label': 'New layer', onclick: () => this.actions.newLayer.run() }, icon('plus'))),
+      h('div.tree', {}, this.layerRows(doc, run)),
     );
+  }
+
+  /** One row per layer, indented under "/" groups: colour, name, count, current, lock, visibility. */
+  layerRows(doc, run) {
+    const cur = doc.settings.current_layer || 'Untagged';
+    const counts = new Map();
+    for (const e of doc.entities) if (!e.parent) counts.set(e.tag, (counts.get(e.tag) || 0) + 1);
+    return [...doc.tags]
+      .sort((a, b) => (a.name === 'Untagged' ? -1 : b.name === 'Untagged' ? 1 : a.name.localeCompare(b.name)))
+      .map((t) => {
+        const depth = t.name.split('/').length - 1;
+        const leaf = t.name.split('/').pop();
+        const isCur = t.name === cur;
+        return h(
+          'div.tree-row.layer-row',
+          { style: { paddingLeft: `${4 + depth * 14}px` }, title: t.description || t.name },
+          h('input.layer-swatch', { type: 'color', value: t.color || '#d9d4c7', 'aria-label': `Colour of layer ${t.name}`, onchange: (ev) => run('set_layer', { name: t.name, color: ev.target.value }) }),
+          h('span.name', {}, leaf),
+          h('span.muted.small', {}, counts.get(t.name) || 0),
+          h('button.icon-btn.sm', { title: isCur ? 'Current layer: new geometry goes here' : 'Make current', 'aria-label': isCur ? `${t.name} is the current layer` : `Make ${t.name} current`, 'aria-pressed': String(isCur), onclick: () => run('set_layer', { name: t.name, current: true }) }, icon(isCur ? 'check-circle' : 'circle')),
+          h('button.icon-btn.sm', { title: t.locked ? 'Unlock layer' : 'Lock layer', 'aria-label': t.locked ? `Unlock ${t.name}` : `Lock ${t.name}`, onclick: () => run('set_layer', { name: t.name, locked: !t.locked }) }, icon(t.locked ? 'lock-simple' : 'lock-simple-open')),
+          h('button.icon-btn.sm', { title: t.visible ? 'Hide layer' : 'Show layer', 'aria-label': t.visible ? `Hide ${t.name}` : `Show ${t.name}`, onclick: () => run('set_layer', { name: t.name, visible: !t.visible }) }, icon(t.visible ? 'eye' : 'eye-slash')),
+        );
+      });
+  }
+
+  /** The control pairs and residuals of a georeferenced drawing. */
+  async georefDialog(id) {
+    const app = this.app;
+    try {
+      const r = await app.reg.run('georef_report', { id });
+      const e = app.entity(id);
+      const rows = (e.underlay.control || []).map((c, i) => {
+        const res = r.pairs?.find((p) => p.name === c.name);
+        return h('tr', {}, h('td', {}, c.name), h('td', {}, `${c.n.toFixed(3)}`), h('td', {}, `${c.e.toFixed(3)}`), h('td', {}, res ? fmt(res.d) : '–'), h('td', {}, res?.flag ? h('span.param-error', {}, 'worst') : ''), h('td', {}, h('button.btn', { onclick: async () => (await app.reg.run('edit_control_pair', { id, pair: i, enabled: !c.enabled }), await app.reg.run('georeference_underlay', { id }).catch(() => {}), this.georefDialog(id)) }, c.enabled ? 'Turn off' : 'Turn on')));
+      });
+      this.modal(`Georeference · ${e.name}`, h('div', {}, h('p.small', {}, r.rms !== undefined ? `${r.method}: RMS ${fmt(r.rms)} · ${r.metres_per_unit.map((x) => x.toFixed(4)).join(' × ')} m per unit · turned ${r.rotation.toFixed(2)}°` : `${r.pairs} control pair(s). Add 2 or more with the Control points tool (J).`), rows.length ? h('div.qty', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['Pair', 'N', 'E', 'Residual', '', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))) : null));
+    } catch (err) {
+      this.toast(err.message, 'danger');
+    }
+  }
+
+  /** A read-only result in a dialog (counts, text lists). */
+  infoDialog(title, data) {
+    this.modal(title, h('pre.small.info-pre', {}, typeof data === 'string' ? data : JSON.stringify(data, null, 1)));
   }
 
   panel_entity() {
@@ -473,17 +548,19 @@ export class UI {
     return h(
       'div.panel',
       {},
-      h('label.field', {}, h('span', {}, `Name · ${e.id} · ${e.type === 'group' ? 'group' : e.curve ? `${e.curve.kind} curve` : `${e.mesh.f.length} faces`}`), h('input', { value: e.name, onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value }) })),
+      h('label.field', {}, h('span', {}, `Name · ${e.id} · ${e.type === 'group' ? 'group' : e.curve ? `${e.curve.kind} curve` : e.underlay ? `${e.underlay.kind} drawing` : e.mesh ? `${e.mesh.f.length} faces` : e.type}`), h('input', { value: e.name, onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value }) })),
       h('label.field', {}, h('span', {}, 'Tag'), h('input', { value: e.tag, list: 'tag-list', onchange: (ev) => run('set_properties', { ids: [e.id], tag: ev.target.value || 'Untagged' }) }), h('datalist', { id: 'tag-list' }, doc.tags.map((t) => h('option', { value: t.name })))),
       h('div.card', {}, h('div.overline', {}, 'Transform (relative to parent; Y is up)'), xyz('Position', 'position', 0.1), xyz('Rotation°', 'rotation', 5), xyz('Scale', 'scale', 0.1), h('div.small.muted', {}, `Size ${size.map(fmt).join(' × ')}`)),
-      h(
+      e.underlay
+        ? null
+        : h(
         'div.row.wrap',
         {},
         h('span.small.muted', {}, 'Pivot'),
         ...['left', 'right', 'center', 'bottom', 'top'].map((p) => h('button.btn', { onclick: () => run('set_pivot', { id: e.id, pivot: p }) }, p)),
       ),
       this.paramsCard(e),
-      matFields,
+      e.underlay ? null : matFields,
       this.metaCard(e),
       tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
       actions,
@@ -504,6 +581,22 @@ export class UI {
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
+      );
+    }
+    if (e.underlay) {
+      const u = e.underlay;
+      const slider = (k, label) => h('label.row.small', {}, h('span', { style: { width: '64px' } }, label), h('input.grow', { type: 'range', min: 0, max: 1, step: 0.05, value: u[k] ?? 0, 'aria-label': label, onchange: (ev) => run('set_underlay', { id: e.id, [k]: +ev.target.value }) }));
+      const [a, , , d] = u.affine;
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `${u.kind === 'pdf' ? `PDF page ${u.page}` : 'Image'} · ${(Math.hypot(a, d) * 1000).toFixed(2)} mm per ${u.kind === 'pdf' ? 'point' : 'pixel'}${u.georef ? ` · ${u.georef.method}${u.georef.rms ? ` RMS ${fmt(u.georef.rms)}` : ''}` : ''}`),
+        slider('opacity', 'Opacity'),
+        slider('fade', 'Fade'),
+        h('label.row.small', {}, h('input', { type: 'checkbox', checked: !!u.mono, onchange: (ev) => run('set_underlay', { id: e.id, mono: ev.target.checked }) }), 'Black and white'),
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => app.tools.set('calibrate') }, icon('ruler'), 'Calibrate'), h('button.btn', { onclick: () => app.tools.set('control') }, icon('crosshair'), `Control points (${u.control.length})`), u.control.length ? h('button.btn', { onclick: () => this.georefDialog(e.id) }, icon('list-checks'), 'Report') : null),
+        u.kind === 'pdf' ? h('div.row.wrap', {}, h('button.btn', { onclick: () => this.commandDialog('extract_linework', { id: e.id }) }, icon('path'), 'Extract linework…'), h('button.btn', { onclick: () => this.actions.pdfStats.run() }, icon('info'), 'Contents')) : null,
+        u.clip ? h('button.btn', { onclick: () => run('set_underlay', { id: e.id, clip: 'none' }) }, icon('crop'), 'Remove crop') : null,
       );
     }
     if (e.line)
