@@ -1,6 +1,7 @@
 // The model document: plain JSON so it can be saved inside a GLB, diffed, sent to an AI and undone by snapshot.
 import { Matrix4, Euler, Quaternion, Vector3 } from 'three';
 import { bbox } from './geometry.js';
+import { samplePoints } from './curves.js';
 
 export const DEFAULT_COLOR = '#d9d4c7';
 
@@ -12,6 +13,9 @@ export function newDoc() {
     entities: [],
     tags: [{ name: 'Untagged', visible: true }],
     scenes: [],
+    profiles: {}, // custom sweep profiles: name → { points: [[u, v], …], description }
+    recipes: {}, // replayable build histories: name → { description, params, steps: [{ command, args }] }
+    journal: [], // the commands that built this model, in order (recipes and macros are cut from it)
     animation: { duration: 10, fps: 30, tracks: [] },
     settings: {
       edges: true,
@@ -56,6 +60,13 @@ export class Store {
     this.changed();
     return true;
   }
+  /** Drop the change since the last checkpoint (a command that failed half-way). */
+  rollback() {
+    if (!this.undoStack.length) return false;
+    this.doc = JSON.parse(this.undoStack.pop());
+    this.changed();
+    return true;
+  }
   replace(doc) {
     this.doc = doc;
     this.undoStack = [];
@@ -94,7 +105,13 @@ export class Store {
     return this.proposal ? diffDocs(JSON.parse(this.proposal), this.doc) : null;
   }
   changed() {
-    for (const fn of this.listeners) fn(this.doc);
+    // A view that fails to redraw must not turn a command that worked into an error (it is logged instead).
+    for (const fn of this.listeners)
+      try {
+        fn(this.doc);
+      } catch (e) {
+        console.error(e);
+      }
   }
   on(fn) {
     this.listeners.add(fn);
@@ -196,9 +213,9 @@ export function worldBox(doc, e) {
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const x of [e, ...descendants(doc, e.id)]) {
-    if (!x.mesh) continue;
+    if (!x.mesh && !x.curve) continue;
     const m = worldMatrix(doc, x);
-    const b = bbox(x.mesh);
+    const b = bbox(x.mesh || { v: samplePoints(x.curve) });
     for (const cx of [b.min[0], b.max[0]])
       for (const cy of [b.min[1], b.max[1]])
         for (const cz of [b.min[2], b.max[2]]) {
@@ -222,6 +239,12 @@ export function duplicateEntity(doc, e, parent = e.parent) {
   const copy = addEntity(doc, { ...JSON.parse(JSON.stringify(e)), id: undefined, parent, name: `${e.name} copy` });
   for (const c of childrenOf(doc, e.id)) duplicateEntity(doc, c, copy.id);
   return copy;
+}
+
+/** A curve entity's points, sampled and in world space. */
+export function curvePoints(doc, e, perSpan = 16) {
+  const m = worldMatrix(doc, e);
+  return samplePoints(e.curve, perSpan).map((p) => new Vector3(...p).applyMatrix4(m).toArray());
 }
 
 /** An entity's mesh with its world transform baked in. */

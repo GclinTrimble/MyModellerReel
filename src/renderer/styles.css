@@ -307,3 +307,21 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .meta-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta-row input { min-width: 0; }
 .panel.form { max-height: 60vh; overflow: auto; }
+
+/* ---------- parametric (#42, #134), profile library (#135), macro recording (#92) ---------- */
+.param-row { display: grid; grid-template-columns: 96px 1fr; gap: var(--my-space-1); align-items: center; }
+.param-row > span { color: var(--my-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.param-row input, .param-row select { min-width: 0; }
+.param-error { color: var(--my-danger, #b3261e); }
+.profiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: var(--my-space-1); }
+.profile {
+  display: flex; flex-direction: column; align-items: center; gap: var(--my-space-0); padding: var(--my-space-1);
+  border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); background: var(--my-surface); font-size: var(--my-text-xs); text-align: center;
+}
+.profile:not(:disabled):hover { border-color: var(--my-accent); background: var(--my-accent-tint); }
+.profile:disabled { opacity: 0.55; }
+.profile .thumb { color: var(--mmr-fern); line-height: 0; }
+.macro-pill {
+  display: flex; align-items: center; gap: var(--my-space-1); border: 0; border-radius: var(--my-radius-pill);
+  padding: 0 var(--my-space-2); background: var(--axis-x); color: #fff; font-size: var(--my-text-xs); font-weight: var(--my-weight-semibold);
+}

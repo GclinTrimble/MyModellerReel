@@ -84,8 +84,10 @@ Invoke-RestMethod "http://127.0.0.1:$($a.port)/api/run" -Method Post -Headers @{
 | --- | --- |
 | scene | `get_scene`, `get_entity` (faces with normals for push_pull), `list_commands` (`query`, `toolset`), `select` (also `invert`), `select_where` (name, colour, tag, size, metadata, similar_to), `measure`, `bounds_of`, `raycast`, `find_free_space`, `what_is_at` (a point of the view), `screenshot` |
 | arrange | `align`, `distribute`, `place_on` (top or any face), `against`, `stack` |
-| create | `create_box`, `create_cylinder`, `create_cone`, `create_sphere`, `create_prism` (2D outline + height), `create_face` (any plane), `create_lathe` (revolve) |
-| edit | `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_metadata`, `set_tag_visibility`, `boolean`, `propose`, `undo`, `redo`, `new_model` |
+| create | `create_box`, `create_cylinder`, `create_cone`, `create_sphere`, `create_prism` (2D outline + height), `create_face` (any plane), `create_lathe` (revolve), `create_curve` (polyline, spline, bezier), `sweep` (a profile along a curve or points) |
+| parametric | `set_params`, `get_dependencies`, `bake`, `list_profiles`, `define_profile`, `list_generators`, `create_parametric` |
+| recipe | `save_recipe`, `list_recipes`, `replay_recipe`, `record_macro`, `stop_macro` |
+| edit | `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_metadata`, `set_curve`, `set_tag_visibility`, `boolean`, `propose`, `undo`, `redo`, `new_model` (`duplicate` with `live: true` makes a live array) |
 | view | `set_camera`, `set_view`, `zoom_extents`, `set_style`, `section`, `add_scene`, `go_to_scene` |
 | animate | `add_keyframe`, `animate` (from/to or by, with easing), `build_sequence`, `turntable`, `remove_keyframes`, `set_timeline`, `get_animation`, `playback` |
 | file | `save`, `open`, `import`, `export` (glb, gltf, obj, stl, png, video) |
@@ -106,7 +108,24 @@ await api.build_sequence({ ids, effect: 'grow', stagger: 0.25 });
 return ids;
 ```
 
-`api.doc` is the live model JSON; `api.geometry` is the mesh kernel.
+`api.doc` is the live model JSON; `api.geometry` is the mesh kernel; `params` holds the script's `params` argument.
+A script is all or nothing: if it throws, the model is left as it was (every single command is atomic too).
+
+## 4b. Parametric shapes, sweeps and recipes
+
+- **Parametric shapes.** `create_*` shapes, sweeps, live arrays and plugin objects keep their recipe
+  (`get_entity` → `derived: { generator, inputs, params }`). `set_params` changes it and the shape rebuilds; so does
+  everything made from it, in dependency order, inside the same undo step. A cycle or a deleted input shows as an
+  `error` on the entity instead of breaking the model. `bake` freezes one into a plain shape; push/pull and booleans
+  bake automatically.
+- **Sweeps.** `sweep { path, profile, profile_params, anchor, mirror }`: `path` is a curve entity (the sweep follows
+  the curve when it moves or `set_curve` changes it) or points; `profile` is a name from `list_profiles` (rectangle,
+  pipe, handrail, kerb, gutter, i_beam, channel, angle, ditch, retaining_wall, moulding) or `[[u, v], …]`.
+  `define_profile` saves your own, from points or from a drawn face. Corners are mitred; the profile stays upright.
+- **Recipes.** Every change is journaled (`doc.journal`) with the selection made explicit. `save_recipe` keeps it (or
+  steps you write, with `"{{expr}}"` placeholders over `params`); `replay_recipe { name, params }` rebuilds the model
+  with other values as one undo step. `record_macro` / `stop_macro` capture what you do next as a recipe and a
+  `run_script` snippet, or (`as: "plugin"`) as a plugin command.
 
 ## 5. Plugins
 
@@ -130,5 +149,20 @@ export default function (mmr) {
 }
 ```
 
-`mmr` also exposes `doc`, `THREE`, `geometry`, `animation` and `toast()`. Plugins → Reload picks up edits.
+`mmr` also exposes `doc`, `THREE`, `geometry`, `animation`, `csg.booleanMeshes` and `toast()`. Library → Reload
+picks up edits.
+
+A plugin can also add a **generator**, so its shapes keep their parameters:
+
+```js
+mmr.registerGenerator('shelf', {
+  description: 'Bookshelf',
+  params: { width: 'm', shelves: 'count' },
+  run: ({ params: { width = 0.8, shelves = 4 } }) => ({ mesh: /* { v: [[x,y,z]…], f: [[i,j,k…]…] } in local space */ }),
+});
+// then: mmr.run('create_parametric', { generator: 'shelf', params: { width: 1.2 } }); later set_params changes it
+```
+
+Generators with `world: true` build in world space and return `G.recenter(mesh)` (`{ mesh, origin }`), like the
+built-in `sweep` and `array`. The built-in plugin's `create_stairs` and `create_wall` work this way.
 Ask the copilot "create a plugin that…" and it writes, saves and loads one with `create_plugin`.

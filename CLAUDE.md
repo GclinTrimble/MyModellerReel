@@ -14,7 +14,10 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   triangulation), `document.js` (doc JSON, Store with snapshot undo and proposals, transforms), `animation.js` (keys,
   easing, evaluate), `commands.js` (registry + GUIDE text sent to AIs), `schema.js` (argument checking),
   `routing.js` (toolsets, ranking, examples), `query.js` (selection, raycast, free space, placement maths),
-  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`).
+  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `curves.js` (curves,
+  sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`.
+- Entities: `type` mesh | group | curve. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
+  must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
 - Keep command bodies in `commands.js` short: put the maths in a pure module with its own test.
 - `src/main/main.cjs` window, settings (`%APPDATA%\MyModellerReel\settings.json`), file IPC with extension allow-lists,
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors

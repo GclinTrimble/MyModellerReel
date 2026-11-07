@@ -18,6 +18,7 @@ export const TOOLS = [
   { id: 'rectangle', label: 'Rectangle', key: 'R', icon: 'rectangle', group: 'draw' },
   { id: 'circle', label: 'Circle', key: 'C', icon: 'circle', group: 'draw' },
   { id: 'polygon', label: 'Polygon', key: 'G', icon: 'hexagon', group: 'draw' },
+  { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
   { id: 'pushpull', label: 'Push/Pull', key: 'P', icon: 'arrow-fat-lines-up', group: 'edit' },
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
@@ -104,6 +105,10 @@ export class Tools {
     if (ev.key === 'Control' && this.id === 'move') {
       this.copy = !this.copy;
       this.status(this.copy ? 'Copy mode: click to drop a copy. Then type x5 for five.' : this.tool.hint);
+      return true;
+    }
+    if (ev.key === 'Enter' && this.tool.finish) {
+      this.guard(() => this.tool.finish());
       return true;
     }
     if (ev.key === 'Escape') {
@@ -232,7 +237,7 @@ class SelectTool {
     if (!s) return;
     let ids;
     if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) < 4) {
-      const hit = this.t.vp.pick(ev);
+      const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
       ids = hit ? [app.pickTarget(hit.entityId)] : [];
     } else {
       const [x0, x1] = [s.x, ev.clientX].sort((a, b) => a - b);
@@ -721,7 +726,7 @@ class EraserTool {
     this.t = t;
   }
   async down(ev) {
-    const hit = this.t.vp.pick(ev);
+    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
     if (hit) await this.t.run('delete', { ids: [this.t.app.pickTarget(hit.entityId)] });
   }
 }
@@ -772,12 +777,52 @@ class CameraTool {
   }
 }
 
+/** Click points of a path; Enter or double-click finishes. Three or more points make a smooth spline. */
+class CurveTool {
+  hint = 'Click the points of a path (they snap like lines). Enter or double-click finishes; 3+ points make a smooth curve. Esc cancels.';
+  constructor(t) {
+    this.t = t;
+    this.pts = [];
+  }
+  busy() {
+    return this.pts.length > 0;
+  }
+  cancel() {
+    this.pts = [];
+    this.t.clear();
+  }
+  move(ev) {
+    const inf = this.t.infer(ev, { from: this.pts.at(-1), extra: this.pts.slice(0, 1) });
+    this.cur = inf.point;
+    if (!this.pts.length) return;
+    this.t.vp.overlay.clear();
+    this.t.lines([...this.pts, this.cur], ACCENT);
+  }
+  down(ev) {
+    const inf = this.t.infer(ev, { from: this.pts.at(-1), extra: this.pts.slice(0, 1) });
+    if (!this.pts.length || inf.point.distanceTo(this.pts.at(-1)) > 1e-4) this.pts.push(inf.point.clone());
+    this.t.status(`${this.pts.length} point${this.pts.length > 1 ? 's' : ''}. Enter finishes.`);
+  }
+  dbl() {
+    return this.finish();
+  }
+  async finish() {
+    const pts = this.pts.map((p) => D.round3(p.toArray()));
+    this.cancel();
+    if (pts.length < 2) return;
+    const closed = pts.length > 3 && G.len(G.sub(pts[0], pts.at(-1))) < 1e-3;
+    await this.t.run('create_curve', { points: closed ? pts.slice(0, -1) : pts, kind: pts.length > 2 ? 'spline' : 'polyline', closed });
+    this.t.status('Curve made. Sweep a profile along it (Library tab), or animate something along it.');
+  }
+}
+
 const IMPL = {
   select: SelectTool,
   line: LineTool,
   rectangle: RectangleTool,
   circle: CircleTool,
   polygon: PolygonTool,
+  curve: CurveTool,
   pushpull: PushPullTool,
   move: MoveTool,
   rotate: RotateTool,

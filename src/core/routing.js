@@ -4,11 +4,12 @@
 /** Named toolsets: categories and/or command names. A command can be in several. */
 export const TOOLSETS = {
   modelling: { categories: ['create', 'edit', 'arrange', 'parametric'], names: ['get_scene', 'get_entity', 'select', 'select_where', 'measure'] },
+  recipes: { categories: ['recipe'], names: ['get_scene'] },
   animation: { categories: ['animate'], names: ['get_scene', 'select', 'select_where', 'add_scene', 'go_to_scene'] },
   query: { categories: ['scene'], names: ['set_metadata'] },
   view: { categories: ['view'], names: ['screenshot'] },
   files: { categories: ['file'], names: ['report_quantities'] },
-  ai: { categories: ['extend', 'ai'], names: [] },
+  ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
 };
 
 /** Always offered: enough to look, undo and reach every other command. */

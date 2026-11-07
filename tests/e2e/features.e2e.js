@@ -69,3 +69,25 @@ test('every command is in the palette; one with parameters opens its form', asyn
   const ball = (await ok('get_entity', { id: 'Ball' })).min;
   assert.equal(ball[1], 1);
 });
+
+test('parametric: sweep from the Library, edit a parameter in the Entity panel, the macro pill', async () => {
+  await ok('create_curve', { points: [[0, 0, 5], [3, 0, 6], [6, 0, 5]], kind: 'spline', name: 'Path' });
+  await ok('select', { ids: ['Path'] });
+  await w.click('[data-tab="library"]');
+  await w.locator('button.profile', { hasText: 'pipe' }).click();
+  const sweep = (await ok('get_scene')).entities.find((e) => e.generator === 'sweep');
+  assert.ok(sweep, 'a sweep was made');
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'Param box', position: [8, 0, 0] });
+  await w.click('[data-tab="entity"]');
+  const width = w.locator('.param-row', { hasText: 'width' }).locator('input');
+  await width.fill('2.5');
+  await width.press('Enter');
+  await width.blur();
+  await w.waitForFunction(() => window.mmr.doc.entities.find((e) => e.name === 'Param box').derived.params.width === 2.5);
+  await ok('record_macro', { name: 'Test macro' });
+  await ok('create_sphere', { radius: 0.2, position: [9, 0, 3] });
+  await w.locator('#macro-pill').getByText('1 steps').waitFor();
+  await w.click('#macro-pill');
+  await w.locator('#macro-pill').waitFor({ state: 'detached' });
+  assert.equal((await ok('list_recipes', { name: 'Test macro' })).steps.length, 1);
+});

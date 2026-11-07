@@ -1,9 +1,12 @@
 // The command registry: the one API surface of MyModellerReel.
 // Toolbar buttons, menus, the in-app AI, the HTTP API, the MCP server and plugins all call these commands,
 // so anything a person can do, an AI can do, and anything a plugin adds, an AI can call.
-import { Matrix4, Vector3, Quaternion, Euler, BufferGeometry, BufferAttribute } from 'three';
-import { Brush, Evaluator, ADDITION, SUBTRACTION, INTERSECTION } from 'three-bvh-csg';
+import { Matrix4, Vector3, Quaternion } from 'three';
 import * as G from './geometry.js';
+import * as C from './curves.js';
+import * as P from './profiles.js';
+import * as R from './derived.js';
+import { booleanMeshes } from './csg.js';
 import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
@@ -23,6 +26,12 @@ export const GUIDE = `MyModellerReel conventions:
   stack, align, distribute; find_free_space gives an empty spot for a new footprint.
 - Ask instead of reading JSON: select_where (by name, colour, tag, size, metadata, similar_to), bounds_of, raycast,
   measure, what_is_at (a point of the screenshot). set_metadata attaches role/cost/phase data to entities.
+- Parametric: create_* shapes keep their parameters (set_params changes them later; get_entity shows the recipe).
+  sweep runs a profile (list_profiles: pipe, kerb, gutter, i_beam, retaining_wall…) along a path; a sweep along a
+  curve entity stays live, so editing the curve updates it. bake freezes a parametric shape.
+- create_curve makes paths (polyline, smooth spline, bezier) for sweeps and motion.
+- Recipes: save_recipe keeps how the model was built (with {{param}} placeholders); replay_recipe rebuilds it with
+  other values. record_macro / stop_macro turn what was just done into a recipe or a plugin command.
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
@@ -51,7 +60,7 @@ export function createRegistry(ctx) {
   const reg = {
     commands,
     define(spec) {
-      commands.set(spec.name, { category: 'plugin', params: obj({}), ...spec });
+      commands.set(spec.name, { category: 'plugin', params: obj({}), journal: !!spec.mutates, ...spec });
     },
     list: () =>
       [...commands.values()].map(({ name, description, params, category, mutates }) => ({
@@ -68,9 +77,21 @@ export function createRegistry(ctx) {
         throw new Error(`Unknown command "${name}".${near.length ? ` Did you mean ${near.join(', ')}?` : ''} Call list_commands with a query to find commands.`);
       }
       args = validate(name, c.params, args);
-      if (c.mutates && !ctx.batchDepth) ctx.store.checkpoint();
-      const result = await c.run(args, ctx);
-      if (c.mutates && !ctx.batchDepth) ctx.store.changed();
+      // The journal records what built the model (for recipes and macros), with the selection made explicit.
+      const record = c.journal && !ctx.scriptDepth;
+      const recArgs = record && c.params.properties?.ids && args.ids === undefined ? { ...args, ids: [...ctx.selection.get()] } : args;
+      const own = c.mutates && !ctx.batchDepth;
+      if (own) ctx.store.checkpoint();
+      let result;
+      try {
+        result = await c.run(args, ctx);
+        if (c.mutates) R.rebuildDerived(ctx.doc);
+      } catch (e) {
+        if (own) ctx.store.rollback(); // a command either happens whole or not at all
+        throw e;
+      }
+      if (record) journal(ctx.doc, name, recArgs);
+      if (own) ctx.store.changed();
       for (const fn of ctx.afterRun || []) fn(name, args, result);
       return result ?? { ok: true };
     },
@@ -78,6 +99,34 @@ export function createRegistry(ctx) {
   registerCore(reg, ctx);
   return reg;
 }
+
+const JOURNAL_MAX = 2000;
+function journal(doc, command, args) {
+  (doc.journal ||= []).push({ command, args: structuredClone(args) });
+  if (doc.journal.length > JOURNAL_MAX) doc.journal.splice(0, doc.journal.length - JOURNAL_MAX);
+}
+
+/** Fill "{{expr}}" placeholders in recipe arguments from params (a whole-string placeholder keeps its type). */
+function fillParams(v, params) {
+  const keys = Object.keys(params);
+  const calc = (expr) => {
+    try {
+      return new Function(...keys, `return (${expr});`)(...keys.map((k) => params[k]));
+    } catch (e) {
+      throw new Error(`Recipe placeholder {{${expr}}}: ${e.message}`);
+    }
+  };
+  if (typeof v === 'string') {
+    const whole = v.match(/^\{\{(.+?)\}\}$/s);
+    if (whole) return calc(whole[1]);
+    return v.replace(/\{\{(.+?)\}\}/gs, (_, x) => String(calc(x)));
+  }
+  if (Array.isArray(v)) return v.map((x) => fillParams(x, params));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fillParams(x, params)]));
+  return v;
+}
+
+const r4 = (x) => Math.round(x * 1e4) / 1e4;
 
 function targets(ctx, args) {
   const refs = args.ids ?? (args.id !== undefined ? [args.id] : ctx.selection.get());
@@ -98,7 +147,12 @@ function summary(doc, e) {
     size: D.round3(b.max.map((x, k) => x - b.min[k])),
     min: b.min,
     max: b.max,
-    ...(e.mesh ? { color: e.material.color, faces: e.mesh.f.length } : { children: D.childrenOf(doc, e.id).length }),
+    ...(e.curve
+      ? { color: e.material.color, kind: e.curve.kind, points: e.curve.points.length, length: r4(C.polyLength(D.curvePoints(doc, e))) }
+      : e.mesh
+        ? { color: e.material.color, faces: e.mesh.f.length }
+        : { children: D.childrenOf(doc, e.id).length }),
+    ...(e.derived ? { generator: e.derived.generator, ...(e.derived.error ? { error: e.derived.error } : {}) } : {}),
     ...(e.material.opacity < 1 ? { opacity: e.material.opacity } : {}),
     ...(e.tag !== 'Untagged' ? { tag: e.tag } : {}),
     ...(!e.visible ? { visible: false } : {}),
@@ -107,18 +161,22 @@ function summary(doc, e) {
   };
 }
 
-function place(ctx, mesh, args, defaults = {}) {
+/** Add a shape. derived = [generator, params]: a parametric shape built (and later rebuilt) by that generator. */
+function place(ctx, mesh, args, defaults = {}, derived = null) {
   const doc = ctx.doc;
   if (args.parent) D.resolve(doc, args.parent);
+  if (derived) mesh = R.getGenerator(derived[0]).run({ params: derived[1], inputs: [], doc }).mesh; // bad parameters throw before anything changes
   const e = D.addEntity(doc, {
     name: args.name || defaults.name,
     mesh,
+    ...(derived ? { derived: { generator: derived[0], inputs: [], params: derived[1] } } : {}),
     position: args.position || [0, 0, 0],
     rotation: args.rotation || [0, 0, 0],
     parent: args.parent ? D.resolve(doc, args.parent)[0].id : null,
     tag: args.tag || 'Untagged',
     material: args.color ? { color: args.color } : {},
   });
+  if (derived) R.regenerate(doc, e);
   ctx.selection.set([e.id]);
   return summary(doc, e);
 }
@@ -177,7 +235,7 @@ function worldFaceInfo(doc, e, fi) {
 }
 
 function pickFace(doc, e, face) {
-  if (!e.mesh) throw new Error(`${e.name} is a group; push_pull a shape inside it.`);
+  if (!e.mesh) throw new Error(`${e.name} is a ${e.type}; push_pull works on shapes.`);
   if (typeof face === 'string' && /^\d+$/.test(face)) face = +face;
   if (typeof face === 'number') {
     if (!e.mesh.f[face]) throw new Error(`Face ${face} does not exist (0..${e.mesh.f.length - 1}).`);
@@ -193,15 +251,6 @@ function pickFace(doc, e, face) {
     if (s > bestDot) (bestDot = s), (best = fi);
   }
   return best;
-}
-
-function meshToGeometry(mesh) {
-  const b = G.toBuffers(mesh);
-  const g = new BufferGeometry();
-  g.setAttribute('position', new BufferAttribute(b.position, 3));
-  g.setAttribute('normal', new BufferAttribute(b.normal, 3));
-  g.setAttribute('uv', new BufferAttribute(new Float32Array((b.position.length / 3) * 2), 2));
-  return g;
 }
 
 const worldMesh = D.worldMesh;
@@ -223,12 +272,14 @@ function registerCore(reg, ctx) {
     };
   });
 
-  def('scene', 'get_entity', 'Full detail of one entity, including every face (index, world normal, centre, area) for push_pull.', obj({ id }, ['id']), ({ id: ref }) => {
+  def('scene', 'get_entity', 'Full detail of one entity, including every face (index, world normal, centre, area) for push_pull, a curve\'s world points, and a parametric shape\'s recipe (generator, inputs, params).', obj({ id }, ['id']), ({ id: ref }) => {
     const doc = ctx.doc;
     const [e] = D.resolve(doc, ref);
     return {
       ...summary(doc, e),
       material: e.material,
+      curve: e.curve ? { kind: e.curve.kind, closed: !!e.curve.closed, points: e.curve.points.map((p) => D.round3(new Vector3(...p).applyMatrix4(D.worldMatrix(doc, e)).toArray())) } : undefined,
+      derived: e.derived ? { generator: e.derived.generator, inputs: e.derived.inputs, params: e.derived.params, ...(e.derived.error ? { error: e.derived.error } : {}) } : undefined,
       faces: e.mesh ? e.mesh.f.slice(0, 300).map((_, fi) => worldFaceInfo(doc, e, fi)) : undefined,
       children: e.mesh ? undefined : D.childrenOf(doc, e.id).map((c) => summary(doc, c)),
       volume: e.mesh ? Math.round(G.volume(e.mesh) * e.scale.reduce((a, b) => a * b) * 1e4) / 1e4 : undefined,
@@ -278,29 +329,27 @@ function registerCore(reg, ctx) {
   };
   def('create', 'create_box', 'Box sitting on its base. width = x, height = y (up), depth = z.', obj({ width: num('x size'), height: num('y size'), depth: num('z size'), ...common }, ['width', 'height', 'depth']), (a) => {
     sizeErr(a.width, a.height, a.depth);
-    return place(ctx, G.box(a.width, a.height, a.depth), a, { name: 'Box' });
+    return place(ctx, null, a, { name: 'Box' }, ['box', { width: a.width, height: a.height, depth: a.depth }]);
   }, true);
 
   def('create', 'create_cylinder', 'Upright cylinder sitting on its base.', obj({ radius: num('m'), height: num('m'), segments: num('default 32'), ...common }, ['radius', 'height']), (a) => {
     sizeErr(a.radius, a.height);
-    return place(ctx, G.cylinder(a.radius, a.height, a.segments || 32), a, { name: 'Cylinder' });
+    return place(ctx, null, a, { name: 'Cylinder' }, ['cylinder', { radius: a.radius, height: a.height, segments: a.segments || 32 }]);
   }, true);
 
   def('create', 'create_cone', 'Upright cone on its base.', obj({ radius: num('m'), height: num('m'), segments: num('default 32'), ...common }, ['radius', 'height']), (a) => {
     sizeErr(a.radius, a.height);
-    return place(ctx, G.cone(a.radius, a.height, a.segments || 32), a, { name: 'Cone' });
+    return place(ctx, null, a, { name: 'Cone' }, ['cone', { radius: a.radius, height: a.height, segments: a.segments || 32 }]);
   }, true);
 
   def('create', 'create_sphere', 'Sphere resting on the ground at position.', obj({ radius: num('m'), segments: num('default 32'), ...common }, ['radius']), (a) => {
     sizeErr(a.radius);
-    const s = a.segments || 32;
-    return place(ctx, G.sphere(a.radius, s, Math.max(4, s >> 1)), a, { name: 'Sphere' });
+    return place(ctx, null, a, { name: 'Sphere' }, ['sphere', { radius: a.radius, segments: a.segments || 32 }]);
   }, true);
 
   def('create', 'create_prism', 'Extrude a 2D outline drawn on the ground. points are [x, z] pairs relative to position; height 0 gives a flat face you can push_pull later.', obj({ points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: '[[x,z],...] at least 3' }, height: num('m, default 0'), ...common }, ['points']), (a) => {
     if (a.points.length < 3) throw new Error('Need at least 3 points.');
-    const face = G.flatFace(a.points.map(([x, z]) => [x, 0, z]));
-    return place(ctx, a.height ? G.extrude(face, 0, a.height) : face, a, { name: a.height ? 'Prism' : 'Face' });
+    return place(ctx, null, a, { name: a.height ? 'Prism' : 'Face' }, ['prism', { points: a.points, height: a.height || 0 }]);
   }, true);
 
   def('create', 'create_face', 'A flat face from 3+ coplanar world points (walls, roofs, any plane). push_pull it to give it thickness.', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z],...]' }, normal: v3('which side is the front (push_pull outwards). Default: up for horizontal faces'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
@@ -312,13 +361,14 @@ function registerCore(reg, ctx) {
   }, true);
 
   def('create', 'create_lathe', 'Surface of revolution around the vertical axis: vases, columns, domes, bottles. profile is [radius, y] pairs bottom→top.', obj({ profile: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, segments: num('default 32'), ...common }, ['profile']), (a) =>
-    place(ctx, G.lathe(a.profile, a.segments || 32), a, { name: 'Lathe' }), true);
+    place(ctx, null, a, { name: 'Lathe' }, ['lathe', { profile: a.profile, segments: a.segments || 32 }]), true);
 
   // ---------------------------------------------------------------- edit
   def('edit', 'push_pull', 'Push or pull a face along its normal (positive = outwards). Faces of prisms slide; other faces extrude new walls.', obj({ id, face: { description: 'face index, or top | bottom | left | right | front | back', default: 'top' }, distance: num('metres, negative pushes in') }, ['id', 'distance']), ({ id: ref, face = 'top', distance }) => {
     const doc = ctx.doc;
     const [e] = D.resolve(doc, ref);
     const fi = pickFace(doc, e, face);
+    R.bake(e); // hand edits end the parametric recipe
     e.mesh = G.pushPull(e.mesh, fi, distance / (e.scale[0] || 1)); // shortcut: assumes uniform scale
     return summary(doc, e);
   }, true);
@@ -373,14 +423,28 @@ function registerCore(reg, ctx) {
     return summary(ctx.doc, e);
   }, true);
 
-  def('edit', 'duplicate', 'Copy entities. count copies, each shifted by offset and/or rotated by angle (degrees around Y through center): linear and radial arrays.', obj({ ids, offset: v3('per copy, default [1,0,0]'), count: num('default 1'), angle: num('degrees per copy (radial array)'), center: v3('centre of the radial array, default [0,0,0]') }), (a) => {
+  def('edit', 'duplicate', 'Copy entities. count copies, each shifted by offset and/or rotated by angle (degrees around Y through center): linear and radial arrays. live: one parametric array shape that follows the original when it changes.', obj({ ids, offset: v3('per copy, default [1,0,0]'), count: num('default 1'), angle: num('degrees per copy (radial array)'), center: v3('centre of the radial array, default [0,0,0]'), live: bool('one live array shape instead of separate copies (linear only)') }), (a) => {
     const doc = ctx.doc;
     const ents = targets(ctx, a);
     const out = [];
+    if (a.live) {
+      if (a.angle) throw new Error('Live arrays are linear: use offset, not angle.');
+      for (const e of ents) {
+        if (!e.mesh) throw new Error(`${e.name} is not a shape; live arrays copy shapes.`);
+        const params = { count: a.count || 1, offset: a.offset || [1, 0, 0] };
+        R.getGenerator('array').run({ params, inputs: [e], doc });
+        const c = D.addEntity(doc, { name: `${e.name} array`, material: { ...e.material }, tag: e.tag });
+        R.derive(doc, c, 'array', params, [e.id]);
+        out.push(c.id);
+      }
+      ctx.selection.set(out);
+      return { created: out };
+    }
     for (let k = 1; k <= (a.count || 1); k++)
       for (const e of ents) {
         const c = D.duplicateEntity(doc, e);
         c.name = `${e.name} ${k + 1}`;
+        if (c.derived && R.getGenerator(c.derived.generator)?.world) R.bake(c); // a copy of a sweep would snap back onto its path
         if (a.angle) applyWorld(ctx, c, new Matrix4().makeRotationY(a.angle * k * D2R), a.center || [0, 0, 0]);
         if (a.offset || !a.angle) applyWorld(ctx, c, new Matrix4().makeTranslation(...G.scl(a.offset || [1, 0, 0], k)), [0, 0, 0]);
         out.push(c.id);
@@ -402,6 +466,7 @@ function registerCore(reg, ctx) {
       w.f = w.f.map((f) => [...f].reverse());
       const { mesh, origin } = G.recenter(w);
       const target = a.copy === false ? e : D.duplicateEntity(doc, e);
+      R.bake(target);
       Object.assign(target, { mesh, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], parent: null });
       if (a.copy !== false) target.name = `${e.name} mirrored`;
       out.push(target.id);
@@ -450,7 +515,10 @@ function registerCore(reg, ctx) {
     const [e] = D.resolve(doc, a.id);
     const pw = new Vector3(...anchorPoint(doc, e, a.pivot));
     const L = pw.clone().applyMatrix4(D.worldMatrix(doc, e).invert()).toArray(); // pivot in local space
+    if (e.derived && R.getGenerator(e.derived.generator)?.world) R.bake(e);
+    else if (e.derived) e.derived.offset = D.round3(G.sub(e.derived.offset || [0, 0, 0], L)); // rebuilds keep the new pivot
     if (e.mesh) e.mesh = G.translate(e.mesh, G.scl(L, -1));
+    if (e.curve) e.curve.points = e.curve.points.map((p) => G.sub(p, L));
     for (const c of D.childrenOf(doc, e.id)) c.position = D.round3(G.sub(c.position, L));
     e.position = D.round3(new Vector3(...L).applyMatrix4(D.localMatrix(e)).toArray());
     return summary(doc, e);
@@ -490,20 +558,8 @@ function registerCore(reg, ctx) {
     const [t] = D.resolve(doc, a.target);
     const tools = D.resolve(doc, a.tools);
     if (!t.mesh || tools.some((x) => !x.mesh)) throw new Error('Booleans work on shapes, not groups.');
-    const ev = new Evaluator();
-    ev.useGroups = false;
-    const brush = (e) => {
-      const b = new Brush(meshToGeometry(worldMesh(doc, e)));
-      b.updateMatrixWorld();
-      return b;
-    };
-    let result = brush(t);
-    const op = { union: ADDITION, subtract: SUBTRACTION, intersect: INTERSECTION }[a.op];
-    for (const x of tools) result = ev.evaluate(result, brush(x), op);
-    const g = result.geometry.index ? result.geometry.toNonIndexed() : result.geometry;
-    const raw = G.fromTriangles(g.attributes.position.array);
-    if (!raw.f.length) throw new Error('The result is empty (the shapes may not overlap).');
-    const { mesh, origin } = G.recenter(raw);
+    const { mesh, origin } = G.recenter(booleanMeshes(a.op, worldMesh(doc, t), tools.map((x) => worldMesh(doc, x))));
+    R.bake(t);
     const w = new Vector3(...origin);
     Object.assign(t, { mesh, rotation: [0, 0, 0], scale: [1, 1, 1] });
     t.position = D.round3(w.applyMatrix4(D.parentWorldMatrix(doc, t).invert()).toArray());
@@ -627,6 +683,201 @@ function registerCore(reg, ctx) {
     }
     return ents.map((e) => summary(doc, e));
   }, true);
+
+  // ---------------------------------------------------------------- curves, sweeps, profiles
+  def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
+    const doc = ctx.doc;
+    const curve = { kind: a.kind || 'polyline', points: a.points, closed: !!a.closed };
+    C.checkCurve(curve);
+    const { mesh, origin } = G.recenter({ v: a.points, f: [] });
+    const count = doc.entities.filter((e) => e.type === 'curve').length + 1;
+    const e = D.addEntity(doc, { type: 'curve', name: a.name || `Curve ${count}`, curve: { ...curve, points: mesh.v }, position: D.round3(origin), tag: a.tag || 'Untagged', material: { color: a.color || '#2f6f86' } });
+    ctx.selection.set([e.id]);
+    return summary(doc, e);
+  }, true);
+
+  def('create', 'sweep', 'Sweep a profile along a path (Follow Me): pipes, kerbs, handrails, gutters, mouldings, beams, walls. path: a curve entity (the sweep stays live: edit the curve and it follows) or points. profile: a name from list_profiles with profile_params, or [[u, v], …] (u to the right of the travel direction, v up).', obj({ path: { description: 'curve id/name, or [[x,y,z], …]' }, profile: { description: 'profile name (default rectangle) or [[u, v], …]' }, profile_params: obj({}, []), anchor: str('which point of the profile follows the path (default: the profile\'s own)', P.ANCHORS), mirror: bool('flip the profile left-right'), name: common.name, color: common.color, tag: common.tag }, ['path']), (a) => {
+    const doc = ctx.doc;
+    const params = { profile: a.profile ?? 'rectangle', profile_params: a.profile_params || {}, ...(a.anchor ? { anchor: a.anchor } : {}), ...(a.mirror ? { mirror: true } : {}) };
+    let path = a.path;
+    if (typeof path === 'string' && path.trim().startsWith('[')) path = JSON.parse(path);
+    let inputs = [];
+    if (Array.isArray(path)) params.path = path;
+    else {
+      const [c] = D.resolve(doc, path);
+      if (!c.curve) throw new Error(`${c.name} is not a curve. Make one with create_curve, or give path points.`);
+      inputs = [c.id];
+    }
+    R.getGenerator('sweep').run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc }); // bad input throws before anything changes
+    const e = D.addEntity(doc, { name: a.name || `${typeof params.profile === 'string' ? params.profile.replace(/_/g, ' ') : 'Profile'} sweep`, tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    R.derive(doc, e, 'sweep', params, inputs);
+    ctx.selection.set([e.id]);
+    return summary(doc, e);
+  }, true);
+
+  def('edit', 'set_curve', 'Change a curve: new world points, kind or closed. Sweeps and motion along it follow.', obj({ id, points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline | spline | bezier', C.KINDS), closed: bool('loop') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const [e] = D.resolve(doc, a.id);
+    if (!e.curve) throw new Error(`${e.name} is not a curve.`);
+    const inv = D.worldMatrix(doc, e).invert();
+    const points = a.points ? a.points.map((p) => D.round3(new Vector3(...p).applyMatrix4(inv).toArray())) : e.curve.points;
+    const next = { kind: a.kind ?? e.curve.kind, points, closed: a.closed ?? !!e.curve.closed };
+    C.checkCurve(next);
+    e.curve = next;
+    return summary(doc, e);
+  }, true);
+
+  def('parametric', 'list_profiles', 'Profiles for sweep: built-in parametric ones (pipe, kerb, gutter, i_beam, retaining_wall…) with their parameters and defaults, plus this model\'s own.', obj({}), () => P.listProfiles(ctx.doc));
+
+  def('parametric', 'define_profile', 'Save a profile for sweeps: from [u, v] points, or from a flat face (from_face) as it is drawn. Saved in the model.', obj({ name: str('profile name'), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: '[[u, v], …] u right, v up, metres' }, from_face: str('a flat face entity to take the outline from'), anchor: str('default insertion point', P.ANCHORS), description: str('what it is') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    if (P.PROFILES[a.name]) throw new Error(`"${a.name}" is a built-in profile; choose another name.`);
+    let pts = a.points;
+    if (a.from_face) {
+      const [f] = D.resolve(doc, a.from_face);
+      if (!f.mesh || f.mesh.f.length !== 1) throw new Error(`${f.name} is not a single flat face.`);
+      const w = D.worldMesh(doc, f);
+      const n = G.faceNormal(w, 0);
+      const u = Math.abs(n[1]) > 0.99 ? [1, 0, 0] : G.norm(G.cross([0, 1, 0], n));
+      const v = G.cross(n, u);
+      const c = G.faceCenter(w, 0);
+      pts = G.facePoints(w, 0).map((p) => [r4(G.dot(G.sub(p, c), u)), r4(G.dot(G.sub(p, c), v))]);
+    }
+    if (!pts || pts.length < 3) throw new Error('Give points (at least 3) or from_face.');
+    if (P.area2d(pts) < 0) pts = [...pts].reverse();
+    (doc.profiles ||= {})[a.name] = { points: pts, ...(a.anchor ? { anchor: a.anchor } : {}), ...(a.description ? { description: a.description } : {}) };
+    return { name: a.name, points: pts.length };
+  }, true);
+
+  def('parametric', 'set_params', 'Change a parametric shape\'s parameters (width of a box, steps of a stair, profile of a sweep, count of a live array…); it rebuilds, and so does everything made from it. get_entity shows the current params.', obj({ id, params: obj({}, []) }, ['id', 'params']), (a) => {
+    const doc = ctx.doc;
+    const [e] = D.resolve(doc, a.id);
+    if (!e.derived) throw new Error(`${e.name} has no parameters (it is a plain shape or was baked). Parametric: create_* shapes, sweeps, live arrays, plugin objects.`);
+    const gen = R.getGenerator(e.derived.generator);
+    if (!gen) throw new Error(`The generator "${e.derived.generator}" is not loaded (a plugin may be missing).`);
+    const unknown = Object.keys(a.params).filter((k) => !(k in gen.params));
+    if (unknown.length) throw new Error(`${e.derived.generator} has no parameter ${unknown.join(', ')}. Parameters: ${Object.keys(gen.params).join(', ')}.`);
+    const before = e.derived.params;
+    e.derived.params = { ...before, ...a.params };
+    try {
+      R.regenerate(doc, e);
+    } catch (err) {
+      e.derived.params = before;
+      throw err;
+    }
+    return { ...summary(doc, e), params: e.derived.params };
+  }, true);
+
+  def('parametric', 'list_generators', 'Generators of parametric shapes (built in and from plugins) with their parameters, for create_parametric and set_params.', obj({}), () => R.listGenerators());
+
+  def('parametric', 'create_parametric', 'Make a parametric shape from any generator (list_generators), e.g. one a plugin adds. Its parameters stay editable with set_params.', obj({ generator: str('generator name'), params: obj({}, []), inputs: { ...ids, description: 'entities it is made from (for generators that take inputs)' }, ...common }, ['generator']), (a) => {
+    const doc = ctx.doc;
+    const gen = R.getGenerator(a.generator);
+    if (!gen) throw new Error(`No generator "${a.generator}". Generators: ${R.listGenerators().map((g) => g.name).join(', ')}.`);
+    const params = a.params || {};
+    const unknown = Object.keys(params).filter((k) => !(k in gen.params));
+    if (unknown.length) throw new Error(`${a.generator} has no parameter ${unknown.join(', ')}. Parameters: ${Object.keys(gen.params).join(', ')}.`);
+    const inputs = a.inputs ? D.resolve(doc, a.inputs).map((e) => e.id) : [];
+    if (!gen.world && !inputs.length) return place(ctx, null, a, { name: a.generator.replace(/_/g, ' ') }, [a.generator, params]);
+    gen.run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc });
+    const e = D.addEntity(doc, { name: a.name || a.generator.replace(/_/g, ' '), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    R.derive(doc, e, a.generator, params, inputs);
+    ctx.selection.set([e.id]);
+    return summary(doc, e);
+  }, true);
+
+  def('parametric', 'get_dependencies', 'How a parametric shape is made and what is made from it: its recipe, its inputs and its dependents.', obj({ id }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const [e] = D.resolve(doc, a.id);
+    const named = (ids) => ids.map((x) => ({ id: x, name: D.getEntity(doc, x)?.name ?? '(deleted)' }));
+    return {
+      id: e.id,
+      recipe: e.derived ? { generator: e.derived.generator, params: e.derived.params } : null,
+      inputs: named(e.derived?.inputs || []),
+      dependents: named(R.dependentsOf(doc, e.id)),
+      ...(e.derived?.error ? { error: e.derived.error } : {}),
+    };
+  });
+
+  def('parametric', 'bake', 'Freeze parametric shapes into plain ones: they keep their geometry and stop following parameters and inputs.', obj({ ids }), (a) => {
+    const ents = targets(ctx, a).filter((e) => e.derived);
+    for (const e of ents) R.bake(e);
+    return { baked: ents.map((e) => e.id) };
+  }, true);
+
+  // ---------------------------------------------------------------- recipes and macros
+  def('recipe', 'save_recipe', 'Save how this model was built as a named, replayable recipe. Without steps it takes the commands that built the current model (from step `from`). Steps may hold "{{expr}}" placeholders over params (e.g. "{{storeys * 3}}"); run_script steps also get `params`.', obj({ name: str('recipe name'), description: str('what it builds'), params: obj({}, []), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the journal)' }, from: num('first journal step (default 0)') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const steps = a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => structuredClone(s));
+    if (!steps.length) throw new Error('Nothing to save: no steps given and the journal is empty.');
+    for (const s of steps) if (!reg.commands.has(s.command)) throw new Error(`Step "${s.command}" is not a command.`);
+    (doc.recipes ||= {})[a.name] = { description: a.description || '', params: a.params || {}, steps };
+    return { name: a.name, steps: steps.length, params: a.params || {} };
+  }, true);
+  reg.commands.get('save_recipe').journal = false;
+
+  def('recipe', 'list_recipes', 'Recipes saved in this model (name, description, params, step count); give name for one recipe in full.', obj({ name: str('one recipe in full') }), (a) => {
+    const all = ctx.doc.recipes || {};
+    if (a.name) {
+      if (!all[a.name]) throw new Error(`No recipe "${a.name}". Recipes: ${Object.keys(all).join(', ') || 'none'}.`);
+      return { name: a.name, ...all[a.name] };
+    }
+    return Object.entries(all).map(([name, r]) => ({ name, description: r.description, params: r.params, steps: r.steps.length }));
+  });
+
+  def('recipe', 'replay_recipe', 'Rebuild from a recipe with other parameter values ("3 storeys instead of 2"). clear (default true) starts from an empty model. One undo step.', obj({ name: str('recipe name'), params: obj({}, []), clear: bool('start from an empty model, default true') }, ['name']), async (a) => {
+    const r = ctx.doc.recipes?.[a.name];
+    if (!r) throw new Error(`No recipe "${a.name}". Recipes: ${Object.keys(ctx.doc.recipes || {}).join(', ') || 'none'}.`);
+    const params = { ...r.params, ...(a.params || {}) };
+    if (a.clear !== false) {
+      const keep = { recipes: ctx.doc.recipes, profiles: ctx.doc.profiles, settings: ctx.doc.settings, camera: ctx.doc.camera };
+      ctx.store.doc = { ...D.newDoc(), ...structuredClone(keep) };
+      ctx.selection.set([]);
+    }
+    ctx.batchDepth = (ctx.batchDepth || 0) + 1;
+    ctx.scriptDepth = (ctx.scriptDepth || 0) + 1;
+    try {
+      for (const [i, s] of r.steps.entries()) {
+        const args = fillParams(s.args || {}, params);
+        if (s.command === 'run_script') args.params = { ...(args.params || {}), ...params };
+        try {
+          await reg.run(s.command, args);
+        } catch (e) {
+          throw new Error(`Recipe ${a.name}, step ${i + 1} (${s.command}): ${e.message}`);
+        }
+      }
+    } finally {
+      ctx.batchDepth--;
+      ctx.scriptDepth--;
+    }
+    return { recipe: a.name, params, steps: r.steps.length, entities: ctx.doc.entities.length };
+  }, true);
+
+  def('recipe', 'record_macro', 'Start recording: everything done from now (tools, menus, AI, scripts) is captured until stop_macro.', obj({ name: str('macro name') }), (a) => {
+    ctx.macro = { name: a.name || `Macro ${Object.keys(ctx.doc.recipes || {}).length + 1}`, start: (ctx.doc.journal || []).length };
+    ctx.onMacro?.(ctx.macro);
+    return { recording: ctx.macro.name };
+  });
+
+  def('recipe', 'stop_macro', 'Stop recording and keep what was done: as a recipe (replay_recipe), and as a run_script snippet. as: plugin also writes a plugin command that replays it.', obj({ as: str('recipe (default) | plugin', ['recipe', 'plugin']), name: str('override the name') }), async (a) => {
+    const m = ctx.macro;
+    if (!m) throw new Error('Not recording. Call record_macro first.');
+    ctx.macro = null;
+    ctx.onMacro?.(null);
+    const steps = (ctx.doc.journal || []).slice(m.start).map((s) => structuredClone(s));
+    if (!steps.length) return { name: m.name, steps: 0, note: 'Nothing was recorded.' };
+    const name = a.name || m.name;
+    const script = steps.map((s) => `await api.${s.command}(${JSON.stringify(s.args)});`).join('\n');
+    await reg.run('save_recipe', { name, steps, description: `Macro recorded ${new Date().toISOString().slice(0, 16).replace('T', ' ')}` });
+    let plugin;
+    if (a.as === 'plugin') {
+      if (!ctx.plugins) throw new Error('Plugins need the desktop app; the macro was saved as a recipe.');
+      const cmd = `macro_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`;
+      const code = `// Macro "${name}", recorded in MyModellerReel.\nexport default function (mmr) {\n  mmr.registerCommand({\n    name: ${JSON.stringify(cmd)},\n    description: ${JSON.stringify(`Replays the macro "${name}" (${steps.length} steps).`)},\n    params: { type: 'object', properties: {} },\n    run: (args, mmr) => mmr.run('run_script', { code: ${JSON.stringify(script)} }),\n  });\n}\n`;
+      plugin = await ctx.plugins.create(cmd.replace(/_/g, '-'), code);
+    }
+    return { name, steps: steps.length, script, ...(plugin ? { plugin } : {}) };
+  });
 
   // ---------------------------------------------------------------- proposals (review AI changes before keeping them)
   def('edit', 'propose', 'Proposal mode. start: the next changes stay a ghost preview the user can accept or reject. accept keeps them, reject throws them away, status lists what is pending.', obj({ action: str('what to do', ['start', 'accept', 'reject', 'status']) }, ['action']), (a) => {
@@ -796,21 +1047,36 @@ function registerCore(reg, ctx) {
   def('file', 'export', 'Export: glb, gltf, obj, stl, png (viewport image) or video (renders the timeline to mp4/webm).', obj({ format: str('format', ['glb', 'gltf', 'obj', 'stl', 'png', 'video']), path: str('absolute output path; omit to be asked') }, ['format']), (a) => needIO().exportAs(a.format, a.path));
 
   // ---------------------------------------------------------------- extend
-  def('extend', 'run_script', 'Run JavaScript against the API as ONE undo step. Inside: `await api.create_box({...})` (every command is a function), `api.doc` (the model JSON), `api.geometry`. Return a value to see it.', obj({ code: str('async JavaScript body') }, ['code']), async (a) => {
+  def('extend', 'run_script', 'Run JavaScript against the API as ONE undo step (all or nothing: an error undoes the whole script). Inside: `await api.create_box({...})` (every command is a function), `api.doc` (the model JSON), `api.geometry`, and `params`. Return a value to see it.', obj({ code: str('async JavaScript body'), params: obj({}, []) }, ['code']), async (a) => {
     const api = new Proxy(
-      { doc: ctx.doc, geometry: G, run: (n, x) => reg.run(n, x) },
+      {
+        get doc() {
+          return ctx.doc;
+        },
+        geometry: G,
+        run: (n, x) => reg.run(n, x),
+      },
       { get: (o, k) => (k in o ? o[k] : typeof k === 'symbol' || k === 'then' ? undefined : (x) => reg.run(k, x)) },
     );
     const AsyncFn = Object.getPrototypeOf(async () => {}).constructor;
-    if (!ctx.batchDepth) ctx.store.checkpoint();
+    const top = !ctx.batchDepth;
+    if (top) ctx.store.checkpoint();
     ctx.batchDepth = (ctx.batchDepth || 0) + 1;
+    ctx.scriptDepth = (ctx.scriptDepth || 0) + 1;
     try {
-      return { result: (await new AsyncFn('api', a.code)(api)) ?? null };
+      const result = (await new AsyncFn('api', 'params', a.code)(api, a.params || {})) ?? null;
+      R.rebuildDerived(ctx.doc);
+      return { result };
+    } catch (e) {
+      if (top) ctx.store.rollback();
+      throw e;
     } finally {
       ctx.batchDepth--;
+      ctx.scriptDepth--;
       ctx.store.changed();
     }
-  });
+  }, false);
+  reg.commands.get('run_script').journal = true;
 
   def('extend', 'create_plugin', 'Write and load a plugin that adds new commands (and toolbar buttons) permanently. code is an ES module: export default function (mmr) { mmr.registerCommand({ name, description, params, run: async (args, mmr) => ... }) }', obj({ name: str('file name, letters/digits/-'), code: str('ES module source') }, ['name', 'code']), (a) => {
     if (!ctx.plugins) throw new Error('Plugins need the desktop app.');

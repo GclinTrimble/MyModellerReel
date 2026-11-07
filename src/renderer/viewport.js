@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
+import { samplePoints } from '../core/curves.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -64,6 +65,9 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
         lines.userData.isEdges = true;
         o.add(lines);
       }
+    } else if (e.curve) {
+      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samplePoints(e.curve).map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: e.material.color, clippingPlanes: clipping }));
+      o.userData.isCurve = true;
     } else o = new THREE.Group();
     o.name = e.name;
     o.userData.entityId = e.id;
@@ -288,6 +292,7 @@ export class Viewport {
     const lit = new Set();
     for (const id of ids) for (const d of [id, ...D.descendants(doc, id).map((x) => x.id)]) lit.add(d);
     for (const [id, o] of this.objs) {
+      if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.color || '#2f6f86');
       if (!o.isMesh) continue;
       const on = lit.has(id);
       const proposed = this.proposed.has(id);
@@ -381,6 +386,16 @@ export class Viewport {
     if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate(); // back side of a lone face
     return { entityId: h.object.userData.entityId, faceIndex: h.object.geometry.userData.triFace[h.faceIndex], point: h.point.clone(), normal, object: h.object };
   }
+  /** The curve under the mouse (curves have no faces: faceIndex -1), using the ray pick() just set. */
+  pickCurve() {
+    const lines = [];
+    this.modelRoot.traverseVisible((o) => o.userData.isCurve && lines.push(o));
+    if (!lines.length) return null;
+    this.raycaster.params.Line.threshold = 0.012 * this.camera.position.distanceTo(this.controls.target);
+    const h = this.raycaster.intersectObjects(lines, false)[0];
+    return h ? { entityId: h.object.userData.entityId, faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: h.object, curve: true } : null;
+  }
+
   /** pick() at a viewport point given as fractions (0..1 from the left and top). */
   pickAt(x, y) {
     const r = this.canvas.getBoundingClientRect();
@@ -399,6 +414,7 @@ export class Viewport {
     this.modelRoot.updateMatrixWorld(true);
     for (const [id, o] of this.objs) {
       const e = this.store.doc.entities.find((x) => x.id === id);
+      if (e?.curve && o.visible) for (const p of e.curve.points) pts.push({ p: new THREE.Vector3(...p).applyMatrix4(o.matrixWorld), kind: 'Endpoint' });
       if (!e?.mesh || !o.visible || e.mesh.v.length > 5000) continue;
       const w = e.mesh.v.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
       for (const p of w) pts.push({ p, kind: 'Endpoint' });

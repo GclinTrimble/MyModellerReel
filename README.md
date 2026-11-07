@@ -27,6 +27,9 @@ Electron's binary download is an install script; if your npm blocks install scri
   Measurements box: while a tool works, just type `2`, `3,2`, `150mm`, `45`, `x5`.
 - **Solids and structure**: groups (edit inside with double-click), pivots/hinges, mirror, radial arrays, booleans
   (union, subtract, intersect), tags, hide/lock, PBR materials.
+- **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
+  sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
+  live arrays, recipes that rebuild a model with other values, and a macro recorder.
 - **Animation and sequencing**: timeline with draggable keyframes and easing for position, rotation, scale, opacity,
   colour, visibility and the camera; Auto-key; build sequences (4D construction style); turntables; scenes;
   **video export**; animation is saved into the GLB.

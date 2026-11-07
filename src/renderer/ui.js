@@ -1,5 +1,7 @@
 // Chrome around the viewport: menus, tool bar, dock panels, status bar, palette, toasts, dialogs.
 import * as D from '../core/document.js';
+import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
+import { getGenerator } from '../core/derived.js';
 import { TOOLS, fmt } from './tools.js';
 
 /** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
@@ -179,6 +181,12 @@ export class UI {
       proposeToggle: { label: 'Propose AI changes for review', icon: 'git-pull-request', checked: () => app.ai.propose, run: () => app.ai.setPropose(!app.ai.propose) },
       proposeAccept: { label: 'Accept proposal', icon: 'check-circle', run: run('propose', { action: 'accept' }) },
       proposeReject: { label: 'Reject proposal', icon: 'x-circle', run: run('propose', { action: 'reject' }) },
+      sweep: { label: 'Sweep a profile along a path…', icon: 'path', run: form('sweep', () => (app.entity(sel()[0])?.curve ? { path: sel()[0] } : {})) },
+      liveArray: { label: 'Live array of the selection…', icon: 'columns', run: form('duplicate', () => ({ live: 'true', count: 3, offset: [1, 0, 0] })) },
+      bake: { label: 'Bake (freeze parameters)', icon: 'snowflake', run: () => sel().length && app.reg.run('bake', {}).then((r) => this.toast(`Baked ${r.baked.length}`)) },
+      recordMacro: { label: 'Record macro', icon: 'record', checked: () => !!app.ctx.macro, run: () => (app.ctx.macro ? app.reg.run('stop_macro', {}).then((r) => this.toast(`Saved recipe "${r.name}" (${r.steps} steps)`)) : app.reg.run('record_macro', {})).catch((e) => this.toast(e.message, 'danger')) },
+      saveRecipe: { label: 'Save recipe of this model…', icon: 'floppy-disk-back', run: form('save_recipe') },
+      library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
@@ -196,7 +204,7 @@ export class UI {
       Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera')],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', '-', 'clearAnim', 'exportVideo'],
       AI: ['askAi', 'newChat', '-', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
@@ -281,7 +289,7 @@ export class UI {
       ['entity', 'Entity', 'info'],
       ['materials', 'Materials', 'palette'],
       ['scenes', 'Scenes', 'camera'],
-      ['plugins', 'Plugins', 'puzzle-piece'],
+      ['library', 'Library', 'books'],
       ['settings', 'Settings', 'gear'],
     ];
     this.$('dock-tabs').replaceChildren(
@@ -307,11 +315,24 @@ export class UI {
     if (this.tab !== 'ai') this.renderDock();
     this.renderViewbar();
     this.renderProposal();
+    this.renderMacro();
     const chip = this.$('context-chip');
     const ctx = this.app.context && this.app.entity(this.app.context);
     chip.hidden = !ctx;
     if (ctx) chip.replaceChildren(icon('pencil-simple'), `Editing inside "${ctx.name}"`, icon('x'));
   }
+  /** A red "recording" pill in the status bar while a macro records. */
+  renderMacro() {
+    const m = this.app.ctx.macro;
+    let pill = this.$('macro-pill');
+    if (!m) return pill?.remove();
+    if (!pill) {
+      pill = h('button.macro-pill', { id: 'macro-pill', title: 'Stop recording and save the macro as a recipe', onclick: () => this.actions.recordMacro.run() });
+      this.$('status-hint').after(pill);
+    }
+    pill.replaceChildren(icon('record', true), `Recording "${m.name}" · ${(this.app.store.doc.journal?.length ?? 0) - m.start} steps · Stop`);
+  }
+
   renderProposal() {
     const bar = this.$('proposal-bar');
     const d = this.app.store.proposalDiff();
@@ -344,8 +365,8 @@ export class UI {
           h(
             `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
             { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
-            icon(e.type === 'group' ? 'folder-simple' : 'cube'),
-            e.mesh ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
+            icon(e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : 'cube'),
+            e.mesh || e.curve ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
             h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
             animated ? icon('film-strip') : null,
             h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
@@ -422,7 +443,7 @@ export class UI {
     return h(
       'div.panel',
       {},
-      h('label.field', {}, h('span', {}, `Name · ${e.id} · ${e.type === 'group' ? 'group' : `${e.mesh.f.length} faces`}`), h('input', { value: e.name, onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value }) })),
+      h('label.field', {}, h('span', {}, `Name · ${e.id} · ${e.type === 'group' ? 'group' : e.curve ? `${e.curve.kind} curve` : `${e.mesh.f.length} faces`}`), h('input', { value: e.name, onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value }) })),
       h('label.field', {}, h('span', {}, 'Tag'), h('input', { value: e.tag, list: 'tag-list', onchange: (ev) => run('set_properties', { ids: [e.id], tag: ev.target.value || 'Untagged' }) }), h('datalist', { id: 'tag-list' }, doc.tags.map((t) => h('option', { value: t.name })))),
       h('div.card', {}, h('div.overline', {}, 'Transform (relative to parent; Y is up)'), xyz('Position', 'position', 0.1), xyz('Rotation°', 'rotation', 5), xyz('Scale', 'scale', 0.1), h('div.small.muted', {}, `Size ${size.map(fmt).join(' × ')}`)),
       h(
@@ -431,10 +452,59 @@ export class UI {
         h('span.small.muted', {}, 'Pivot'),
         ...['left', 'right', 'center', 'bottom', 'top'].map((p) => h('button.btn', { onclick: () => run('set_pivot', { id: e.id, pivot: p }) }, p)),
       ),
+      this.paramsCard(e),
       matFields,
       this.metaCard(e),
       tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
       actions,
+    );
+  }
+
+  /** A parametric shape's parameters (#42, #134) or a curve's settings, edited in place. */
+  paramsCard(e) {
+    const app = this.app;
+    const run = (n, a) => app.reg.run(n, a).catch((x) => this.toast(x.message, 'danger'));
+    if (e.curve)
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `Curve · ${e.curve.points.length} points`),
+        h('label.row.small', {}, h('span', { style: { width: '64px' } }, 'Kind'), h('select.grow', { onchange: (ev) => run('set_curve', { id: e.id, kind: ev.target.value }) }, ['polyline', 'spline', 'bezier'].map((k) => h('option', { value: k, selected: e.curve.kind === k }, k)))),
+        h('label.row.small', {}, h('input', { type: 'checkbox', checked: !!e.curve.closed, onchange: (ev) => run('set_curve', { id: e.id, closed: ev.target.checked }) }), 'Closed loop'),
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => this.commandDialog('sweep', { path: e.id }) }, icon('path'), 'Sweep along…')),
+      );
+    if (!e.derived) return null;
+    const d = e.derived;
+    const gen = getGenerator(d.generator);
+    const keys = Object.keys(gen?.params || d.params).filter((k) => !(k === 'path' && d.inputs.length)); // a curve drives the path
+    const fields = keys.map((k) => {
+      const v = d.params[k];
+      const set = (val) => run('set_params', { id: e.id, params: { [k]: val } });
+      let input;
+      if (k === 'mirror' || typeof v === 'boolean') input = h('input', { type: 'checkbox', checked: !!v, onchange: (ev) => set(ev.target.checked) });
+      else if (k === 'anchor') input = h('select.grow', { onchange: (ev) => set(ev.target.value || undefined) }, h('option', { value: '' }, '(profile default)'), ANCHORS.map((x) => h('option', { value: x, selected: x === v }, x)));
+      else if (typeof v === 'number' || (v === undefined && /\bm\b|count|number|sides|smooth/.test(gen?.params[k] || ''))) input = h('input.grow', { type: 'number', step: 'any', value: v ?? '', onchange: (ev) => ev.target.value !== '' && set(+ev.target.value) });
+      else if (k === 'profile' && typeof v === 'string') input = h('select.grow', { onchange: (ev) => set(ev.target.value) }, listProfiles(app.store.doc).map((p) => h('option', { value: p.name, selected: p.name === v }, p.name)));
+      else
+        input = h('input.grow', {
+          value: typeof v === 'string' ? v : JSON.stringify(v),
+          onchange: (ev) => {
+            try {
+              set(JSON.parse(ev.target.value));
+            } catch {
+              set(ev.target.value);
+            }
+          },
+        });
+      return h('label.row.small.param-row', { title: gen?.params[k] || '' }, h('span', {}, k.replace(/_/g, ' ')), input);
+    });
+    return h(
+      'div.card',
+      {},
+      h('div.row', {}, h('div.overline.grow', {}, `Parameters · ${d.generator}`), h('button.icon-btn.sm', { title: 'Bake: freeze into a plain shape', 'aria-label': 'Bake', onclick: () => run('bake', { ids: [e.id] }) }, icon('snowflake'))),
+      d.error ? h('div.small.param-error', { role: 'alert' }, d.error) : null,
+      d.inputs.length ? h('div.small.muted', {}, `Made from ${d.inputs.map((x) => app.entity(x)?.name || `${x} (deleted)`).join(', ')}`) : null,
+      ...fields,
     );
   }
 
@@ -504,11 +574,58 @@ export class UI {
     );
   }
 
-  panel_plugins() {
+  /** Library: sweep profiles (#135), recipes and macros (#93, #92), plugins. */
+  panel_library() {
     const app = this.app;
+    const doc = app.store.doc;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    const path = app.selection.map((x) => app.entity(x)).find((e) => e?.curve);
+    const thumb = (p) => {
+      const i = h('span.thumb');
+      try {
+        i.innerHTML = profileSvg(p.custom ? p.points : profilePoints(p.name));
+      } catch {
+        /* a broken custom profile just has no picture */
+      }
+      return i;
+    };
+    const recipes = Object.entries(doc.recipes || {});
     return h(
       'div.panel',
       {},
+      h('h3', {}, 'Profiles'),
+      h('p.muted.small', {}, path ? `Click a profile to sweep it along "${path.name}".` : 'Select a curve (Curve tool, U) and click a profile to sweep it along. Parameters can be changed later in the Entity panel.'),
+      h(
+        'div.profiles',
+        {},
+        listProfiles(doc).map((p) =>
+          h('button.profile', { title: p.description, disabled: !path, onclick: () => run('sweep', { path: path.id, profile: p.name }) }, thumb(p), h('span', {}, p.name.replace(/_/g, ' '))),
+        ),
+      ),
+      h('div.row', {}, h('button.btn', { onclick: () => this.commandDialog('define_profile', app.selection[0] ? { from_face: app.selection[0] } : {}) }, icon('plus'), 'Profile from a face…')),
+      h('h3', {}, 'Recipes'),
+      h('p.muted.small', {}, 'A recipe is how a model was built, replayable with other values ("3 storeys instead of 2"). Record a macro to capture what you do next.'),
+      h(
+        'div.row.wrap',
+        {},
+        h(`button.btn${app.ctx.macro ? '.danger' : ''}`, { onclick: this.actions.recordMacro.run }, icon(app.ctx.macro ? 'stop-circle' : 'record'), app.ctx.macro ? 'Stop recording' : 'Record macro'),
+        h('button.btn', { onclick: this.actions.saveRecipe.run }, icon('floppy-disk-back'), 'Save this model as a recipe…'),
+      ),
+      ...recipes.map(([name, r]) =>
+        h(
+          'div.card',
+          {},
+          h('div.row', {}, icon('scroll'), h('b.grow', {}, name), h('span.small.muted', {}, `${r.steps.length} steps`)),
+          r.description ? h('div.small.muted', {}, r.description) : null,
+          h(
+            'div.row.wrap',
+            {},
+            h('button.btn', { onclick: () => (Object.keys(r.params || {}).length ? this.commandDialog('replay_recipe', { name, params: r.params }) : run('replay_recipe', { name })) }, icon('play-circle'), 'Replay…'),
+            h('button.btn', { onclick: () => run('replay_recipe', { name, clear: false }) }, icon('plus'), 'Add to model'),
+            h('button.icon-btn.sm', { title: 'Delete recipe', 'aria-label': `Delete recipe ${name}`, onclick: () => run('run_script', { code: `delete api.doc.recipes[${JSON.stringify(name)}];` }) }, icon('trash')),
+          ),
+        ),
+      ),
       h('h3', {}, 'Plugins'),
       h('p.muted.small', {}, 'A plugin is one JavaScript file that adds commands. Every command it adds is instantly available to the toolbar, the AI, the HTTP API and MCP. Ask the AI to "create a plugin that…" and it writes one for you.'),
       h('div.row', {}, h('button.btn', { onclick: this.actions.plugins.run }, icon('folder-open'), 'Open plugins folder'), h('button.btn', { onclick: () => app.reloadPlugins() }, icon('arrows-clockwise'), 'Reload')),

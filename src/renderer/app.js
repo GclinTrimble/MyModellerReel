@@ -4,6 +4,8 @@ import { Store, newDoc, getEntity, descendants } from '../core/document.js';
 import * as A from '../core/animation.js';
 import * as G from '../core/geometry.js';
 import { createRegistry, GUIDE } from '../core/commands.js';
+import { registerGenerator } from '../core/derived.js';
+import { booleanMeshes } from '../core/csg.js';
 import { Viewport, skyTexture } from './viewport.js';
 import { Tools, TOOLS } from './tools.js';
 import { UI } from './ui.js';
@@ -57,6 +59,7 @@ app.ctx = {
     },
   },
   autoKey: false,
+  onMacro: () => app.ui.refresh(),
   afterRun: [
     (name) => {
       // Animation commands from anywhere (AI, API) open the timeline so the result is visible.
@@ -196,6 +199,9 @@ window.mmr = {
     if (!spec?.name || typeof spec.run !== 'function') throw new Error('registerCommand needs { name, description, params, run }');
     app.reg.define({ category: 'plugin', mutates: true, ...spec, params: spec.params || { type: 'object', properties: {} }, run: (args) => spec.run(args, window.mmr) });
   },
+  /** A generator of parametric shapes: { description, params, world?, run({ params, inputs, doc }) → { mesh, origin? } }. */
+  registerGenerator: (name, spec) => registerGenerator(name, spec),
+  csg: { booleanMeshes },
   addToolbarButton: (b) => app.ui.addPluginButton({ ...b, run: b.run || (() => app.reg.run(b.command, b.args || {}).catch((e) => app.ui.toast(e.message, 'danger'))) }),
   toast: (m) => app.ui.toast(m),
 };

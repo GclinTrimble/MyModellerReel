@@ -5,7 +5,7 @@ import { h, icon } from './ui.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
-  'Build a 12-step staircase, then animate it as a bottom-up build sequence',
+  'Build a 12-step staircase from separate steps, then animate it as a bottom-up build sequence',
   'Make a door hinged on its left side and animate it opening over 2 seconds',
   'Add a 10 second turntable camera so I can export a reel',
   'Look at my model and suggest three improvements',
