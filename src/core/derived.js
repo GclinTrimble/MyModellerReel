@@ -145,27 +145,34 @@ export function dependentsOf(doc, id) {
 export function rebuildDerived(doc) {
   const list = doc.entities.filter((e) => e.derived);
   if (!list.length) return [];
-  const ids = new Set(list.map((e) => e.id));
-  const indeg = new Map(list.map((e) => [e.id, e.derived.inputs.filter((i) => ids.has(i)).length]));
-  const queue = list.filter((e) => !indeg.get(e.id));
-  const order = [];
-  while (queue.length) {
-    const e = queue.shift();
-    order.push(e);
-    for (const x of list) {
-      const uses = x.derived.inputs.filter((i) => i === e.id).length;
-      if (!uses) continue;
-      indeg.set(x.id, indeg.get(x.id) - uses);
-      if (!indeg.get(x.id)) queue.push(x);
-    }
+  // Kahn's algorithm over an adjacency map: runs after every command, so it must stay linear in the model size
+  const all = new Map(doc.entities.map((e) => [e.id, e]));
+  const users = new Map(); // input id → the derived entities that use it (once per use)
+  const indeg = new Map();
+  for (const e of list) {
+    let n = 0;
+    for (const i of e.derived.inputs)
+      if (all.get(i)?.derived) {
+        if (!users.has(i)) users.set(i, []);
+        users.get(i).push(e);
+        n++;
+      }
+    indeg.set(e.id, n);
   }
-  for (const e of list) if (!order.includes(e)) e.derived.error = 'Its inputs form a cycle (it depends on itself).';
+  const order = list.filter((e) => !indeg.get(e.id));
+  for (let k = 0; k < order.length; k++)
+    for (const x of users.get(order[k].id) || []) {
+      indeg.set(x.id, indeg.get(x.id) - 1);
+      if (!indeg.get(x.id)) order.push(x);
+    }
+  const placed = new Set(order);
+  for (const e of list) if (!placed.has(e)) e.derived.error = 'Its inputs form a cycle (it depends on itself).';
   const rebuilt = [];
   for (const e of order) {
     const d = e.derived;
-    const inputs = d.inputs.map((id) => D.getEntity(doc, id));
+    const inputs = d.inputs.map((id) => all.get(id));
     if (inputs.some((x) => !x)) {
-      d.error = `An input was deleted (${d.inputs.filter((i) => !D.getEntity(doc, i)).join(', ')}). Bake it or delete it.`;
+      d.error = `An input was deleted (${d.inputs.filter((i) => !all.has(i)).join(', ')}). Bake it or delete it.`;
       continue;
     }
     if (inputs.some((x) => x.derived?.error)) {

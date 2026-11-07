@@ -207,3 +207,11 @@ test('plugin generators: stairs and walls keep their parameters', async () => {
   near(w.size[2], 6, 1e-3);
   near(w.volume, 6 * 2.7 * 0.2, 1e-3);
 });
+
+test('performance: the dependency graph stays linear (a 1500-shape script runs in well under 2 s)', async () => {
+  const { reg } = makeCtx();
+  const t0 = performance.now();
+  await reg.run('run_script', { code: 'for (let i = 0; i < 1500; i++) await api.create_box({ width: 1, height: 1, depth: 1, position: [i, 0, 0] });' });
+  const ms = performance.now() - t0;
+  assert.ok(ms < 2000, `took ${Math.round(ms)} ms`);
+});
