@@ -116,7 +116,7 @@ export class Help {
       ...areas.flatMap((area) => {
         const items = list.filter((x) => !area || x.area === area);
         if (!items.length) return [];
-        return [area ? h('div.overline', {}, area) : null, ...items.map((x) => h('button.help-item', { onclick: () => this.open(x.id) }, icon('book-open'), h('span', {}, x.title)))];
+        return [...(area ? [h('div.overline', {}, area)] : []), ...items.map((x) => h('button.help-item', { onclick: () => this.open(x.id) }, icon('book-open'), h('span', {}, x.title)))];
       }),
       ...(list.length ? [] : [h('p.muted', {}, 'Nothing matches: try other words, or ask the copilot.')]),
     );
