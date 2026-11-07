@@ -92,7 +92,12 @@ ipcMain.handle('app:close-confirmed', () => {
   win.__confirmed = true;
   win.close();
 });
-ipcMain.handle('app:info', () => ({ version: app.getVersion(), userData: USER, apiPort: settings.api.port, pluginsDir: USER_PLUGINS, appRoot: ROOT }));
+// how-to pages (#158): only docs/how-to/<id>.md
+ipcMain.handle('help:read', (_, id) => {
+  if (!/^[a-z0-9-]+$/.test(String(id))) throw new Error('No such page.');
+  return fs.readFileSync(path.join(ROOT, 'docs', 'how-to', `${id}.md`), 'utf8');
+});
+ipcMain.handle('app:info', () => ({ test: !!process.env.MMR_TEST, version: app.getVersion(), userData: USER, apiPort: settings.api.port, pluginsDir: USER_PLUGINS, appRoot: ROOT }));
 ipcMain.handle('settings:get', () => publicSettings());
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
@@ -158,7 +163,47 @@ ipcMain.handle('plugins:write', (_, name, code) => {
 });
 
 // ---------------------------------------------------------------- AI provider proxy (keys stay in this process)
-ipcMain.handle('ai:chat', async (_, body) => {
+// ---------------------------------------------------------------- updates (#108): GitHub releases, downloaded in the background
+let updater = null;
+const updateState = { status: 'idle', current: app.getVersion() };
+function startUpdates() {
+  if (!app.isPackaged || process.env.MMR_TEST) return; // dev builds and tests never update themselves
+  try {
+    ({ autoUpdater: updater } = require('electron-updater'));
+  } catch {
+    return;
+  }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.on('checking-for-update', () => (updateState.status = 'checking'));
+  updater.on('update-not-available', () => Object.assign(updateState, { status: 'current' }));
+  updater.on('update-available', (i) => Object.assign(updateState, { status: 'downloading', latest: i.version }));
+  updater.on('download-progress', (p) => (updateState.percent = Math.round(p.percent)));
+  updater.on('update-downloaded', (i) => {
+    Object.assign(updateState, { status: 'ready', latest: i.version });
+    win?.webContents.send('update:ready', i.version);
+  });
+  updater.on('error', (e) => Object.assign(updateState, { status: 'error', error: String(e.message || e).slice(0, 300) }));
+  const check = () => updater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, 6 * 3600 * 1000).unref();
+}
+ipcMain.handle('update:check', async () => {
+  if (!updater) return { ...updateState, status: app.isPackaged ? 'off' : 'dev build: updates come with the installer' };
+  await updater.checkForUpdates().catch((e) => Object.assign(updateState, { status: 'error', error: String(e.message || e) }));
+  return { ...updateState };
+});
+ipcMain.handle('update:install', () => {
+  if (updateState.status !== 'ready') throw new Error('No update is ready yet.');
+  win.__confirmed = true;
+  setImmediate(() => updater.quitAndInstall(false, true));
+  return { restarting: true };
+});
+
+const { readStream } = require('./stream.cjs');
+let aiAbort = null;
+ipcMain.handle('ai:abort', () => aiAbort?.abort());
+ipcMain.handle('ai:chat', async (event, body) => {
   const ai = settings.ai;
   let url;
   let headers = { 'content-type': 'application/json' };
@@ -178,14 +223,23 @@ ipcMain.handle('ai:chat', async (_, body) => {
   }
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(300000) });
+    aiAbort = new AbortController();
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...body, stream: true, ...(ai.provider === 'openai' ? { stream_options: { include_usage: true } } : {}) }), signal: AbortSignal.any([aiAbort.signal, AbortSignal.timeout(300000)]) });
   } catch (e) {
+    if (aiAbort?.signal.aborted) throw new Error('Stopped.');
     const hint = ai.provider === 'ollama' ? ' Is Ollama running? Start it, then `ollama pull mistral`.' : '';
     throw new Error(`Cannot reach ${url}: ${e.cause?.code || e.message}.${hint}`);
   }
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${ai.provider} ${res.status}: ${text.slice(0, 500)}`);
-  return { provider: ai.provider, data: JSON.parse(text) };
+  if (!res.ok) throw new Error(`${ai.provider} ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  // text goes to the page as it arrives; the rebuilt reply is the same object the non-streaming APIs return
+  // servers that ignore stream: true answer plain JSON
+  if ((res.headers.get('content-type') || '').includes('application/json')) return { provider: ai.provider, data: JSON.parse(await res.text()) };
+  try {
+    return { provider: ai.provider, data: await readStream(ai.provider, res.body, (t) => event.sender.send('ai:delta', t)) };
+  } catch (e) {
+    if (aiAbort?.signal.aborted) throw new Error('Stopped.');
+    throw e;
+  }
 });
 
 // ---------------------------------------------------------------- local HTTP API (used by the MCP server and scripts)
@@ -281,6 +335,7 @@ else {
       win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
     }
     win.webContents.once('did-finish-load', startApi);
+    startUpdates();
     if (app.isPackaged && !settings.startup.defaultApplied) {
       app.setLoginItemSettings({ openAtLogin: true });
       settings.startup.defaultApplied = true;

@@ -6,6 +6,7 @@ import * as D from '../core/document.js';
 import { AXIS_COLORS, meshGeometry } from './viewport.js';
 import { arcThrough } from '../core/curves.js';
 import * as L from '../core/layers.js';
+import { formatLength } from '../core/units.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 const AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -36,6 +37,7 @@ export const TOOLS = [
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
   { id: 'orbit', label: 'Orbit (middle mouse)', key: 'O', icon: 'globe-simple', group: 'camera' },
+  { id: 'zoomwin', label: 'Zoom window (drag a box)', key: 'Z', icon: 'magnifying-glass-plus', group: 'camera' },
   { id: 'pan', label: 'Pan (right mouse)', key: 'H', icon: 'hand', group: 'camera' },
 ];
 
@@ -46,7 +48,10 @@ export function parseLength(s) {
   const f = { mm: 0.001, cm: 0.01, m: 1, km: 1000, "'": 0.3048, ft: 0.3048, '"': 0.0254, in: 0.0254 }[(m[2] || 'm').toLowerCase()];
   return parseFloat(m[1]) * f;
 }
-export const fmt = (m) => (Math.abs(m) < 1 ? `${Math.round(m * 1000)} mm` : `${(Math.round(m * 1000) / 1000).toFixed(3)} m`);
+let display = {};
+/** The model's display units (#52): set by the app when the document changes. */
+export const setDisplay = (d) => (display = d);
+export const fmt = (m) => formatLength(m, display);
 
 function basis(n) {
   if (Math.abs(n.y) > 0.99) return { u: V(1, 0, 0), v: V(0, 0, 1).multiplyScalar(Math.sign(n.y) || 1) };
@@ -931,6 +936,34 @@ class ControlTool {
   }
 }
 
+/** Zoom window: drag a box, the view zooms into it. */
+class ZoomWindowTool {
+  hint = 'Drag a box around what you want to see up close.';
+  constructor(t) {
+    this.t = t;
+  }
+  down(ev) {
+    this.start = { x: ev.clientX, y: ev.clientY };
+  }
+  move(ev) {
+    if (!this.start) return;
+    const r = this.t.vp.canvas.getBoundingClientRect();
+    const [x0, x1] = [this.start.x, ev.clientX].sort((a, b) => a - b);
+    const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
+    Object.assign(this.t.box.style, { left: `${x0 - r.left}px`, top: `${y0 - r.top}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+    this.t.box.hidden = false;
+  }
+  async up(ev) {
+    const s = this.start;
+    this.start = null;
+    this.t.box.hidden = true;
+    if (!s) return;
+    const r = this.t.vp.canvas.getBoundingClientRect();
+    const f = (x, y) => [(x - r.left) / r.width, (y - r.top) / r.height];
+    await this.t.run('zoom_window', Object.fromEntries([...f(s.x, s.y), ...f(ev.clientX, ev.clientY)].map((v, i) => [['x0', 'y0', 'x1', 'y1'][i], v])));
+  }
+}
+
 /** Trim: click the piece of a curve to cut away between its crossings with the other curves. */
 class TrimTool {
   hint = 'Click the piece of a curve to cut away; the other curves are the cutting edges.';
@@ -1051,6 +1084,7 @@ const IMPL = {
   calibrate: CalibrateTool,
   control: ControlTool,
   trim: TrimTool,
+  zoomwin: ZoomWindowTool,
   extend: ExtendTool,
   pushpull: PushPullTool,
   move: MoveTool,

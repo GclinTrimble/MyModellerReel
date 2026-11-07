@@ -20,6 +20,10 @@ import * as DW from './drawings.js';
 import * as PDF from './pdf.js';
 import * as Assets from './assets.js';
 import * as F from './formats.js';
+import * as Units from './units.js';
+import * as Clip from './clipboard.js';
+import { TEMPLATES } from './templates.js';
+import { HOWTOS, findHowtos } from './howto.js';
 import './landxml.js';
 import './dxf.js';
 import './ifc.js';
@@ -1062,11 +1066,13 @@ function registerCore(reg, ctx) {
     return { base: nb };
   }, true);
 
-  def('terrain', 'set_units', 'Units for survey input and output (internally always metres): length m, ft (international) or usft (US survey); angles deg, dms or gon.', obj({ length: str('length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {
+  def('terrain', 'set_units', 'Units: display (how lengths are shown: auto, mm, cm, m, in, ft, ft-in) and precision (decimals; for ft-in the inch fraction, e.g. 16), and the survey units for coordinates in and out (length m, ft, usft; angles deg, dms, gon). Commands always take and return metres.', obj({ display: str('length display', Units.DISPLAY), precision: num('decimals (ft-in: inch fraction 2–64)'), length: str('survey length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {
+    if (a.display !== undefined) ctx.doc.settings.display_units = a.display;
+    if (a.precision !== undefined) ctx.doc.settings.precision = a.precision;
     const g = S.geo(ctx.doc);
     if (a.length) g.units = a.length;
     if (a.angles) g.angles = a.angles;
-    return { units: g.units, angles: g.angles };
+    return { display: ctx.doc.settings.display_units || 'auto', precision: ctx.doc.settings.precision ?? null, units: g.units, angles: g.angles };
   }, true);
 
   def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', obj({ name: str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: str('or: COGO from this point'), bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), (a) => {
@@ -2229,6 +2235,18 @@ function registerCore(reg, ctx) {
     doc.scenes.push({ name, camera: cam });
     return { scenes: doc.scenes.map((s) => s.name) };
   }, true);
+  def('view', 'view_back', 'Back to the previous view (camera), like a browser back button.', obj({}), () => {
+    if (!ctx.view?.viewBack) throw new Error('Needs the desktop app.');
+    return ctx.view.viewBack();
+  });
+  def('view', 'view_forward', 'Forward again after view_back.', obj({}), () => {
+    if (!ctx.view?.viewForward) throw new Error('Needs the desktop app.');
+    return ctx.view.viewForward();
+  });
+  def('view', 'zoom_window', 'Zoom into a window of the view: corners as fractions of the view (0–1 from the left and top).', obj({ x0: num('left'), y0: num('top'), x1: num('right'), y1: num('bottom') }, ['x0', 'y0', 'x1', 'y1']), (a) => {
+    if (!ctx.view?.zoomWindow) throw new Error('Needs the desktop app.');
+    return ctx.view.zoomWindow(a.x0, a.y0, a.x1, a.y1);
+  });
   def('view', 'go_to_scene', 'Jump the camera to a saved scene.', obj({ name: str('scene name') }, ['name']), (a) => {
     const s = ctx.doc.scenes.find((x) => x.name === a.name);
     if (!s) throw new Error(`No scene "${a.name}".`);
@@ -2586,6 +2604,124 @@ function registerCore(reg, ctx) {
     return { path, format: fmt.id, bytes: text.length, entities: ents.length };
   }, true);
   reg.commands.get('import').compound = true;
+
+  // ---------------------------------------------------------------- model info, purge (#48), clipboard (#39)
+  def('scene', 'model_info', 'Statistics of the model: entities by type, faces and vertices, layers, components and instances, materials, curves, survey points, underlays and the size of their files, bounds, base point, journal length.', obj({}), () => {
+    const doc = ctx.doc;
+    const by = {};
+    let faces = 0;
+    let verts = 0;
+    for (const e of doc.entities) {
+      by[e.type] = (by[e.type] || 0) + 1;
+      if (e.mesh && !e.compKey) (faces += e.mesh.f.length), (verts += e.mesh.v.length);
+    }
+    const comps = Object.keys(doc.components || {});
+    const box = D.unionBox(doc.entities.filter((e) => !e.parent).map((e) => D.worldBox(doc, e)));
+    const assets = [...new Set(doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset))];
+    const size = JSON.stringify(doc, Comp.stripForSave).length;
+    return {
+      entities: doc.entities.length,
+      by_type: by,
+      faces,
+      vertices: verts,
+      layers: doc.tags.length,
+      components: comps.map((n) => ({ name: n, instances: Comp.instancesOf(doc, n).length })),
+      materials: new Set(doc.entities.filter((e) => e.mesh).map((e) => e.material.color)).size,
+      ...(Number.isFinite(box.min[0]) ? { bounds: { min: D.round3(box.min), max: D.round3(box.max), size: D.round3(box.max.map((v, k) => v - box.min[k])) } } : {}),
+      ...(S.geo(doc).base ? { base_point: S.geo(doc).base, crs: S.geo(doc).crs } : {}),
+      underlay_files: assets.length,
+      underlay_bytes: assets.reduce((t, id) => t + (Assets.get(id)?.bytes.length || 0), 0),
+      document_bytes: size,
+      journal_steps: doc.journal?.length || 0,
+      animated: doc.animation.tracks.length,
+    };
+  });
+  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a copilot prompt and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
+  def('scene', 'open_howto', 'Open a how-to page in the Help panel (show the person how), and get its text.', obj({ id: str('page id from list_howtos', HOWTOS.map((x) => x.id)) }, ['id']), async (a) => {
+    const page = HOWTOS.find((x) => x.id === a.id);
+    if (!page) throw new Error(`No page "${a.id}". list_howtos shows them.`);
+    ctx.help?.open(a.id);
+    const markdown = ctx.io?.readHowto ? await ctx.io.readHowto(a.id).catch(() => null) : null;
+    return { ...page, ...(markdown ? { markdown } : {}) };
+  });
+  def('file', 'list_templates', 'Start templates: small complete models to begin from (house, product turntable, jobsite, construction sequence, empty in metres or feet).', obj({}), () => TEMPLATES.map(({ id, name, description }) => ({ id, name, description })));
+  def('file', 'new_from_template', 'Start a new model from a template (list_templates). Replaces the current model (undo brings it back).', obj({ id: str('template id', TEMPLATES.map((t) => t.id)) }, ['id']), async (a) => {
+    const t = TEMPLATES.find((x) => x.id === a.id);
+    if (!t) throw new Error(`No template "${a.id}": ${TEMPLATES.map((x) => x.id).join(', ')}.`);
+    ctx.store.doc = D.newDoc(); // in place, so undo brings the old model back
+    for (const [cmd, args] of t.steps()) await reg.run(cmd, args);
+    ctx.selection.set([]);
+    return { template: t.id, name: t.name, entities: ctx.doc.entities.length };
+  }, true);
+  reg.commands.get('new_from_template').compound = true;
+  def('scene', 'check_for_updates', 'Is a newer version of the app out? Installed builds download it in the background; restart_to_update installs it.', obj({}), async () => {
+    if (!ctx.io?.checkUpdates) throw new Error('Needs the desktop app.');
+    return ctx.io.checkUpdates();
+  });
+  def('scene', 'restart_to_update', 'Restart into the downloaded update (the model is kept in the autosave).', obj({}), async () => {
+    if (!ctx.io?.installUpdate) throw new Error('Needs the desktop app.');
+    return ctx.io.installUpdate();
+  });
+  def('edit', 'purge', 'Remove what nothing uses: empty layers (not the current one), components with no instances, empty groups, layer states of deleted layers. Says what went.', obj({ layers: bool('empty layers (default true)'), components: bool('unused components (default true)'), groups: bool('empty groups (default true)') }), (a) => {
+    const doc = ctx.doc;
+    const out = { layers: [], components: [], groups: [] };
+    if (a.groups !== false)
+      for (let again = true; again; ) {
+        again = false;
+        for (const g of doc.entities.filter((e) => e.type === 'group' && !e.component && !D.childrenOf(doc, e.id).length)) {
+          D.removeEntity(doc, g);
+          out.groups.push(g.name);
+          again = true;
+        }
+      }
+    if (a.components !== false)
+      for (const n of Object.keys(doc.components || {}))
+        if (!Comp.instancesOf(doc, n).length) {
+          delete doc.components[n];
+          out.components.push(n);
+        }
+    if (a.layers !== false) {
+      const used = new Set(doc.entities.map((e) => e.tag));
+      for (const t of [...doc.tags]) {
+        if (used.has(t.name) || t.name === 'Untagged' || t.name === (doc.settings.current_layer || 'Untagged')) continue;
+        doc.tags = doc.tags.filter((x) => x !== t);
+        out.layers.push(t.name);
+      }
+      for (const st of Object.values(doc.layerStates || {})) for (const k of Object.keys(st)) if (!doc.tags.some((t) => t.name === k)) delete st[k];
+    }
+    return { removed: out, total: out.layers.length + out.components.length + out.groups.length };
+  }, true);
+  def('edit', 'copy', 'Copy entities (with everything inside them) to the clipboard: paste them here or in another model.', obj({ ids }), async (a) => {
+    const ents = targets(ctx, a);
+    if (!ents.length) throw new Error('Select something to copy.');
+    ctx.clipboard = Clip.copyEntities(ctx.doc, ents.map((e) => e.id));
+    await ctx.io?.clipboardWrite?.(JSON.stringify(ctx.clipboard)).catch?.(() => {});
+    return { copied: ents.length };
+  });
+  def('edit', 'cut', 'Copy entities to the clipboard and delete them.', obj({ ids }), async (a) => {
+    const ents = targets(ctx, a);
+    if (!ents.length) throw new Error('Select something to cut.');
+    ctx.clipboard = Clip.copyEntities(ctx.doc, ents.map((e) => e.id));
+    await ctx.io?.clipboardWrite?.(JSON.stringify(ctx.clipboard)).catch?.(() => {});
+    for (const e of ents) D.removeEntity(ctx.doc, e);
+    ctx.selection.set([]);
+    return { cut: ents.length };
+  }, true);
+  def('edit', 'paste', 'Paste what was copied: in place (default, the same real-world spot even from another model), or moved by offset. Pasted entities are selected.', obj({ offset: v3('move by [x, y, z] m'), into: str('a group to paste into (default: the group being edited)') }), async (a) => {
+    let clip = ctx.clipboard;
+    const text = await ctx.io?.clipboardRead?.().catch?.(() => null);
+    if (text && text.startsWith('{"mymodellerreel_clipboard"')) {
+      try {
+        clip = JSON.parse(text);
+      } catch {
+        // not ours after all: keep the in-app clipboard
+      }
+    }
+    const parent = a.into ? D.resolve(ctx.doc, a.into)[0].id : ctx.context?.() || null;
+    const ids = Clip.pasteEntities(ctx.doc, clip, { offset: a.offset || [0, 0, 0], parent });
+    ctx.selection.set(ids);
+    return { pasted: ids.length, ids };
+  }, true);
 
   // ---------------------------------------------------------------- feature layers and their attribute table (#125)
   const WHERE = { description: 'attribute filters: { field: value | { min, max } | { contains: "text" } }' };

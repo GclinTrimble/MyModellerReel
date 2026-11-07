@@ -98,6 +98,7 @@ export class Assistant {
   }
   stop() {
     this.stopped = true;
+    window.native?.invoke('ai:abort');
   }
 
   add(node) {
@@ -128,6 +129,21 @@ export class Assistant {
     if (!proposing) app.store.checkpoint();
     ctx.batchDepth = (ctx.batchDepth || 0) + 1;
     const turnLength = this.history.length;
+    const t0 = performance.now();
+    const usage = { in: 0, out: 0, calls: 0, steps: 0 };
+    app.onUsage = (d) => {
+      const u = d?.usage || {};
+      usage.in += u.input_tokens ?? u.prompt_tokens ?? d?.prompt_eval_count ?? 0;
+      usage.out += u.output_tokens ?? u.completion_tokens ?? d?.eval_count ?? 0;
+    };
+    // text streams into a live bubble; the final text replaces it so nothing shows twice
+    window.native?.onAiDelta && !this.deltaHooked && ((this.deltaHooked = true), window.native.onAiDelta((t) => this.delta?.(t)));
+    this.delta = (t) => {
+      thinking.remove();
+      if (!this.live) this.live = this.add(h('div.msg.assistant.live', {}, ''));
+      this.live.textContent += t;
+      this.log.scrollTop = this.log.scrollHeight;
+    };
     try {
       await runTurn({
         protocol,
@@ -149,9 +165,18 @@ export class Assistant {
         hooks: {
           stopped: () => this.stopped,
           onThinking: (on) => (on ? this.add(thinking) : thinking.remove()),
-          onText: (t) => this.add(h('div.msg.assistant', {}, t)),
-          onCall: (c) => this.add(h('details.toolcall', {}, h('summary', {}, `${c.name} ${JSON.stringify(c.args).slice(0, 120)}`))),
+          onText: (t) => (this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
+          onCall: (c) => {
+            this.live?.classList.remove('live');
+            this.live = null;
+            usage.calls++;
+            const row = this.add(h('details.toolcall.running', {}, h('summary', {}, `${c.name} ${JSON.stringify(c.args).slice(0, 120)}`)));
+            row.t0 = performance.now();
+            return row;
+          },
           onResult: (row, c, result, isError) => {
+            row.classList.remove('running');
+            row.querySelector('summary').append(h('span.muted.small', {}, ` · ${Math.round(performance.now() - row.t0)} ms`));
             if (isError) row.classList.add('err');
             app.store.changed(); // live update inside the batched turn
             if (result?.image) row.append(h('img', { src: result.image, alt: 'Screenshot the AI looked at', style: { maxWidth: '100%', borderRadius: '6px', marginTop: '4px' } }));
@@ -161,10 +186,17 @@ export class Assistant {
       });
     } catch (e) {
       thinking.remove();
-      this.add(h('div.msg.error', {}, e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '')));
+      const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
+      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : msg));
       // keep the history valid for the next turn: drop this turn's dangling user message if nothing came back
       if (this.history.length === turnLength && this.history.at(-1)?.role === 'user') this.history.pop();
     } finally {
+      this.live?.classList.remove('live');
+      this.live = null;
+      this.delta = null;
+      app.onUsage = null;
+      const tok = usage.in + usage.out;
+      this.add(h('div.turn-stats.muted.small', {}, `${((performance.now() - t0) / 1000).toFixed(1)} s · ${usage.calls} tool call${usage.calls === 1 ? '' : 's'}${tok ? ` · ${tok > 999 ? `${(tok / 1000).toFixed(1)}k` : tok} tokens (${usage.in} in, ${usage.out} out)` : ''}`));
       ctx.batchDepth--;
       if (proposing && app.store.proposalDiff()?.empty) app.store.acceptProposal(); // nothing to review
       app.store.changed();

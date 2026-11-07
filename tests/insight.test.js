@@ -126,7 +126,9 @@ test('MCP server: resources and prompts, images from tools, over stdio', async (
     assert.ok(init.result.capabilities.resources && init.result.capabilities.prompts);
     assert.equal(init.result.serverInfo.version, JSON.parse(fs.readFileSync('package.json', 'utf8')).version);
     const res = (await ask('resources/list')).result.resources.map((r) => r.uri);
-    assert.deepEqual(res, ['mmr://scene', 'mmr://selection', 'mmr://guide', 'mmr://animation', 'mmr://quantities', 'mmr://commands']);
+    assert.deepEqual(res.slice(0, 6), ['mmr://scene', 'mmr://selection', 'mmr://guide', 'mmr://animation', 'mmr://quantities', 'mmr://commands']);
+    assert.ok(res.includes('mmr://howto/put-a-pdf-in-place'), 'the how-to pages are resources');
+    assert.match((await ask('resources/read', { uri: 'mmr://howto/hinge-a-door' })).result.contents[0].text, /^# Hinge a door/);
     assert.equal((await ask('resources/read', { uri: 'mmr://guide' })).result.contents[0].text, 'GUIDE TEXT');
     assert.deepEqual(JSON.parse((await ask('resources/read', { uri: 'mmr://scene' })).result.contents[0].text).selection, ['e1']);
     assert.deepEqual(JSON.parse((await ask('resources/read', { uri: 'mmr://selection' })).result.contents[0].text), [{ id: 'e1', faces: [] }]);

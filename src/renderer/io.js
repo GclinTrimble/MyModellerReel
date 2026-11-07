@@ -203,6 +203,28 @@ export class IO {
     return { exported: path };
   }
 
+  /** A how-to page's Markdown (#158). */
+  readHowto(id) {
+    return native().invoke('help:read', id);
+  }
+
+  /** Updates (#108). */
+  checkUpdates() {
+    return native().invoke('update:check');
+  }
+  async installUpdate() {
+    await this.app.autosave?.();
+    return native().invoke('update:install');
+  }
+
+  /** The system clipboard (copy / paste between models); fails quietly when the window is not focused. */
+  clipboardWrite(text) {
+    return navigator.clipboard.writeText(text);
+  }
+  clipboardRead() {
+    return navigator.clipboard.readText();
+  }
+
   /** Read a PDF or an image (underlays). */
   async readBinary(path) {
     return new Uint8Array(await native().invoke('file:read-binary', path));

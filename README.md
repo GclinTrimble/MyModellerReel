@@ -39,6 +39,11 @@ Electron's binary download is an install script; if your npm blocks install scri
   coordinates. Extract a PDF's vector linework by layer, colour and window; draft on it (offset, trim, extend, fillet,
   chamfer, join, break); then take it to 3D: heights from spot-level text, breaklines for the surface, buildings from
   footprints, kerbs swept along lines. A layer panel with colours, locks, the current layer and saved states.
+- **Help by intent**: Help › How do I… (F1): a page per goal ("Put a PDF site plan in place", "Work out cut and fill
+  for a pad"…) with step pictures, GIFs and videos, "Do it" buttons, a copilot prompt and the commands. Also in
+  [docs/how-to](docs/how-to/README.md) and as MCP resources.
+- **Getting started**: a start screen with templates (a house, a product turntable, a jobsite, a construction
+  sequence), a 2-minute tour, automatic updates from GitHub releases.
 - **Open formats**: LandXML (points, TIN surfaces, alignments with profiles, linework), IFC (BIM elements with
   storeys, property sets, layers and georeferencing, out as IFC4 or IFC4X3) and DXF (layers with colours and line
   types, polylines with arcs, blocks as components, 3D faces), in and out, with an import report. Feature layers

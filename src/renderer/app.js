@@ -9,7 +9,8 @@ import { booleanMeshes } from '../core/csg.js';
 import { skillPrompt } from '../core/skills.js';
 import { protocolOf, visionRequest, parseReply, REVIEW_SYSTEM } from '../core/agent.js';
 import { Viewport, skyTexture } from './viewport.js';
-import { Tools, TOOLS } from './tools.js';
+import { Tools, TOOLS, setDisplay } from './tools.js';
+import { Help } from './help.js';
 import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
@@ -53,6 +54,8 @@ app.ctx = {
   view: app.viewport,
   timeline: app.timeline,
   io: app.io,
+  context: () => app.context,
+  help: { open: (id) => app.help.open(id) },
   version: app.info?.version,
   plugins: {
     list: () => app.plugins,
@@ -94,11 +97,14 @@ app.reg = createRegistry(app.ctx);
 /** One request to the configured AI provider (the main process holds the keys). Errors read as plain sentences. */
 app.chat = async (body) => {
   try {
-    return (await native.invoke('ai:chat', body)).data;
+    const data = (await native.invoke('ai:chat', body)).data;
+    app.onUsage?.(data);
+    return data;
   } catch (e) {
     throw new Error(String(e.message).replace(/^Error invoking remote method 'ai:chat': (Error: )?/, ''));
   }
 };
+native.onUpdateReady?.((v) => app.ui.toast(`Version ${v} is ready: Help › Restart to update (or it installs when you close the app).`));
 app.skillPrompt = () => (app.ctx.skill ? skillPrompt(app.ctx.skill) : '');
 app.tools = null;
 
@@ -190,6 +196,7 @@ app.autosave = () => {
 let saveTimer;
 let lastDoc = store.doc;
 store.on((doc) => {
+  setDisplay({ unit: doc.settings.display_units, precision: doc.settings.precision });
   if (doc !== lastDoc) {
     // undo / redo / open replaced the document: drop stale references
     app.selection = app.selection.filter((id) => getEntity(doc, id));
@@ -276,6 +283,8 @@ window.addEventListener('keydown', (ev) => {
   const combos = {
     'ctrl+z': 'undo', 'ctrl+y': 'redo', 'ctrl+shift+z': 'redo', 'ctrl+s': 'save', 'ctrl+shift+s': 'saveAs', 'ctrl+o': 'open', 'ctrl+n': 'new',
     'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline',
+    'ctrl+c': 'copy', 'ctrl+x': 'cut', 'ctrl+v': 'paste',
+    f1: 'howto',
     'shift+z': 'zoomExtents', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',
   };
   const combo = `${ctrl ? 'ctrl+' : ''}${ev.shiftKey ? 'shift+' : ''}${k.toLowerCase()}`;
@@ -308,6 +317,7 @@ native.onBeforeClose(async () => {
 const theme = localStorage.getItem('mymodellerreel.theme');
 app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
 app.ai = new Assistant(app);
+app.help = new Help(app);
 app.ui.init();
 app.tools = new Tools(app);
 app.viewport.rebuild();
@@ -323,5 +333,7 @@ canvas.focus();
 for (const p of await native.invoke('plugins:list')) await loadPlugin(p);
 app.ui.refresh();
 app.viewport.listeners.add(() => drawLabels(app));
+// first run, or nothing to restore: the start screen (#109); tests drive the app themselves
+if (!app.info.test && !restored?.doc?.entities?.length) app.ui.startScreen();
 // Keep the camera in the document so saves and the AI know the current view.
 app.viewport.controls.addEventListener('end', () => (store.doc.camera = app.viewport.getCamera()));

@@ -1,7 +1,7 @@
 {
   "name": "mymodellerreel",
   "productName": "MyModellerReel",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "AI-first 3D modeller and animation sequencer of the My…Reel family. Push/pull modelling, keyframe animation, GLB native, MCP + HTTP API.",
   "main": "src/main/main.cjs",
   "type": "module",
@@ -12,7 +12,7 @@
     "test": "node --test tests/*.test.js",
     "mcp": "node src/mcp/server.js",
     "mcp:config": "node scripts/mcp-config.js",
-    "dist": "node scripts/check-suite-config.mjs && electron-builder --win",
+    "dist": "node scripts/check-suite-config.mjs && electron-builder --publish never --win",
     "e2e": "node --test tests/e2e/*.e2e.js",
     "eval": "node scripts/eval.mjs"
   },
@@ -21,6 +21,7 @@
     "@kninnug/constrainautor": "^4.1.0",
     "@phosphor-icons/web": "^2.1.2",
     "delaunator": "^5.1.0",
+    "electron-updater": "6.8.11",
     "geotiff": "3.0.5",
     "gifenc": "^1.0.3",
     "koffi": "^3.3.5",
@@ -48,7 +49,8 @@
         "from": "node_modules/three/examples/jsm",
         "to": "node_modules/three/examples/jsm"
       },
-      "package.json"
+      "package.json",
+      "docs/how-to/**"
     ],
     "win": {
       "target": "nsis",
@@ -56,6 +58,13 @@
     },
     "asarUnpack": [
       "**/node_modules/koffi/**"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "GclinTrimble",
+        "repo": "MyModellerReel"
+      }
     ]
   }
 }

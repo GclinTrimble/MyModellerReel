@@ -381,3 +381,32 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .info-pre { max-height: 50vh; overflow: auto; white-space: pre-wrap; font-family: var(--my-font-mono, monospace); background: var(--my-surface-2, transparent); padding: var(--my-space-2); border-radius: var(--my-radius-sm); }
 .layer-row .icon-btn[aria-pressed="true"] .ph { color: var(--my-on-accent, #fff); }
 .qty.attr { max-height: 60vh; } .qty.attr td { padding: 1px 4px; } .qty.attr th { position: sticky; top: 0; background: var(--my-surface); }
+
+/* ---------- start screen and tour (#109) ---------- */
+.start-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--my-space-2); margin: var(--my-space-3) 0; }
+.start-card { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; text-align: left; padding: var(--my-space-3); border: 1px solid var(--my-border); border-radius: var(--my-radius-md, 8px); background: var(--my-surface); cursor: pointer; font: inherit; color: inherit; }
+.start-card:hover, .start-card:focus-visible { border-color: var(--my-accent); background: var(--my-accent-tint); }
+.start-card .ph { font-size: 22px; color: var(--my-accent); }
+.tour { position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
+.tour-hl { position: fixed; border-radius: 8px; outline: 200vmax solid rgba(10, 20, 25, 0.45); box-shadow: inset 0 0 0 2px var(--my-accent); }
+.tour-card { position: fixed; width: 320px; pointer-events: auto; background: var(--my-surface); color: var(--my-text); border-radius: 10px; padding: var(--my-space-3); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); }
+.tour-card h3 { margin: 4px 0; }
+
+/* ---------- help by intent (#158) ---------- */
+.tabs button { min-width: 0; letter-spacing: -0.01em; }
+.help-list { display: flex; flex-direction: column; gap: 2px; margin: var(--my-space-2) 0; }
+.help-list .overline { margin-top: var(--my-space-2); }
+.help-item { display: flex; align-items: flex-start; gap: var(--my-space-2); width: 100%; text-align: left; padding: 6px var(--my-space-2); border: 0; border-radius: var(--my-radius-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.help-item:hover, .help-item:focus-visible { background: var(--my-accent-tint); }
+.help-item .ph { color: var(--my-accent); margin-top: 3px; }
+.help-page h3 { font-size: var(--my-text-lg, 18px); margin: var(--my-space-2) 0; }
+.help-page h4 { font-size: var(--my-text-md, 15px); margin: var(--my-space-3) 0 var(--my-space-1); }
+.help-page p, .help-page li { line-height: 1.5; }
+.help-page ol, .help-page ul { padding-left: 20px; }
+.help-page li { margin-bottom: var(--my-space-2); }
+.help-media { display: block; max-width: 100%; height: auto; border-radius: var(--my-radius-sm); border: 1px solid var(--my-border); margin: 6px 0; }
+.help-code { background: var(--my-surface-2); padding: var(--my-space-2); border-radius: var(--my-radius-sm); overflow-x: auto; font-family: var(--my-font-mono); font-size: var(--my-text-xs); white-space: pre; }
+.help-prompt { margin: 0; padding: var(--my-space-2) var(--my-space-3); border-left: 3px solid var(--my-accent); background: var(--my-accent-tint); border-radius: var(--my-radius-sm); font-style: italic; }
+.do-it { margin: 0 2px; vertical-align: baseline; }
+.help-page code { font-family: var(--my-font-mono); font-size: 0.92em; background: var(--my-surface-2); padding: 0 3px; border-radius: 3px; }
+#dock-tabs button { font-size: 10px; }

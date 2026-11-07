@@ -213,6 +213,9 @@ export class Viewport {
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = true;
     this.controls.addEventListener('change', () => (this.dirty = true));
+    this.controls.addEventListener('end', () => this.pushView()); // after the user orbits, pans or zooms
+    this.views = [];
+    this.viewAt = -1;
 
     this.hemi = new THREE.HemisphereLight(0xeef4f6, 0x8a7f6c, 1.6);
     this.sun = new THREE.DirectionalLight(0xfff4e0, 2.2);
@@ -418,6 +421,49 @@ export class Viewport {
     this.camera.lookAt(this.controls.target);
     this.controls.update();
     this.dirty = true;
+    if (!this.restoring) this.pushView();
+  }
+  /** View history (#70): every settled camera, so back / forward step through them. */
+  pushView() {
+    const v = this.getCamera();
+    const last = this.views[this.viewAt];
+    if (last && JSON.stringify(last) === JSON.stringify(v)) return;
+    this.views = this.views.slice(0, this.viewAt + 1).concat([v]).slice(-50);
+    this.viewAt = this.views.length - 1;
+  }
+  stepView(k) {
+    const i = this.viewAt + k;
+    if (i < 0 || i >= this.views.length) throw new Error(k < 0 ? 'No earlier view.' : 'No later view.');
+    this.viewAt = i;
+    this.restoring = true;
+    try {
+      this.setCamera(this.views[i]);
+    } finally {
+      this.restoring = false;
+    }
+    return { view: i + 1, of: this.views.length, ...this.views[i] };
+  }
+  viewBack() {
+    return this.stepView(-1);
+  }
+  viewForward() {
+    return this.stepView(1);
+  }
+  /** Zoom so a window of the view (fractions, 0–1 from the left and top) fills it. */
+  zoomWindow(x0, y0, x1, y1) {
+    const [l, r] = [Math.min(x0, x1), Math.max(x0, x1)];
+    const [t, b] = [Math.min(y0, y1), Math.max(y0, y1)];
+    if (r - l < 0.005 || b - t < 0.005) throw new Error('Drag a bigger window.');
+    const cx = (l + r) / 2;
+    const cy = (t + b) / 2;
+    const hit = this.pickAt(cx, cy);
+    const ray = this.raycaster.ray;
+    const target = hit?.point || ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3()) || this.controls.target.clone().add(ray.direction.clone().multiplyScalar(this.camera.position.distanceTo(this.controls.target)));
+    const k = Math.max(r - l, b - t);
+    const dist = target.distanceTo(this.camera.position) * k;
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    this.setCamera({ position: target.clone().add(dir.multiplyScalar(dist)).toArray(), target: target.toArray() });
+    return this.getCamera();
   }
   modelBox(ids = null) {
     const box = new THREE.Box3();

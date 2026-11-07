@@ -25,7 +25,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   georeferencing, world files), `pdf.js` (pdf.js reading: pages, layers, paths and text), `drafting.js` (2D polyline
   offset, trim, extend, fillet, join, simplify), `drawings.js` (underlay frames, extraction clean-up, the extrude
   generator), `assets.js` (PDF / image bytes kept out of the document JSON, packed into saved files), `formats.js` (the
-  import / export registry and reports), `xml.js`, `landxml.js`, `dxf.js`, `ifc.js` (web-ifc reads; we write IFC).
+  import / export registry and reports), `xml.js`, `landxml.js`, `dxf.js`, `ifc.js` (web-ifc reads; we write IFC),
+  `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
+  pages' catalogue; the pages are `docs/how-to/*.md`).
 - Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
@@ -35,8 +37,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
 - `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
-  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `underlays.js` (PDF pages and images as textures), `captions.js` (2D caption drawing shared
+  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `help.js` (the Help panel and its Markdown), `underlays.js` (PDF pages and images as textures), `captions.js` (2D caption drawing shared
   by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
+- `src/main/stream.cjs` streams AI replies (text to the page as it arrives, the same reply object at the end).
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 
 ## Conventions
@@ -57,6 +60,13 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 - Run the app (`npm start`) and drive it over the HTTP API: `POST /api/run`, `GET /api/window-screenshot`,
   `POST /api/input` for real clicks (DIP coordinates: screenshots are physical pixels, divide by the display scale).
 - Read `%APPDATA%\MyModellerReel\renderer.log` for page errors.
+
+## Help pages
+
+- A new user-facing workflow gets a how-to page: an entry in `src/core/howto.js`, `docs/how-to/<id>.md` (In the app with
+  `[Do it](action:… | tool:… | do:…)` links, Ask the copilot, From a script), and a scenario in
+  `scripts/docs-media.mjs`. Run the app, `node scripts/docs-media.mjs <id>`, and look at every frame.
+  `tests/howto.test.js` fails when a page names a command, tool, action or image that does not exist.
 
 ## Releases
 

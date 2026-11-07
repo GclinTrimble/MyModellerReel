@@ -101,6 +101,19 @@ export class UI {
       open: { label: 'Open…', icon: 'folder-open', key: 'Ctrl+O', run: run('open', {}) },
       save: { label: 'Save', icon: 'floppy-disk', key: 'Ctrl+S', run: () => app.reg.run('save', { path: app.file || undefined }).catch((e) => this.toast(e.message, 'danger')) },
       saveAs: { label: 'Save as…', icon: 'floppy-disk', key: 'Ctrl+Shift+S', run: run('save', {}) },
+      howto: { label: 'How do I…', icon: 'question', key: 'F1', run: () => ((this.app.help.page = null), this.show('help')) },
+      startScreen: { label: 'New from template…', icon: 'squares-four', run: () => this.startScreen() },
+      tour: { label: 'Take the 2-minute tour', icon: 'compass', run: () => this.tour() },
+      checkUpdates: { label: 'Check for updates', icon: 'arrow-circle-up', run: () => app.reg.run('check_for_updates', {}).then((r) => this.toast(r.status === 'ready' ? `Version ${r.latest} is ready: Restart to update.` : r.status === 'downloading' ? `Downloading ${r.latest}… ${r.percent ?? 0}%` : r.status === 'current' ? `You have the latest version (${r.current}).` : r.status === 'error' ? `Could not check: ${r.error}` : `Version ${r.current}: ${r.status}`)).catch((e) => this.toast(e.message, 'danger')) },
+      restartUpdate: { label: 'Restart to update', icon: 'arrow-clockwise', run: run('restart_to_update', {}) },
+      copy: { label: 'Copy', icon: 'copy', key: 'Ctrl+C', run: () => sel().length && app.reg.run('copy', {}).catch((e) => this.toast(e.message, 'danger')) },
+      cut: { label: 'Cut', icon: 'scissors', key: 'Ctrl+X', run: () => sel().length && app.reg.run('cut', {}).catch((e) => this.toast(e.message, 'danger')) },
+      paste: { label: 'Paste in place', icon: 'clipboard-text', key: 'Ctrl+V', run: run('paste', {}) },
+      modelInfo: { label: 'Model info…', icon: 'info', run: () => app.reg.run('model_info', {}).then((r) => this.infoDialog('Model info', r)) },
+      purge: { label: 'Purge unused', icon: 'broom', run: () => app.reg.run('purge', {}).then((r) => this.toast(r.total ? `Purged ${r.total}: ${[...r.removed.layers, ...r.removed.components, ...r.removed.groups].join(', ')}` : 'Nothing unused.')) },
+      viewBack: { label: 'Previous view', icon: 'arrow-u-up-left', run: run('view_back', {}) },
+      viewForward: { label: 'Next view', icon: 'arrow-u-up-right', run: run('view_forward', {}) },
+      units: { label: 'Units and precision…', icon: 'ruler', run: form('set_units', () => ({ display: app.store.doc.settings.display_units || 'auto', precision: app.store.doc.settings.precision })) },
       import: { label: 'Import (LandXML, IFC, DXF, models)…', icon: 'tray-arrow-down', run: () => app.reg.run('import', {}).then((r) => r && !r.cancelled && r.created && this.importReport(r)).catch((e) => this.toast(e.message, 'danger')) },
       exportLandxml: { label: 'Export LandXML…', icon: 'export', run: run('export', { format: 'landxml' }) },
       exportIfc: { label: 'Export IFC…', icon: 'export', run: run('export', { format: 'ifc' }) },
@@ -267,16 +280,16 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
-      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
+      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
-      Help: ['shortcuts', 'mcp', 'about'],
+      Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
     for (const name of Object.keys(this.menus)) {
@@ -361,6 +374,7 @@ export class UI {
       ['library', 'Library', 'books'],
       ['survey', 'Survey', 'map-pin'],
       ['settings', 'Settings', 'gear'],
+      ['help', 'Help', 'question'],
     ];
     this.$('dock-tabs').replaceChildren(
       ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id } }, icon(ic), label)),
@@ -371,6 +385,9 @@ export class UI {
     for (const b of this.$('dock-tabs').children) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     this.renderDock();
     if (focus && tab === 'ai') this.app.ai.focus();
+  }
+  panel_help() {
+    return this.app.help.panel();
   }
   renderDock() {
     const body = this.$('dock-body');
@@ -496,6 +513,67 @@ export class UI {
     } catch (err) {
       this.toast(err.message, 'danger');
     }
+  }
+
+  /** The start screen (#109): templates to begin from, the tour, open a file. */
+  async startScreen() {
+    const app = this.app;
+    const list = await app.reg.run('list_templates', {});
+    const ICON = { empty: 'file', 'empty-feet': 'ruler', house: 'house-line', product: 'film-strip', site: 'mountains', sequence: 'stack' };
+    const start = (id) => {
+      this.closeModal();
+      app.reg.run('new_from_template', { id }).then(() => (app.viewport.zoomExtents(), id === 'product' || id === 'sequence' ? this.toast('Press Play (Shift+Space), or File › Export video.') : null)).catch((e) => this.toast(e.message, 'danger'));
+    };
+    const first = !localStorage.getItem('mymodellerreel.onboarded');
+    localStorage.setItem('mymodellerreel.onboarded', '1');
+    this.modal(
+      first ? 'Welcome to MyModellerReel' : 'Start from a template',
+      h(
+        'div.start',
+        {},
+        h('p.small.muted', {}, 'Model, survey, draw and animate; ask the copilot in plain words. Pick a starting point:'),
+        h('div.start-grid', {}, list.map((t) => h('button.start-card', { onclick: () => start(t.id) }, icon(ICON[t.id] || 'cube'), h('strong', {}, t.name), h('span.small.muted', {}, t.description)))),
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => (this.closeModal(), this.tour()) }, icon('compass'), 'Take the 2-minute tour'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.open.run()) }, icon('folder-open'), 'Open a file…'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.import.run()) }, icon('tray-arrow-down'), 'Import LandXML, IFC, DXF…')),
+      ),
+      [['Start empty', null]],
+    );
+  }
+
+  /** The guided tour (#109): a highlight and a card per step, Back / Next / Skip, Esc to leave. */
+  tour(i = 0) {
+    const STEPS = [
+      ['#viewport', 'The model', 'Orbit with the middle mouse, pan with the right, zoom with the wheel. Z drags a zoom window; Shift+Z fits everything.'],
+      ['#toolbar', 'Tools', 'Draw (L, R, C, A…), push / pull (P), move (M), rotate (Q), measure (T). Hover a tool to see its key. While a tool works, type numbers: they go to the Measurements box.'],
+      ['#vcb', 'Measurements box', 'Type exact values while drawing or moving: 2.5, 3,2, 150mm, 45°, x5 for five copies.'],
+      ['#menubar', 'Menus', 'Everything has a menu entry: Site for survey and terrain, Drawings for PDFs and images, Animate for the timeline and videos.'],
+      ['#palette-btn', 'Search (Ctrl+K)', 'Find any command by what you want to do ("hinge a door"), or ask the AI from here.'],
+      ['#dock-tabs', 'Panels', 'AI chat, Outliner and layers, the selected entity, materials, scenes, the library, the survey table, settings.'],
+      ['#timeline', 'Timeline', 'Keyframes, markers and captions; Animate › Render video turns it into an MP4.'],
+      ['#api-pill', 'Automation', 'Every button is a command: scripts, the HTTP API and MCP (Claude and other AIs) drive the same ones.'],
+    ];
+    document.querySelector('.tour')?.remove();
+    if (i >= STEPS.length) return;
+    const [sel, title, text] = STEPS[i];
+    const el = document.querySelector(sel);
+    const r = el?.getBoundingClientRect();
+    const hl = h('div.tour-hl', { style: r ? { left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` } : {} });
+    const next = h('button.btn.primary', { onclick: () => this.tour(i + 1) }, i === STEPS.length - 1 ? 'Done' : 'Next');
+    const card = h(
+      'div.tour-card',
+      { role: 'dialog', 'aria-label': title },
+      h('div.overline', {}, `${i + 1} / ${STEPS.length}`),
+      h('h3', {}, title),
+      h('p.small', {}, text),
+      h('div.row', {}, i ? h('button.btn', { onclick: () => this.tour(i - 1) }, 'Back') : null, h('span.grow'), h('button.btn', { onclick: () => this.tour(STEPS.length) }, 'Skip'), next),
+    );
+    const wrap = h('div.tour', { onkeydown: (ev) => ev.key === 'Escape' && this.tour(STEPS.length) }, hl, card);
+    document.body.append(wrap);
+    // the card sits beside the highlight, inside the window
+    const cw = 320;
+    const left = r ? (r.right + cw + 24 < innerWidth ? r.right + 16 : Math.max(16, r.left - cw - 16)) : innerWidth / 2 - cw / 2;
+    const top = r ? Math.min(Math.max(16, r.top), innerHeight - 220) : innerHeight / 3;
+    Object.assign(card.style, { left: `${Math.min(left, innerWidth - cw - 16)}px`, top: `${top}px` });
+    next.focus();
   }
 
   /** What an import brought in, what it skipped and why. */
@@ -979,14 +1057,14 @@ export class UI {
     });
   }
   /** Design review (#100): the checks at once, the vision critique when it arrives; issues select what they name. */
-  async reviewDialog() {
+  async reviewDialog(opts = {}) {
     const app = this.app;
     const list = h('div.review-list', {}, h('p.muted', {}, 'Checking…'));
     const critique = h('div.review-critique');
     const done = this.modal('Review', h('div.panel', { style: { padding: 0 } }, list, critique), [['Ask the AI to fix them', 'fix'], ['Close', null]]);
     let r;
     try {
-      r = await app.reg.run('review_model', {});
+      r = await app.reg.run('review_model', opts);
     } catch (e) {
       list.replaceChildren(h('p', { role: 'alert' }, e.message));
       return;

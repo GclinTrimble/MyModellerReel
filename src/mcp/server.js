@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { rankCommands, ALWAYS } from '../core/routing.js';
 import { WORKFLOWS, workflowText } from '../core/skills.js';
+import { HOWTOS } from '../core/howto.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DATA = process.env.MMR_HOME || (process.env.APPDATA ? join(process.env.APPDATA, 'MyModellerReel') : join(homedir(), '.config', 'MyModellerReel'));
@@ -91,11 +92,14 @@ const RESOURCES = [
   { uri: 'mmr://animation', name: 'Animation', description: 'Tracks and keyframes, markers, captions, procedural motions', run: ['get_animation', {}] },
   { uri: 'mmr://quantities', name: 'Quantities', description: 'Count, area, volume, length and cost per material', run: ['report_quantities', {}] },
   { uri: 'mmr://commands', name: 'Commands', description: 'Every command with its JSON Schema', run: ['list_commands', {}] },
+  // help by intent (#158): read without starting the app
+  ...HOWTOS.map((x) => ({ uri: `mmr://howto/${x.id}`, name: `How to: ${x.title}`, description: `${x.area}. The clicks, a copilot prompt and the commands (${x.commands.join(', ')}).`, mimeType: 'text/markdown', howto: x.id })),
 ];
 
 async function readResource(uri) {
   const r = RESOURCES.find((x) => x.uri === uri);
   if (!r) throw new Error(`Unknown resource ${uri}. Resources: ${RESOURCES.map((x) => x.uri).join(', ')}`);
+  if (r.howto) return { uri, mimeType: 'text/markdown', text: readFileSync(join(ROOT, 'docs', 'how-to', `${r.howto}.md`), 'utf8') };
   if (r.guide) return { uri, mimeType: 'text/plain', text: await call('GET', '/api/guide').catch(() => cached('guide.txt') || '') };
   await ensureApp();
   let value;
