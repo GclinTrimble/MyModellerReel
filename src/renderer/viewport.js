@@ -43,22 +43,34 @@ export function applyTransform(obj, e) {
   obj.scale.fromArray(e.scale);
 }
 
-/** Build the object tree for a document. Used by the viewport and by exporters (edges: false). */
-export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [] } = {}) {
+/**
+ * Build the object tree for a document. Used by the viewport and by exporters (edges: false).
+ * cache (the viewport's): geometry per mesh object, so an edit re-uploads only the shapes it changed.
+ */
+export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null } = {}) {
   const root = new THREE.Group();
   root.name = 'Model';
   const objs = new Map();
   const tagVisible = new Map(doc.tags.map((t) => [t.name, t.visible]));
+  // shortcut: keyed by the mesh object; commands always replace e.mesh, a script that edits one in place is not seen
+  const geo = (mesh) => {
+    if (!cache) return { geometry: meshGeometry(mesh), edges: null };
+    let c = cache.map.get(mesh);
+    if (!c) cache.map.set(mesh, (c = { geometry: meshGeometry(mesh), edges: null }));
+    cache.used.add(c);
+    return c;
+  };
   for (const e of doc.entities) {
     let o;
     if (e.mesh) {
-      o = new THREE.Mesh(meshGeometry(e.mesh), makeMaterial(e.material, { xray, flat: e.mesh.f.length === 1 }));
+      const g = geo(e.mesh);
+      o = new THREE.Mesh(g.geometry, makeMaterial(e.material, { xray, flat: e.mesh.f.length === 1 }));
       o.material.clippingPlanes = clipping;
       o.castShadow = o.receiveShadow = true;
       if (wireframe) o.material.visible = false;
       if (edges || wireframe) {
         const lines = new THREE.LineSegments(
-          featureEdges(o.geometry),
+          (g.edges ||= featureEdges(o.geometry)),
           new THREE.LineBasicMaterial({ color: EDGE_COLOR, clippingPlanes: clipping }),
         );
         lines.raycast = () => {};
@@ -227,9 +239,14 @@ export class Viewport {
     const doc = this.store.doc;
     const s = doc.settings;
     this.clipping = s.section ? [new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...s.section.normal).negate(), new THREE.Vector3(...s.section.point))] : [];
-    for (const o of this.modelRoot.children) disposeTree(o);
+    for (const o of this.modelRoot.children) disposeTree(o, false); // geometry is cached, see below
     this.modelRoot.clear();
-    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping });
+    this.geoCache ||= { map: new WeakMap(), live: new Set() };
+    this.geoCache.used = new Set();
+    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache });
+    // free the GPU buffers of shapes that are gone or changed
+    for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose();
+    this.geoCache.live = this.geoCache.used;
     if (root.children.length) this.modelRoot.add(...root.children);
     this.objs = objs;
     this.grid.visible = this.axes.visible = s.grid;
@@ -453,9 +470,9 @@ export class Viewport {
   }
 }
 
-export function disposeTree(o) {
+export function disposeTree(o, geometry = true) {
   o.traverse((x) => {
-    x.geometry?.dispose();
+    if (geometry || x.userData.isCurve) x.geometry?.dispose();
     if (x.material) [].concat(x.material).forEach((m) => m.dispose());
   });
 }

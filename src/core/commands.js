@@ -178,7 +178,7 @@ function place(ctx, mesh, args, defaults = {}, derived = null) {
   if (args.parent) D.resolve(doc, args.parent);
   if (derived) mesh = R.getGenerator(derived[0]).run({ params: derived[1], inputs: [], doc }).mesh; // bad parameters throw before anything changes
   const e = D.addEntity(doc, {
-    name: args.name || defaults.name,
+    name: args.name || D.uniqueName(doc, defaults.name),
     mesh,
     ...(derived ? { derived: { generator: derived[0], inputs: [], params: derived[1] } } : {}),
     position: args.position || [0, 0, 0],
@@ -720,7 +720,7 @@ function registerCore(reg, ctx) {
       inputs = [c.id];
     }
     R.getGenerator('sweep').run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc }); // bad input throws before anything changes
-    const e = D.addEntity(doc, { name: a.name || `${typeof params.profile === 'string' ? params.profile.replace(/_/g, ' ') : 'Profile'} sweep`, tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, `${typeof params.profile === 'string' ? params.profile.replace(/_/g, ' ') : 'Profile'} sweep`), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
     R.derive(doc, e, 'sweep', params, inputs);
     ctx.selection.set([e.id]);
     return summary(doc, e);
@@ -791,7 +791,7 @@ function registerCore(reg, ctx) {
     const inputs = a.inputs ? D.resolve(doc, a.inputs).map((e) => e.id) : [];
     if (!gen.world && !inputs.length) return place(ctx, null, a, { name: a.generator.replace(/_/g, ' ') }, [a.generator, params]);
     gen.run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc });
-    const e = D.addEntity(doc, { name: a.name || a.generator.replace(/_/g, ' '), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, a.generator.replace(/_/g, ' ')), tag: a.tag || 'Untagged', material: a.color ? { color: a.color } : {} });
     R.derive(doc, e, a.generator, params, inputs);
     ctx.selection.set([e.id]);
     return summary(doc, e);

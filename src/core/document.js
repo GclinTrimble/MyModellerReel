@@ -158,6 +158,15 @@ export function addEntity(doc, props) {
 }
 
 export const getEntity = (doc, id) => doc.entities.find((e) => e.id === id);
+
+/** base, or "base 2", "base 3"… when the name is taken: names are how people and AIs refer to things. */
+export function uniqueName(doc, base) {
+  const taken = new Set(doc.entities.map((e) => e.name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (taken.has(`${base} ${n}`.toLowerCase())) n++;
+  return `${base} ${n}`;
+}
 export const childrenOf = (doc, id) => doc.entities.filter((e) => e.parent === id);
 export function descendants(doc, id) {
   const out = [];

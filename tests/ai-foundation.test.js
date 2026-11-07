@@ -184,3 +184,11 @@ test('agent loop: runs tool calls, feeds errors back, routes tools for local mod
   assert.ok(history.some((m) => m.role === 'tool' && /not valid JSON/.test(m.content)));
   assert.deepEqual(texts, ['Done: one 2 m box.']);
 });
+
+test('default names are unique, so names can be used as references', async () => {
+  const { reg } = makeCtx();
+  const names = [];
+  for (let i = 0; i < 3; i++) names.push((await reg.run('create_box', { width: 1, height: 1, depth: 1 })).name);
+  assert.deepEqual(names, ['Box', 'Box 2', 'Box 3']);
+  assert.equal((await reg.run('get_entity', { id: 'box 2' })).id, 'e2');
+});
