@@ -27,6 +27,7 @@ test('routing: list_commands ranks by intent; small models get a routed subset',
   const { reg } = makeCtx();
   const top = (await reg.run('list_commands', { query: 'put the lamp on the table', limit: 3 })).map((c) => c.name);
   assert.ok(top.includes('place_on'), top.join());
+  assert.equal((await reg.run('list_commands', { query: 'stack boxes', limit: 1 }))[0].name, 'stack');
   const anim = await reg.run('list_commands', { toolset: 'animation' });
   assert.ok(anim.every((c) => c.category === 'animate' || ['get_scene', 'select', 'select_where', 'add_scene', 'go_to_scene'].includes(c.name)));
   assert.ok(anim.some((c) => c.name === 'turntable'));

@@ -100,11 +100,12 @@ export function rankCommands(list, { query = '', toolset = null, limit = 0 } = {
   if (q.length) {
     const want = new Set(q.flatMap((w) => [w, ...(SYNONYMS[w] || []).map(stem)]));
     const score = (c) => {
-      const name = new Set(tokens(c.name.replace(/_/g, ' ')));
+      const name = tokens(c.name.replace(/_/g, ' '));
       const desc = tokens(c.description);
       let s = 0;
       for (const w of want) {
-        if (name.has(w)) s += 3;
+        if (name[0] === w) s += 4; // the verb: "stack boxes" wants stack before create_box
+        else if (name.includes(w)) s += 2;
         if (c.category === w) s += 1;
         s += Math.min(2, desc.filter((d) => d === w).length);
       }
