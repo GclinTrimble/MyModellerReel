@@ -1,6 +1,7 @@
 // Chrome around the viewport: menus, tool bar, dock panels, status bar, palette, toasts, dialogs.
 import * as D from '../core/document.js';
 import { MATERIALS } from '../core/materials.js';
+import * as L from '../core/layers.js';
 export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
@@ -432,7 +433,7 @@ export class UI {
             `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
             { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
             icon(e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : 'cube'),
-            e.mesh || e.curve ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
+            e.mesh || e.curve ? h('span.swatch-dot', { style: { background: L.colorOf(doc, e) } }) : null,
             h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
             animated ? icon('film-strip') : null,
             h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
@@ -487,7 +488,7 @@ export class UI {
         const res = r.pairs?.find((p) => p.name === c.name);
         return h('tr', {}, h('td', {}, c.name), h('td', {}, `${c.n.toFixed(3)}`), h('td', {}, `${c.e.toFixed(3)}`), h('td', {}, res ? fmt(res.d) : '–'), h('td', {}, res?.flag ? h('span.param-error', {}, 'worst') : ''), h('td', {}, h('button.btn', { onclick: async () => (await app.reg.run('edit_control_pair', { id, pair: i, enabled: !c.enabled }), await app.reg.run('georeference_underlay', { id }).catch(() => {}), this.georefDialog(id)) }, c.enabled ? 'Turn off' : 'Turn on')));
       });
-      this.modal(`Georeference · ${e.name}`, h('div', {}, h('p.small', {}, r.rms !== undefined ? `${r.method}: RMS ${fmt(r.rms)} · ${r.metres_per_unit.map((x) => x.toFixed(4)).join(' × ')} m per unit · turned ${r.rotation.toFixed(2)}°` : `${r.pairs} control pair(s). Add 2 or more with the Control points tool (J).`), rows.length ? h('div.qty', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['Pair', 'N', 'E', 'Residual', '', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))) : null));
+      this.modal(`Georeference · ${e.name}`, h('div', {}, h('p.small', {}, r.rms !== undefined ? `${r.method}: RMS ${fmt(r.rms)} · ${r.metres_per_unit.map((x) => x.toFixed(4)).join(' × ')} m per unit · turned ${(Math.abs(r.rotation) < 0.005 ? 0 : r.rotation).toFixed(2)}°` : `${r.pairs} control pair(s). Add 2 or more with the Control points tool (J).`), rows.length ? h('div.qty', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['Pair', 'N', 'E', 'Residual', '', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))) : null));
     } catch (err) {
       this.toast(err.message, 'danger');
     }

@@ -229,6 +229,7 @@ export class Viewport {
     this.grid.material.transparent = true;
     this.grid.material.opacity = 0.55;
     this.grid.position.y = -0.002;
+    this.grid.material.depthWrite = false; // a drawing on the ground paints over it
     this.grid.renderOrder = -20; // before underlays (-10), so a drawing on the ground covers the grid
     this.axes = new THREE.Group();
     for (const [k, dir] of Object.entries({ x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] })) {
@@ -483,7 +484,7 @@ export class Viewport {
       if (err) window.mmr?.toast?.(`${e.name}: ${err.message}`, 'danger');
       this.dirty = true;
     });
-    const o = new THREE.Mesh(underlayGeometry(u), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: u.opacity ?? 1, depthWrite: false, toneMapped: false, clippingPlanes: this.clipping }));
+    const o = new THREE.Mesh(underlayGeometry(u), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: u.opacity ?? 1, depthWrite: false, toneMapped: false, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8, clippingPlanes: this.clipping })); // pushed back in depth: linework on it always wins
     o.renderOrder = -10 + (u.draw_order || 0);
     o.userData.underlay = true;
     return o;

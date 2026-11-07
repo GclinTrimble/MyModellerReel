@@ -147,3 +147,21 @@ test('drafting on curves and linework to model', async () => {
   await reg.run('undo');
   assert.ok(!ctx.doc.entities.some((e) => e.derived?.generator === 'sweep'), 'the compound sweep is one undo step');
 });
+
+test('closed curves: offset inside / outside, fillet every corner', async () => {
+  const { ctx, reg } = makeCtx();
+  // clockwise seen from above (x right, north up = −z)
+  await reg.run('create_curve', { points: [[0, 0, 0], [0, 0, -10], [10, 0, -10], [10, 0, 0]], closed: true, name: 'Lot' });
+  const area = (id) => {
+    const p = D.curvePoints(ctx.doc, ctx.doc.entities.find((e) => e.id === id)).slice(0, -1);
+    return Math.abs(p.reduce((s, q, i) => s + q[0] * p[(i + 1) % p.length][2] - p[(i + 1) % p.length][0] * q[2], 0)) / 2;
+  };
+  const inner = await reg.run('offset_curve', { id: 'Lot', distance: 1, side: 'inside' });
+  near(area(inner[0].id), 64, 1e-9);
+  const outer = await reg.run('offset_curve', { id: 'Lot', distance: 1, side: 'outside' });
+  near(area(outer[0].id), 144, 1e-9);
+  await reg.run('fillet', { ids: [inner[0].id], radius: 2 });
+  near(area(inner[0].id), 64 - 4 * (4 - Math.PI), 0.05);
+  await reg.run('create_curve', { points: [[0, 0, 0], [5, 0, 0]], name: 'Open' });
+  await assert.rejects(reg.run('offset_curve', { id: 'Open', distance: 1, side: 'inside' }), /closed/);
+});

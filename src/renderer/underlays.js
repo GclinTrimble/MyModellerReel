@@ -118,7 +118,7 @@ export function underlayGeometry(u) {
   const outline = u.clip?.length > 2 ? u.clip : [[0, 0], [u.size[0], 0], [u.size[0], u.size[1]], [0, u.size[1]]];
   const v = outline.map(([s, t]) => {
     const [X, Y] = U.apply(u.affine, [s, t]);
-    return [X, 0.01, -Y]; // 1 cm up: drawn over the ground grid, still under linework at its height
+    return [X, -0.01, -Y]; // 1 cm down: linework and models at its height draw over it
   });
   const tris = triangulateFace({ v, f: [v.map((_, i) => i)] }, 0);
   const g = new THREE.BufferGeometry();

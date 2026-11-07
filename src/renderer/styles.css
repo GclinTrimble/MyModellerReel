@@ -379,3 +379,4 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .layer-row .layer-swatch::-webkit-color-swatch-wrapper { padding: 0; }
 .layer-row .layer-swatch::-webkit-color-swatch { border: 0; border-radius: 2px; }
 .info-pre { max-height: 50vh; overflow: auto; white-space: pre-wrap; font-family: var(--my-font-mono, monospace); background: var(--my-surface-2, transparent); padding: var(--my-space-2); border-radius: var(--my-radius-sm); }
+.layer-row .icon-btn[aria-pressed="true"] .ph { color: var(--my-on-accent, #fff); }

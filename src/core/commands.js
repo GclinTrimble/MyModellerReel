@@ -1701,7 +1701,13 @@ function registerCore(reg, ctx) {
   });
 
   // ---------------------------------------------------------------- drafting on curves (#147)
-  const curve2d = (e) => ({ e, pts3: D.curvePoints(ctx.doc, e), closed: !!e.curve.closed });
+  // world points of a curve; a closed one without its repeated first point (the drafting maths closes it itself)
+  const curve2d = (e) => {
+    const pts3 = D.curvePoints(ctx.doc, e);
+    const closed = !!e.curve.closed;
+    if (closed && pts3.length > 3 && G.len(G.sub(pts3[0], pts3.at(-1))) < 1e-9) pts3.pop();
+    return { e, pts3, closed };
+  };
   const setPts = (e, pts3, closed = e.curve.closed) => {
     const { mesh, origin } = G.recenter({ v: pts3.map(D.round3), f: [] });
     e.curve = { kind: 'polyline', points: mesh.v, closed: !!closed };
@@ -1719,6 +1725,7 @@ function registerCore(reg, ctx) {
     return e;
   };
   const flat = (p) => [p[0], -p[2]];
+  const cross2 = (p, q) => p[0] * q[1] - p[1] * q[0];
   const cutters = (except, refs) => (refs ? refs.map((r) => D.resolve(ctx.doc, r)[0]) : ctx.doc.entities.filter((x) => x.curve && x.visible && x.id !== except.id)).filter((x) => x.curve && x.id !== except.id).map((x) => {
     const c = curve2d(x);
     return DR.flat(c.closed ? [...c.pts3, c.pts3[0]] : c.pts3);
@@ -1726,7 +1733,7 @@ function registerCore(reg, ctx) {
   const BOUND = { type: 'array', items: { type: 'string' }, description: 'boundary curves (default: every other visible curve)' };
   const AT = v3('a world point near the piece / end meant (picked)');
 
-  def('drafting', 'offset_curve', 'A parallel copy of a curve at a distance: left or right of its direction (seen from above), both sides, or through a point. Corners are mitred.', obj({ id, distance: num('m'), side: str('left | right | both (default left)', ['left', 'right', 'both']), through: v3('or: the copy passes through this world point'), name: common.name }), (a) => {
+  def('drafting', 'offset_curve', 'A parallel copy of a curve at a distance: left or right of its direction (seen from above), both sides, or through a point. Corners are mitred.', obj({ id, distance: num('m'), side: str('left | right | both (default left); closed curves also inside | outside', ['left', 'right', 'both', 'inside', 'outside']), through: v3('or: the copy passes through this world point'), name: common.name }), (a) => {
     const e = oneCurve(a.id);
     const c = curve2d(e);
     const P = DR.flat(c.pts3);
@@ -1739,7 +1746,11 @@ function registerCore(reg, ctx) {
       ds = [Math.sign(t[0] * (q[1] - h.p[1]) - t[1] * (q[0] - h.p[0])) * h.d];
     } else {
       if (!(a.distance > 0)) throw new Error('Give distance (above 0) or through.');
-      ds = a.side === 'both' ? [a.distance, -a.distance] : [a.side === 'right' ? -a.distance : a.distance];
+      if ((a.side === 'inside' || a.side === 'outside') && !c.closed) throw new Error(`${e.name} is open: inside / outside need a closed curve (use left or right).`);
+      // shoelace: counter-clockwise in plan (seen from above) has its inside on the left
+      const ccw = P.reduce((acc, p, i) => acc + cross2(p, P[(i + 1) % P.length]), 0) > 0;
+      const inward = ccw ? 1 : -1;
+      ds = a.side === 'both' ? [a.distance, -a.distance] : a.side === 'inside' ? [inward * a.distance] : a.side === 'outside' ? [-inward * a.distance] : [a.side === 'right' ? -a.distance : a.distance];
     }
     const made = ds.map((d, i) => newCurve(e, DR.lift(DR.offset(P, d, c.closed), c.pts3, c.closed), c.closed, a.name && ds.length > 1 ? `${a.name} ${i + 1}` : a.name));
     ctx.selection.set(made.map((x) => x.id));
