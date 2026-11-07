@@ -32,7 +32,7 @@ let n = 0;
 let last = null;
 /** One step: a toast naming it, then a capture that waited for the window to repaint. */
 async function shot(label) {
-  await js(`document.querySelectorAll('.toast').forEach((t) => t.remove()); ${label ? `window.mmr.toast(${JSON.stringify(label)});` : ''} window.mmr.app.ui.setStatus(''); window.mmr.app.viewport.render(); return 1;`);
+  await js(`document.querySelectorAll('.toast').forEach((t) => t.remove()); ${label ? `const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = ${JSON.stringify(label)}; document.getElementById('toasts').append(t);` : ''} window.mmr.app.ui.setStatus(''); window.mmr.app.viewport.render(); return 1;`);
   let prev = null;
   let png = null;
   for (let i = 0; i < 12; i++) {
