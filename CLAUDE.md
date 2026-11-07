@@ -27,7 +27,10 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 
 ## Check your work
 
-- `npm test` (core).
+- `npm test` (core). `npm run e2e` (Playwright on Electron, sign-in against a mock Supabase).
+- Sign-in is required (#115, MyVoiceReel's `docs/SUITE_ACCOUNT.md`): `npm start` without `MYSTUDIOREEL_SUPABASE_URL`
+  and `MYSTUDIOREEL_SUPABASE_ANON_KEY` has no sign-in screen; `npm run dist` refuses to build without them (repo
+  variables). E2E sets `MMR_TEST`, `MMR_SUITE_URL` and `MMR_HOME`, and uses the `MyStudioReel/account-test` credential.
 - Run the app (`npm start`) and drive it over the HTTP API: `POST /api/run`, `GET /api/window-screenshot`,
   `POST /api/input` for real clicks (DIP coordinates: screenshots are physical pixels, divide by the display scale).
 - Read `%APPDATA%\MyModellerReel\renderer.log` for page errors.

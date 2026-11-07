@@ -17,6 +17,12 @@ const AUTOSAVE = 'mymodellerreel.autosave';
 const app = { selection: [], context: null, file: null, dirty: false, plugins: [] };
 app.info = await native.invoke('app:info');
 app.settings = await native.invoke('settings:get');
+app.account = await native.invoke('account:status');
+app.startup = await native.invoke('startup:get');
+native.onAccount((s) => {
+  app.account = s;
+  if (app.ui.tab === 'settings') app.ui.renderDock();
+});
 
 let restored = null;
 try {
@@ -139,6 +145,14 @@ app.mcpConfig = () => ({
   mcpServers: { mymodellerreel: { command: 'node', args: [`${app.info.appRoot || '<project folder>'}\\src\\mcp\\server.js`] } },
 });
 
+app.autosave = () => {
+  try {
+    localStorage.setItem(AUTOSAVE, JSON.stringify({ doc: store.doc, file: app.file }));
+  } catch {
+    /* quota: the model is bigger than local storage; the user's own saves still work */
+  }
+};
+
 // ---------------------------------------------------------------- store → view
 let saveTimer;
 let lastDoc = store.doc;
@@ -156,13 +170,7 @@ store.on((doc) => {
   app.timeline.render();
   app.setFile(app.file, true);
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(AUTOSAVE, JSON.stringify({ doc: store.doc, file: app.file }));
-    } catch {
-      /* quota: the model is bigger than local storage; the user's own saves still work */
-    }
-  }, 1500);
+  saveTimer = setTimeout(app.autosave, 1500);
 });
 
 // ---------------------------------------------------------------- public API (HTTP server, MCP, plugins, devtools)

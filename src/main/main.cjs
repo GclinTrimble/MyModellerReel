@@ -5,8 +5,10 @@ const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
+const { registerAccount, needsSignIn, whenSignedIn } = require('./account.cjs');
 
-app.setPath('userData', path.join(app.getPath('appData'), 'MyModellerReel'));
+// MMR_HOME: e2e runs keep their own data folder (and single-instance lock), away from the user's real app.
+app.setPath('userData', process.env.MMR_HOME || path.join(app.getPath('appData'), 'MyModellerReel'));
 const USER = app.getPath('userData');
 const SETTINGS_FILE = path.join(USER, 'settings.json');
 const API_FILE = path.join(USER, 'api.json');
@@ -23,6 +25,7 @@ const DEFAULTS = {
     openai: { baseUrl: 'https://api.mistral.ai/v1', apiKey: '', model: 'mistral-large-latest' },
   },
   api: { port: 7717 },
+  startup: { defaultApplied: false }, // Start with Windows was turned on once, at the first start of the installed app
 };
 
 function readJson(file, fallback) {
@@ -52,7 +55,7 @@ const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
 const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|json)$/i;
 
 let win;
-function createWindow() {
+function createWindow(page) {
   win = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -65,7 +68,7 @@ function createWindow() {
     titleBarOverlay: { color: '#00000000', symbolColor: '#f3e9d7', height: 44 },
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
-  win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
+  win.loadFile(path.join(ROOT, 'src', 'renderer', page));
   // Page errors go to a log file in the data folder, so they can be read without DevTools.
   const LOG = path.join(USER, 'renderer.log');
   fs.writeFileSync(LOG, '');
@@ -98,6 +101,12 @@ ipcMain.handle('settings:set', (_, patch) => {
 });
 ipcMain.handle('window:title', (_, t) => win.setTitle(t));
 ipcMain.handle('shell:open-path', (_, p) => shell.openPath(p === 'plugins' ? USER_PLUGINS : USER));
+const startupState = () => ({ supported: app.isPackaged, enabled: app.getLoginItemSettings().openAtLogin });
+ipcMain.handle('startup:get', () => startupState());
+ipcMain.handle('startup:set', (_, on) => {
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!on });
+  return startupState();
+});
 ipcMain.handle('shell:open-url', (_, url) => /^https:\/\//.test(url) && shell.openExternal(url));
 
 ipcMain.handle('file:save-dialog', async (_, { defaultPath, filters }) => {
@@ -238,9 +247,31 @@ const single = app.requestSingleInstanceLock();
 if (!single) app.quit();
 else {
   app.on('second-instance', () => win && (win.isMinimized() && win.restore(), win.focus()));
-  app.whenReady().then(() => {
-    createWindow();
+  app.whenReady().then(async () => {
+    registerAccount({
+      send: (s) => win?.webContents.send('account:status', s),
+      busy: () => win?.webContents.executeJavaScript('!!window.mmr?.app.timeline.recording', true).catch(() => false),
+      beforeRelaunch: async () => {
+        await win?.webContents.executeJavaScript('window.mmr?.app.autosave()', true).catch(() => {});
+        if (win) win.__confirmed = true; // the model is in the autosave: no save prompt on the way out
+      },
+    });
+    // Sign-in is required (#115): the window shows only the sign-in screen, and nothing else starts (API, MCP,
+    // plugins) until a session exists. Closing the window then quits.
+    const gated = needsSignIn();
+    createWindow(gated ? 'signin.html' : 'index.html');
+    win.__confirmed = gated;
+    await whenSignedIn();
+    if (gated) {
+      win.__confirmed = false;
+      win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
+    }
     win.webContents.once('did-finish-load', startApi);
+    if (app.isPackaged && !settings.startup.defaultApplied) {
+      app.setLoginItemSettings({ openAtLogin: true });
+      settings.startup.defaultApplied = true;
+      saveSettings();
+    }
   });
   app.on('window-all-closed', () => app.quit());
 }

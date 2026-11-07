@@ -277,3 +277,22 @@ dialog::backdrop { background: var(--my-backdrop); }
 .modal { width: 640px; max-width: 92vw; }
 .modal .panel { padding: var(--my-space-5); }
 .modal footer { display: flex; justify-content: flex-end; gap: var(--my-space-2); }
+
+/* Sign-in screen (#115): the only page the window shows until the user is signed in */
+body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
+.signin-gate {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--my-space-3); padding: var(--my-space-6); text-align: center;
+}
+.signin-gate h1 { margin: 0; font-size: var(--my-text-xl); }
+.signin-gate p { margin: 0; max-width: 40ch; }
+.signin-logo { width: var(--my-space-7); height: var(--my-space-7); }
+#signin-action { display: flex; flex-direction: column; align-items: center; gap: var(--my-space-2); }
+.signin-problem, .acct-problem { color: var(--my-danger-text); }
+
+/* Settings › Account */
+.acct-user { display: flex; align-items: center; gap: var(--my-space-2); min-width: 0; }
+.acct-avatar {
+  display: grid; flex: none; place-items: center; width: var(--my-space-6); height: var(--my-space-6);
+  border-radius: var(--my-radius-round); background: var(--my-accent-tint); color: var(--my-accent-text); font-weight: var(--my-weight-bold);
+}

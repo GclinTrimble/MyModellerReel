@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MyModellerReel</title>
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/400.css" />
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/600.css" />
+    <link rel="stylesheet" href="../../node_modules/@fontsource/open-sans/700.css" />
+    <link rel="stylesheet" href="../../node_modules/@phosphor-icons/web/src/regular/style.css" />
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <!-- Sign-in is required (#115): until it is done the window shows only this page, and nothing else starts. -->
+  <body class="signin">
+    <header class="appbar">
+      <div class="brand">
+        <img src="../../resources/icon.svg" alt="" />
+        <span class="wordmark">My<b>Modeller</b><b class="reel">Reel</b></span>
+      </div>
+    </header>
+    <main class="signin-gate" id="signin-gate">
+      <img class="signin-logo" src="../../resources/icon.svg" alt="" />
+      <h1>Sign in to use MyModellerReel</h1>
+      <p class="muted">Use your MyStudioReel account. One sign-in works for every Reel app on this PC.</p>
+      <div id="signin-action"></div>
+      <p class="small signin-problem" id="signin-problem" role="alert" hidden></p>
+    </main>
+    <script type="module" src="./signin.js"></script>
+  </body>
+</html>
