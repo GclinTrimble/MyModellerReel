@@ -296,3 +296,14 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
   display: grid; flex: none; place-items: center; width: var(--my-space-6); height: var(--my-space-6);
   border-radius: var(--my-radius-round); background: var(--my-accent-tint); color: var(--my-accent-text); font-weight: var(--my-weight-bold);
 }
+
+/* ---------- AI proposal review (#90), metadata rows (#46), command forms ---------- */
+.proposal-bar {
+  position: absolute; left: 50%; bottom: var(--my-space-3); transform: translateX(-50%); display: flex; align-items: center; gap: var(--my-space-2);
+  padding: var(--my-space-1) var(--my-space-1) var(--my-space-1) var(--my-space-3); border-radius: var(--my-radius-pill);
+  background: var(--my-surface); color: var(--my-text); border: 2px solid var(--my-mustard); box-shadow: var(--my-shadow-2); z-index: 3;
+}
+.meta-row { display: grid; grid-template-columns: 90px 1fr auto; gap: var(--my-space-1); align-items: center; }
+.meta-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta-row input { min-width: 0; }
+.panel.form { max-height: 60vh; overflow: auto; }

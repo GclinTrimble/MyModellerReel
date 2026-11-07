@@ -1,7 +1,7 @@
 {
   "name": "mymodellerreel",
   "productName": "MyModellerReel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-first 3D modeller and animation sequencer of the My…Reel family. Push/pull modelling, keyframe animation, GLB native, MCP + HTTP API.",
   "main": "src/main/main.cjs",
   "type": "module",
@@ -13,7 +13,8 @@
     "mcp": "node src/mcp/server.js",
     "mcp:config": "node scripts/mcp-config.js",
     "dist": "node scripts/check-suite-config.mjs && electron-builder --win",
-    "e2e": "node --test tests/e2e/*.e2e.js"
+    "e2e": "node --test tests/e2e/*.e2e.js",
+    "eval": "node scripts/eval.mjs"
   },
   "dependencies": {
     "@fontsource/open-sans": "^5.3.0",

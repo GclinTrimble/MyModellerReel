@@ -36,7 +36,10 @@ export class Store {
   }
   checkpoint() {
     this.undoStack.push(JSON.stringify(this.doc));
-    if (this.undoStack.length > 200) this.undoStack.shift(); // shortcut: whole-doc snapshots, fine below ~50 MB models
+    if (this.undoStack.length > 200) {
+      this.undoStack.shift(); // shortcut: whole-doc snapshots, fine below ~50 MB models
+      if (this.proposal) this.proposalAt--;
+    }
     this.redoStack = [];
   }
   undo() {
@@ -57,7 +60,38 @@ export class Store {
     this.doc = doc;
     this.undoStack = [];
     this.redoStack = [];
+    this.proposal = null;
     this.changed();
+  }
+
+  // Proposal mode: changes made after beginProposal() stay pending until accepted or rejected (one undo step either way).
+  beginProposal() {
+    if (this.proposal) return false;
+    this.checkpoint();
+    this.proposal = this.undoStack.at(-1);
+    this.proposalAt = this.undoStack.length - 1;
+    this.changed();
+    return true;
+  }
+  acceptProposal() {
+    if (!this.proposal) return false;
+    this.proposal = null;
+    this.changed();
+    return true;
+  }
+  rejectProposal() {
+    if (!this.proposal) return false;
+    this.doc = JSON.parse(this.proposal);
+    // drop the history made inside the proposal, down to (and including) its own checkpoint
+    if (this.undoStack[this.proposalAt] === this.proposal) this.undoStack.length = this.proposalAt;
+    this.redoStack = [];
+    this.proposal = null;
+    this.changed();
+    return true;
+  }
+  /** What a pending proposal changed: entity ids added, changed and removed (removed ones live in `before`). */
+  proposalDiff() {
+    return this.proposal ? diffDocs(JSON.parse(this.proposal), this.doc) : null;
   }
   changed() {
     for (const fn of this.listeners) fn(this.doc);
@@ -66,6 +100,20 @@ export class Store {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
+}
+
+export function diffDocs(before, after) {
+  const old = new Map(before.entities.map((e) => [e.id, JSON.stringify(e)]));
+  const now = new Set(after.entities.map((e) => e.id));
+  const added = [];
+  const changed = [];
+  for (const e of after.entities) {
+    if (!old.has(e.id)) added.push(e.id);
+    else if (old.get(e.id) !== JSON.stringify(e)) changed.push(e.id);
+  }
+  const removed = before.entities.filter((e) => !now.has(e.id)).map((e) => e.id);
+  const animation = JSON.stringify(before.animation) !== JSON.stringify(after.animation);
+  return { added, changed, removed, animation, before, empty: !added.length && !changed.length && !removed.length && !animation };
 }
 
 export function addEntity(doc, props) {
@@ -174,6 +222,12 @@ export function duplicateEntity(doc, e, parent = e.parent) {
   const copy = addEntity(doc, { ...JSON.parse(JSON.stringify(e)), id: undefined, parent, name: `${e.name} copy` });
   for (const c of childrenOf(doc, e.id)) duplicateEntity(doc, c, copy.id);
   return copy;
+}
+
+/** An entity's mesh with its world transform baked in. */
+export function worldMesh(doc, e) {
+  const m = worldMatrix(doc, e);
+  return { v: e.mesh.v.map((p) => new Vector3(...p).applyMatrix4(m).toArray()), f: e.mesh.f };
 }
 
 export function removeEntity(doc, e) {

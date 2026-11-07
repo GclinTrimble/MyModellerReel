@@ -16,12 +16,27 @@ AI tab → type what you want. Provider in Settings:
 
 | Provider | Setup |
 | --- | --- |
-| **Local (Ollama)**, default | Install [Ollama](https://ollama.com), then `ollama pull mistral` (or `mistral-small`, `qwen2.5`, `llama3.1`: any model with tool calling). URL `http://127.0.0.1:11434`. Small models get a 27-command core set plus plugins; `run_script` reaches the rest. |
+| **Local (Ollama)**, default | Install [Ollama](https://ollama.com), then `ollama pull mistral` (or `mistral-small`, `qwen2.5`, `llama3.1`: any model with tool calling). URL `http://127.0.0.1:11434`. Small models get a routed subset per request (see below). |
 | **Claude** | Anthropic API key. Default model `claude-sonnet-5-5`; `claude-opus-5-5` for big builds. Claude also receives viewport screenshots. |
 | **OpenAI-compatible** | Any `/v1/chat/completions` server: Mistral's API (`https://api.mistral.ai/v1`), LM Studio, vLLM, llama.cpp. |
 
 API keys live in the app's data folder and are only used by the main process; the page never sees them.
-One AI turn (however many tool calls) is a single undo step.
+One AI turn (however many tool calls) is a single undo step. With **Propose** on (the branch icon in the copilot
+header, or AI → Propose), the turn's changes show as a tinted preview with red ghosts for removals, and wait for
+Accept or Reject. Any client can do the same with `propose` (`start`, `accept`, `reject`, `status`).
+
+**Tool routing for local models.** Small models pick worse tools as the list grows, so Ollama models get about 18
+tools per request: an always-on core (`get_scene`, `get_entity`, `list_commands`, `run_script`, `select`,
+`undo`), the commands already used in the chat, and the best keyword matches for the request (with one example
+call each). Settings → AI → *Tools for local models* switches to a fixed toolset or all commands. The model can find
+the rest with `list_commands` and a `query`. Every command checks its arguments: unambiguous slips (`"2"` for 2,
+one id for a list, a JSON string for an array) are fixed, and real mistakes come back as errors that name the
+expected type, the valid values or the closest command, so the model can retry.
+
+**Eval harness.** `npm run eval -- --model ollama:mistral --model anthropic:claude-sonnet-5-5` runs the tasks in
+`scripts/eval-tasks.js` through the same agent loop and scores the resulting scene. `--routing off` compares with the
+full tool list, `--task <name>` runs one task, `--json out.json` keeps the rows. `--model mock` replays the
+reference solutions (it is also the harness's own test).
 
 ## 2. Claude Desktop / Claude Code (MCP)
 
@@ -38,6 +53,8 @@ adds this to `%APPDATA%\Claude\claude_desktop_config.json` (a backup is kept):
 Restart Claude Desktop. Claude then lists every command as a tool. The server starts MyModellerReel on the first
 tool call if it is closed, returns `screenshot` as an image, and reports errors so the model can correct itself.
 For Claude Code: `claude mcp add mymodellerreel -- node <project>/src/mcp/server.js`.
+For MCP clients that handle few tools well, add `"env": { "MMR_TOOLSETS": "modelling,animation" }` to the server
+config: only those toolsets (modelling, animation, query, view, files, ai) and the core are listed.
 
 ## 3. HTTP API (scripts, other apps, agents)
 
@@ -65,9 +82,10 @@ Invoke-RestMethod "http://127.0.0.1:$($a.port)/api/run" -Method Post -Headers @{
 
 | Category | Commands |
 | --- | --- |
-| scene | `get_scene`, `get_entity` (faces with normals for push_pull), `list_commands`, `select`, `measure`, `screenshot` |
+| scene | `get_scene`, `get_entity` (faces with normals for push_pull), `list_commands` (`query`, `toolset`), `select` (also `invert`), `select_where` (name, colour, tag, size, metadata, similar_to), `measure`, `bounds_of`, `raycast`, `find_free_space`, `what_is_at` (a point of the view), `screenshot` |
+| arrange | `align`, `distribute`, `place_on` (top or any face), `against`, `stack` |
 | create | `create_box`, `create_cylinder`, `create_cone`, `create_sphere`, `create_prism` (2D outline + height), `create_face` (any plane), `create_lathe` (revolve) |
-| edit | `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_tag_visibility`, `boolean`, `undo`, `redo`, `new_model` |
+| edit | `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_metadata`, `set_tag_visibility`, `boolean`, `propose`, `undo`, `redo`, `new_model` |
 | view | `set_camera`, `set_view`, `zoom_extents`, `set_style`, `section`, `add_scene`, `go_to_scene` |
 | animate | `add_keyframe`, `animate` (from/to or by, with easing), `build_sequence`, `turntable`, `remove_keyframes`, `set_timeline`, `get_animation`, `playback` |
 | file | `save`, `open`, `import`, `export` (glb, gltf, obj, stl, png, video) |

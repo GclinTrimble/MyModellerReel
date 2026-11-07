@@ -6,6 +6,9 @@ import { Brush, Evaluator, ADDITION, SUBTRACTION, INTERSECTION } from 'three-bvh
 import * as G from './geometry.js';
 import * as D from './document.js';
 import * as A from './animation.js';
+import * as Q from './query.js';
+import { validate } from './schema.js';
+import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
 export const GUIDE = `MyModellerReel conventions:
 - Units are metres. Y is UP (blue axis). X is red (right), Z is green (towards the viewer). Ground is y = 0.
@@ -16,6 +19,11 @@ export const GUIDE = `MyModellerReel conventions:
 - Animation: keyframes per property on a timeline in seconds. Use animate for a from→to move, build_sequence for
   construction / assembly sequences, turntable for a camera orbit, add_keyframe to capture the current pose.
   To hinge a door: set_pivot (e.g. "left") then animate rotation.
+- Place things by relation, not coordinates: place_on (on top of / against a face), against (beside, same floor),
+  stack, align, distribute; find_free_space gives an empty spot for a new footprint.
+- Ask instead of reading JSON: select_where (by name, colour, tag, size, metadata, similar_to), bounds_of, raycast,
+  measure, what_is_at (a point of the screenshot). set_metadata attaches role/cost/phase data to entities.
+- list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
 
@@ -55,11 +63,13 @@ export function createRegistry(ctx) {
       })),
     async run(name, args = {}) {
       const c = commands.get(name);
-      if (!c) throw new Error(`Unknown command "${name}". Call list_commands to see what exists.`);
-      for (const r of c.params.required || [])
-        if (args[r] === undefined) throw new Error(`${name}: missing required parameter "${r}"`);
+      if (!c) {
+        const near = rankCommands(reg.list(), { query: String(name).replace(/_/g, ' '), limit: 3 }).map((x) => x.name);
+        throw new Error(`Unknown command "${name}".${near.length ? ` Did you mean ${near.join(', ')}?` : ''} Call list_commands with a query to find commands.`);
+      }
+      args = validate(name, c.params, args);
       if (c.mutates && !ctx.batchDepth) ctx.store.checkpoint();
-      const result = await c.run(args || {}, ctx);
+      const result = await c.run(args, ctx);
       if (c.mutates && !ctx.batchDepth) ctx.store.changed();
       for (const fn of ctx.afterRun || []) fn(name, args, result);
       return result ?? { ok: true };
@@ -93,6 +103,7 @@ function summary(doc, e) {
     ...(e.tag !== 'Untagged' ? { tag: e.tag } : {}),
     ...(!e.visible ? { visible: false } : {}),
     ...(e.locked ? { locked: true } : {}),
+    ...(e.meta && Object.keys(e.meta).length ? { meta: e.meta } : {}),
   };
 }
 
@@ -167,6 +178,7 @@ function worldFaceInfo(doc, e, fi) {
 
 function pickFace(doc, e, face) {
   if (!e.mesh) throw new Error(`${e.name} is a group; push_pull a shape inside it.`);
+  if (typeof face === 'string' && /^\d+$/.test(face)) face = +face;
   if (typeof face === 'number') {
     if (!e.mesh.f[face]) throw new Error(`Face ${face} does not exist (0..${e.mesh.f.length - 1}).`);
     return face;
@@ -192,10 +204,7 @@ function meshToGeometry(mesh) {
   return g;
 }
 
-function worldMesh(doc, e) {
-  const m = D.worldMatrix(doc, e);
-  return { v: e.mesh.v.map((p) => new Vector3(...p).applyMatrix4(m).toArray()), f: e.mesh.f };
-}
+const worldMesh = D.worldMesh;
 
 function registerCore(reg, ctx) {
   const def = (category, name, description, params, run, mutates = false) =>
@@ -227,16 +236,18 @@ function registerCore(reg, ctx) {
     };
   });
 
-  def('scene', 'list_commands', 'Every command with its parameters (JSON Schema).', obj({ category: str('Only this category') }), ({ category }) =>
-    reg.list().filter((c) => !category || c.category === category),
+  def('scene', 'list_commands', 'Commands with their parameters (JSON Schema) and an example call. Narrow it: query ranks commands by what you want to do ("put a lamp on the table"), toolset picks a group.', obj({ query: str('what you want to do, in words'), toolset: str('a named group of commands', Object.keys(TOOLSETS)), category: str('only this category'), limit: num('at most this many') }), ({ query, toolset, category, limit }) =>
+    rankCommands(reg.list().filter((c) => !category || c.category === category), { query, toolset, limit })
+      .map((c) => (EXAMPLES[c.name] ? { ...c, example: EXAMPLES[c.name] } : c)),
   );
 
-  def('scene', 'select', 'Set, extend or clear the selection. Returns the selection.', obj({ ids, mode: str('set (default), add, remove, all, none', ['set', 'add', 'remove', 'all', 'none']) }), ({ ids: refs = [], mode = 'set' }) => {
+  def('scene', 'select', 'Set, extend or clear the selection. Returns the selection.', obj({ ids, mode: str('set (default), add, remove, all, none, invert', ['set', 'add', 'remove', 'all', 'none', 'invert']) }), ({ ids: refs = [], mode = 'set' }) => {
     const doc = ctx.doc;
     const want = D.resolve(doc, refs).map((e) => e.id);
     const cur = ctx.selection.get();
     const next =
       mode === 'all' ? doc.entities.filter((e) => !e.parent).map((e) => e.id)
+      : mode === 'invert' ? doc.entities.filter((e) => !e.parent && !cur.includes(e.id)).map((e) => e.id)
       : mode === 'none' ? []
       : mode === 'add' ? [...new Set([...cur, ...want])]
       : mode === 'remove' ? cur.filter((x) => !want.includes(x))
@@ -506,6 +517,125 @@ function registerCore(reg, ctx) {
     ctx.store.replace(D.newDoc());
     ctx.selection.set([]);
     return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- query (agents ask, instead of reading JSON)
+  def('scene', 'select_where', 'Select by properties: name glob ("Window*") or /regex/, color, tag, type, size range, metadata values, or similar_to an entity. Filters combine (AND). Returns the matches.', obj({ name: str('glob with * or /regex/'), color: str('#rrggbb'), tag: str('tag name'), type: str('kind', ['mesh', 'group', 'curve']), min_size: num('largest dimension at least, m'), max_size: num('largest dimension at most, m'), metadata: obj({}, []), similar_to: str('entity id or name: same kind, face count and size within 10 %'), inside: str('search inside this group'), include_children: bool('also match shapes inside groups'), mode: str('set (default) | add | remove', ['set', 'add', 'remove']), invert: bool('select everything that does NOT match') }), (a) => {
+    const doc = ctx.doc;
+    let hits = Q.matchEntities(doc, a).map((e) => e.id);
+    if (a.invert) {
+      const pool = a.inside ? D.descendants(doc, D.resolve(doc, a.inside)[0].id) : a.include_children ? doc.entities : doc.entities.filter((e) => !e.parent);
+      hits = pool.filter((e) => !hits.includes(e.id)).map((e) => e.id);
+    }
+    const cur = ctx.selection.get();
+    const next = a.mode === 'add' ? [...new Set([...cur, ...hits])] : a.mode === 'remove' ? cur.filter((x) => !hits.includes(x)) : hits;
+    ctx.selection.set(next);
+    return { selection: next, count: next.length, names: next.slice(0, 50).map((x) => D.getEntity(doc, x)?.name) };
+  });
+
+  def('scene', 'bounds_of', 'World bounds of entities together: min, max, size and centre.', obj({ ids }), (a) => Q.boundsOf(ctx.doc, targets(ctx, a)));
+
+  def('scene', 'raycast', 'Shoot a ray and report what it hits first (or all hits): entity, point, surface normal, distance. Use it to find the floor under a point or what blocks a line of sight.', obj({ origin: v3('start point'), direction: v3('direction, any length'), ids: { ...ids, description: 'only test these (default: every visible shape)' }, all: bool('every entity hit, nearest first'), max_distance: num('m') }, ['origin', 'direction']), (a) => {
+    const hits = Q.raycast(ctx.doc, a.origin, a.direction, { ids: a.ids, all: a.all, maxDistance: a.max_distance ?? Infinity });
+    return a.all ? { hits } : (hits[0] ?? { hit: null });
+  });
+
+  def('scene', 'find_free_space', 'Nearest empty spot on the ground for a footprint, so new things do not overlap old ones. Returns a position for create_*/move.', obj({ size: { type: 'array', items: { type: 'number' }, description: '[width (x), depth (z)] in m' }, like: str('or: use the footprint of this entity'), near: { type: 'array', items: { type: 'number' }, description: '[x, z] to search around, default [0, 0]' }, clearance: num('gap to keep, default 0.1 m') }), (a) => {
+    const doc = ctx.doc;
+    let size = a.size;
+    let skip = [];
+    if (a.like) {
+      const [e] = D.resolve(doc, a.like);
+      const b = D.worldBox(doc, e);
+      size = [b.max[0] - b.min[0], b.max[2] - b.min[2]];
+      skip = [e.id];
+    }
+    if (!size || size.length < 2 || !(size[0] > 0 && size[1] > 0)) throw new Error('Give size [width, depth] in metres, or like: an entity.');
+    const near = a.near?.length === 3 ? [a.near[0], a.near[2]] : a.near || [0, 0];
+    const position = Q.findFreeSpace(doc, size, { near, clearance: a.clearance ?? 0.1, skip });
+    if (!position) throw new Error('No free space found within 100 m.');
+    return { position, size };
+  });
+
+  def('scene', 'what_is_at', 'What is under a point of the viewport (as in the last screenshot): x and y are fractions 0..1 from the left and top. Returns entity, face and world point.', obj({ x: num('0 = left edge, 1 = right edge'), y: num('0 = top edge, 1 = bottom edge') }, ['x', 'y']), (a) => {
+    if (!ctx.view?.pickAt) throw new Error('No viewport in this context; use raycast.');
+    const hit = ctx.view.pickAt(a.x, a.y);
+    if (!hit) return { hit: null };
+    const e = D.getEntity(ctx.doc, hit.entityId);
+    return { id: e.id, name: e.name, face: hit.faceIndex, point: D.round3(hit.point.toArray()), normal: D.round3(hit.normal.toArray()) };
+  });
+
+  def('edit', 'set_metadata', 'Attach key/values to entities (role: window, cost: 420, supplier, phase…). Drives select_where, quantities and 4D mapping. remove deletes keys.', obj({ ids, values: obj({}, []), remove: { type: 'array', items: { type: 'string' }, description: 'keys to delete' } }), (a) => {
+    const ents = targets(ctx, a);
+    for (const e of ents) {
+      e.meta = { ...(e.meta || {}), ...(a.values || {}) };
+      for (const k of a.remove || []) delete e.meta[k];
+      if (!Object.keys(e.meta).length) delete e.meta;
+    }
+    return ents.map((e) => ({ id: e.id, name: e.name, meta: e.meta || {} }));
+  }, true);
+
+  // ---------------------------------------------------------------- arrange (relations instead of coordinates)
+  const AXIS3 = str('world axis', ['x', 'y', 'z']);
+  const shift = (ents, offsets) =>
+    editTransforms(ctx, ents, () => ents.forEach((e, i) => offsets[i].some((x) => x) && applyWorld(ctx, e, new Matrix4().makeTranslation(...offsets[i]), [0, 0, 0])));
+  const boxesOf = (ents) => ents.map((e) => D.worldBox(ctx.doc, e));
+  const asPoint = (p) => (p ? (p.length === 2 ? [p[0], 0, p[1]] : p) : null);
+
+  def('arrange', 'align', 'Line entities up on an axis: their min sides, centres or max sides meet. Reference: their joint bounds (default), the first or last one, or another entity.', obj({ ids, axis: AXIS3, to: str('which side lines up', ['min', 'center', 'max']), relative_to: str('selection (default) | first | last | an entity id/name') }, ['axis']), (a) => {
+    const ents = targets(ctx, a);
+    const boxes = boxesOf(ents);
+    const rel = a.relative_to || 'selection';
+    const ref = rel === 'selection' ? null : rel === 'first' ? boxes[0] : rel === 'last' ? boxes.at(-1) : D.worldBox(ctx.doc, D.resolve(ctx.doc, rel)[0]);
+    shift(ents, Q.alignOffsets(boxes, a.axis, a.to || 'center', ref));
+    return ents.map((e) => summary(ctx.doc, e));
+  }, true);
+
+  def('arrange', 'distribute', 'Space entities evenly along an axis (equal gaps, outer ones stay), or exactly gap metres apart.', obj({ ids, axis: AXIS3, gap: num('fixed gap in m (default: equal gaps between the outer two)') }, ['axis']), (a) => {
+    const ents = targets(ctx, a);
+    if (ents.length < 2) throw new Error('distribute needs at least two entities.');
+    shift(ents, Q.distributeOffsets(boxesOf(ents), a.axis, a.gap ?? null));
+    return ents.map((e) => summary(ctx.doc, e));
+  }, true);
+
+  def('arrange', 'place_on', 'Put entities on another one without coordinates: on its top (default) or against any side, centred on it or at a point. face can also be a face index from get_entity (snaps to that face).', obj({ ids, target: str('entity to put things on'), face: { description: 'top (default) | bottom | left | right | front | back, or a face index' }, at: { type: 'array', items: { type: 'number' }, description: 'world point on that face ([x,z] for top), default its centre' }, gap: num('m, default 0') }, ['target']), (a) => {
+    const doc = ctx.doc;
+    const [t] = D.resolve(doc, a.target);
+    const ents = targets(ctx, a).filter((e) => e.id !== t.id);
+    const plane = Q.targetFace(doc, t, a.face ?? 'top');
+    shift(ents, ents.map((e) => Q.placeOffset(D.worldBox(doc, e), plane, { gap: a.gap || 0, at: asPoint(a.at) })));
+    return ents.map((e) => summary(doc, e));
+  }, true);
+
+  def('arrange', 'against', 'Push entities flat against a side of another one, keeping their height (a sofa against a wall, a cabinet beside another).', obj({ ids, target: str('entity to stand against'), side: str('side of the target', ['left', 'right', 'front', 'back']), gap: num('m, default 0') }, ['target', 'side']), (a) => {
+    const doc = ctx.doc;
+    const [t] = D.resolve(doc, a.target);
+    const ents = targets(ctx, a).filter((e) => e.id !== t.id);
+    const plane = Q.targetFace(doc, t, a.side);
+    shift(ents, ents.map((e) => Q.placeOffset(D.worldBox(doc, e), plane, { gap: a.gap || 0, keep: ['y'] })));
+    return ents.map((e) => summary(doc, e));
+  }, true);
+
+  def('arrange', 'stack', 'Stack entities on top of each other in the given order, centred on the first one.', obj({ ids, gap: num('m between them, default 0') }), (a) => {
+    const doc = ctx.doc;
+    const ents = targets(ctx, a);
+    for (let i = 1; i < ents.length; i++) {
+      const plane = Q.targetFace(doc, ents[i - 1], 'top');
+      const c = Q.centerOf(D.worldBox(doc, ents[0]));
+      plane.point = [c[0], plane.point[1], c[2]];
+      shift([ents[i]], [Q.placeOffset(D.worldBox(doc, ents[i]), plane, { gap: a.gap || 0 })]);
+    }
+    return ents.map((e) => summary(doc, e));
+  }, true);
+
+  // ---------------------------------------------------------------- proposals (review AI changes before keeping them)
+  def('edit', 'propose', 'Proposal mode. start: the next changes stay a ghost preview the user can accept or reject. accept keeps them, reject throws them away, status lists what is pending.', obj({ action: str('what to do', ['start', 'accept', 'reject', 'status']) }, ['action']), (a) => {
+    const s = ctx.store;
+    const was = s.proposalDiff();
+    const ok = a.action === 'start' ? s.beginProposal() : a.action === 'accept' ? s.acceptProposal() : a.action === 'reject' ? s.rejectProposal() : true;
+    const d = a.action === 'status' || a.action === 'start' ? s.proposalDiff() : was;
+    if (a.action === 'reject' && ok) ctx.selection.set(ctx.selection.get().filter((x) => D.getEntity(ctx.doc, x)));
+    return { action: a.action, done: !!ok, pending: !!s.proposal, ...(d ? { added: d.added, changed: d.changed, removed: d.removed, animation: d.animation } : {}) };
   });
 
   // ---------------------------------------------------------------- view

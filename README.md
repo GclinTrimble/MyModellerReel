@@ -30,8 +30,11 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Animation and sequencing**: timeline with draggable keyframes and easing for position, rotation, scale, opacity,
   colour, visibility and the camera; Auto-key; build sequences (4D construction style); turntables; scenes;
   **video export**; animation is saved into the GLB.
-- **AI-first**: copilot panel (Claude, Ollama/Mistral, any OpenAI-compatible API), one undo step per AI turn,
-  screenshots for vision models, `run_script` for parametric work, AI-written plugins.
+- **AI-first**: copilot panel (Claude, Ollama/Mistral, any OpenAI-compatible API), one undo step per AI turn or a
+  proposal to accept or reject, tool routing for small local models, relational placement (place on, against, stack,
+  align, distribute), scene queries (raycast, free space, what is at a point), smart selection and metadata,
+  screenshots for vision models, `run_script` for parametric work, AI-written plugins, and `npm run eval` to compare
+  models on the same tasks.
 - **Open**: GLB/glTF/OBJ/STL/FBX in, GLB/glTF/OBJ/STL/PNG/MP4/WebM out. MyModellerReel `.glb` files reopen fully
   editable and still open in Blender, Unreal, Unity or any glTF viewer.
 

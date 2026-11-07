@@ -58,11 +58,57 @@ export class UI {
     this.$('context-chip').onclick = () => this.app.setContext(null);
   }
 
+  /** A form for any command, generated from its JSON Schema: the UI path to every command with parameters. */
+  async commandDialog(name, preset = {}) {
+    const c = this.app.reg.commands.get(name);
+    if (!c) return this.toast(`No command ${name}`, 'danger');
+    const props = c.params.properties || {};
+    const req = new Set(c.params.required || []);
+    const inputs = {};
+    const fields = Object.entries(props).map(([k, s]) => {
+      const v = preset[k];
+      const text = v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+      let input;
+      if (s.enum || s.type === 'boolean') {
+        const opts = s.enum || ['true', 'false'];
+        input = h('select', {}, h('option', { value: '' }, req.has(k) ? 'choose…' : '(default)'), opts.map((o) => h('option', { value: o, selected: String(v) === o }, o)));
+      } else input = h('input', { value: text, type: s.type === 'number' ? 'number' : 'text', step: 'any', placeholder: s.type === 'array' ? (k === 'ids' ? 'selection' : '[…]') : s.type === 'object' ? '{ "key": "value" }' : '' });
+      inputs[k] = [input, s];
+      return h('label.field', {}, h('span', {}, `${k}${req.has(k) ? ' *' : ''}`, s.description ? h('span.muted', {}, ` · ${s.description}`) : null), input);
+    });
+    const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, c.description), fields.length ? fields : h('p.small', {}, 'No parameters.'));
+    if ((await this.modal(name.replace(/_/g, ' '), body, [['Run', 'run'], ['Cancel', null]])) !== 'run') return;
+    const args = {};
+    for (const [k, [input, s]] of Object.entries(inputs)) {
+      const raw = input.value.trim();
+      if (!raw) continue;
+      if (s.type === 'number') args[k] = +raw;
+      else if (s.type === 'boolean') args[k] = raw === 'true';
+      else if (s.type === 'string') args[k] = raw;
+      else {
+        try {
+          args[k] = JSON.parse(raw);
+        } catch {
+          args[k] = s.type === 'array' ? raw.split(',').map((x) => x.trim()) : raw;
+        }
+      }
+    }
+    try {
+      const r = await this.app.reg.run(name, args);
+      this.toast(JSON.stringify(r).slice(0, 200));
+      return r;
+    } catch (e) {
+      this.toast(e.message, 'danger');
+    }
+  }
+
   // ---------------------------------------------------------------- actions (menus, palette, shortcuts share them)
   buildActions() {
     const app = this.app;
     const run = (name, args) => () => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
     const sel = () => app.selection;
+    const form = (name, preset = {}) => () => this.commandDialog(name, typeof preset === 'function' ? preset() : preset);
+    const needTwo = (fn) => () => (sel().length > 1 ? fn() : this.toast('Select at least two things.'));
     const style = (k) => ({ checked: () => app.store.doc.settings[k], run: () => app.reg.run('set_style', { [k]: !app.store.doc.settings[k] }) });
     this.actions = {
       new: { label: 'New model', icon: 'file-plus', key: 'Ctrl+N', run: () => app.newModel() },
@@ -113,6 +159,26 @@ export class UI {
       turntable: { label: 'Turntable camera', icon: 'arrows-clockwise', run: () => app.reg.run('turntable', {}).then(() => app.timeline.open()) },
       scenesAnim: { label: 'Animate through scenes', icon: 'film-slate', run: () => app.animateScenes() },
       clearAnim: { label: 'Clear animation of selection', icon: 'trash', run: () => app.reg.run('run_script', { code: `for (const id of ${JSON.stringify(sel())}) await api.remove_keyframes({ target: id });` }) },
+      alignXmin: { label: 'Align left (x min)', icon: 'align-left', run: needTwo(run('align', { axis: 'x', to: 'min' })) },
+      alignXmid: { label: 'Align centres (x)', icon: 'align-center-horizontal', run: needTwo(run('align', { axis: 'x', to: 'center' })) },
+      alignXmax: { label: 'Align right (x max)', icon: 'align-right', run: needTwo(run('align', { axis: 'x', to: 'max' })) },
+      alignZmin: { label: 'Align back (z min)', icon: 'align-top', run: needTwo(run('align', { axis: 'z', to: 'min' })) },
+      alignZmid: { label: 'Align centres (z)', icon: 'align-center-vertical', run: needTwo(run('align', { axis: 'z', to: 'center' })) },
+      alignZmax: { label: 'Align front (z max)', icon: 'align-bottom', run: needTwo(run('align', { axis: 'z', to: 'max' })) },
+      alignYmin: { label: 'Align bottoms (y min)', icon: 'arrow-line-down', run: needTwo(run('align', { axis: 'y', to: 'min' })) },
+      distX: { label: 'Distribute along x', icon: 'columns', run: needTwo(run('distribute', { axis: 'x' })) },
+      distZ: { label: 'Distribute along z', icon: 'rows', run: needTwo(run('distribute', { axis: 'z' })) },
+      stack: { label: 'Stack in selection order', icon: 'stack-simple', run: needTwo(run('stack', {})) },
+      placeOn: { label: 'Place on…', icon: 'arrow-line-down', run: form('place_on') },
+      against: { label: 'Push against…', icon: 'arrows-out-line-horizontal', run: form('against') },
+      freeSpace: { label: 'Find free space…', icon: 'crosshair', run: form('find_free_space', () => (sel()[0] ? { like: sel()[0] } : {})) },
+      selectInvert: { label: 'Invert selection', icon: 'selection-inverse', run: run('select', { mode: 'invert' }) },
+      selectSimilar: { label: 'Select similar', icon: 'selection-plus', run: () => (sel()[0] ? app.reg.run('select_where', { similar_to: sel()[0], mode: 'add' }).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select one thing first.')) },
+      selectWhere: { label: 'Select by…', icon: 'list-magnifying-glass', run: form('select_where') },
+      metadata: { label: 'Set metadata…', icon: 'tag-simple', run: form('set_metadata') },
+      proposeToggle: { label: 'Propose AI changes for review', icon: 'git-pull-request', checked: () => app.ai.propose, run: () => app.ai.setPropose(!app.ai.propose) },
+      proposeAccept: { label: 'Accept proposal', icon: 'check-circle', run: run('propose', { action: 'accept' }) },
+      proposeReject: { label: 'Reject proposal', icon: 'x-circle', run: run('propose', { action: 'reject' }) },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
@@ -127,11 +193,12 @@ export class UI {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
       File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'plugins'],
-      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll'],
+      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
+      Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera')],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', '-', 'clearAnim', 'exportVideo'],
-      AI: ['askAi', 'newChat', '-', 'mcp', 'aiSettings'],
+      AI: ['askAi', 'newChat', '-', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
     };
     const bar = this.$('menubar');
@@ -239,10 +306,25 @@ export class UI {
   refresh() {
     if (this.tab !== 'ai') this.renderDock();
     this.renderViewbar();
+    this.renderProposal();
     const chip = this.$('context-chip');
     const ctx = this.app.context && this.app.entity(this.app.context);
     chip.hidden = !ctx;
     if (ctx) chip.replaceChildren(icon('pencil-simple'), `Editing inside "${ctx.name}"`, icon('x'));
+  }
+  renderProposal() {
+    const bar = this.$('proposal-bar');
+    const d = this.app.store.proposalDiff();
+    bar.hidden = !d;
+    if (!d) return;
+    const parts = [d.added.length && `${d.added.length} new`, d.changed.length && `${d.changed.length} changed`, d.removed.length && `${d.removed.length} removed`, d.animation && 'animation edited'].filter(Boolean);
+    const run = (action) => () => this.app.reg.run('propose', { action }).catch((e) => this.toast(e.message, 'danger'));
+    bar.replaceChildren(
+      icon('git-pull-request'),
+      h('span.grow', {}, `Proposal: ${parts.join(', ') || 'no changes yet'}`),
+      h('button.btn.primary', { onclick: run('accept') }, icon('check'), 'Accept'),
+      h('button.btn', { onclick: run('reject') }, icon('x'), 'Reject'),
+    );
   }
   onSelection() {
     if (this.tab === 'outliner' || this.tab === 'entity') this.renderDock();
@@ -350,8 +432,26 @@ export class UI {
         ...['left', 'right', 'center', 'bottom', 'top'].map((p) => h('button.btn', { onclick: () => run('set_pivot', { id: e.id, pivot: p }) }, p)),
       ),
       matFields,
+      this.metaCard(e),
       tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
       actions,
+    );
+  }
+
+  /** Metadata key/values of one entity (#46): edit in place, add, remove. */
+  metaCard(e) {
+    const run = (values, remove) => this.app.reg.run('set_metadata', { ids: [e.id], ...(values ? { values } : {}), ...(remove ? { remove } : {}) }).catch((x) => this.toast(x.message, 'danger'));
+    const parse = (v) => (v !== '' && Number.isFinite(+v) ? +v : v === 'true' ? true : v === 'false' ? false : v);
+    const key = h('input', { placeholder: 'key (role, cost…)', 'aria-label': 'New metadata key' });
+    const val = h('input', { placeholder: 'value', 'aria-label': 'New metadata value' });
+    return h(
+      'div.card',
+      {},
+      h('div.overline', {}, 'Metadata'),
+      ...Object.entries(e.meta || {}).map(([k, v]) =>
+        h('div.row.meta-row', {}, h('span.small', { title: k }, k), h('input.grow', { value: String(v), 'aria-label': k, onchange: (ev) => run({ [k]: parse(ev.target.value) }) }), h('button.icon-btn.sm', { title: `Remove ${k}`, 'aria-label': `Remove ${k}`, onclick: () => run(null, [k]) }, icon('x'))),
+      ),
+      h('div.row.meta-row', {}, key, val, h('button.icon-btn.sm', { title: 'Add', 'aria-label': 'Add metadata', onclick: () => key.value.trim() && run({ [key.value.trim()]: parse(val.value.trim()) }) }, icon('plus'))),
     );
   }
 
@@ -450,6 +550,17 @@ export class UI {
         ),
       ),
       ...cfg,
+      prov === 'ollama' &&
+        h(
+          'label.field',
+          {},
+          h('span', {}, 'Tools for local models (small models do better with fewer)'),
+          h(
+            'select',
+            { onchange: (e) => save({ ai: { toolset: e.target.value } }) },
+            [['auto', 'Auto: the best matches for each request'], ['all', 'All commands'], ['modelling', 'Modelling'], ['animation', 'Animation'], ['query', 'Scene queries'], ['files', 'Files']].map(([v, l]) => h('option', { value: v, selected: v === (ai.toolset || 'auto') }, l)),
+          ),
+        ),
       h('p.small.muted', {}, 'Keys are stored on this PC and only used by the app itself; the page never sees them.'),
       h('h3', {}, 'API and MCP'),
       h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
@@ -560,7 +671,13 @@ export class UI {
     const render = () => {
       const q = input.value.trim().toLowerCase();
       const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
-      const cmds = this.app.reg.list().filter((c) => !(c.params.required || []).length).map((c) => ({ label: c.name, desc: c.description, icon: 'terminal', run: () => this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))) }));
+      // Every command: ones without required parameters run at once, the others open their form.
+      const cmds = this.app.reg.list().map((c) => ({
+        label: c.name,
+        desc: c.description,
+        icon: (c.params.required || []).length ? 'textbox' : 'terminal',
+        run: () => ((c.params.required || []).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+      }));
       items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
       if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });
       idx = Math.min(idx, items.length - 1);

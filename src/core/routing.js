@@ -1,0 +1,138 @@
+// Tool routing: pick the few commands that matter for a request, so small local models are not handed 100 tools.
+// Keyword scoring over names, descriptions and categories, plus named toolsets and one-line examples per command.
+
+/** Named toolsets: categories and/or command names. A command can be in several. */
+export const TOOLSETS = {
+  modelling: { categories: ['create', 'edit', 'arrange', 'parametric'], names: ['get_scene', 'get_entity', 'select', 'select_where', 'measure'] },
+  animation: { categories: ['animate'], names: ['get_scene', 'select', 'select_where', 'add_scene', 'go_to_scene'] },
+  query: { categories: ['scene'], names: ['set_metadata'] },
+  view: { categories: ['view'], names: ['screenshot'] },
+  files: { categories: ['file'], names: ['report_quantities'] },
+  ai: { categories: ['extend', 'ai'], names: [] },
+};
+
+/** Always offered: enough to look, undo and reach every other command. */
+export const ALWAYS = ['get_scene', 'get_entity', 'list_commands', 'run_script', 'select', 'undo'];
+
+/** One example call per command: small models copy the shape of an example far better than they read a schema. */
+export const EXAMPLES = {
+  create_box: { width: 2, height: 1, depth: 1, position: [0, 0, 0], name: 'Crate', color: '#b58a57' },
+  create_cylinder: { radius: 0.3, height: 3, position: [2, 0, 0], name: 'Column' },
+  create_sphere: { radius: 0.5, position: [0, 1, 0] },
+  create_prism: { points: [[0, 0], [4, 0], [4, 3], [0, 3]], height: 2.7, name: 'Room' },
+  push_pull: { id: 'Room', face: 'top', distance: 0.5 },
+  move: { ids: ['Crate'], by: [1, 0, 0] },
+  rotate: { ids: ['Door'], angle: 90, axis: 'y' },
+  scale: { ids: ['Crate'], factor: 2 },
+  duplicate: { ids: ['Column'], offset: [2, 0, 0], count: 4 },
+  set_material: { ids: ['Crate'], color: '#c8553d' },
+  set_pivot: { id: 'Door', pivot: 'left' },
+  group: { ids: ['e1', 'e2'], name: 'Table' },
+  boolean: { op: 'subtract', target: 'Wall', tools: ['Hole'] },
+  align: { ids: ['e1', 'e2', 'e3'], axis: 'x', to: 'center' },
+  distribute: { ids: ['e1', 'e2', 'e3'], axis: 'x' },
+  place_on: { id: 'Lamp', target: 'Table' },
+  against: { id: 'Sofa', target: 'Wall', side: 'front' },
+  stack: { ids: ['Box 1', 'Box 2', 'Box 3'] },
+  select_where: { color: '#c8553d' },
+  set_metadata: { ids: ['Window 1'], values: { role: 'window', cost: 420 } },
+  raycast: { origin: [0, 10, 0], direction: [0, -1, 0] },
+  find_free_space: { size: [2, 1], near: [0, 0] },
+  animate: { target: 'Door', property: 'rotation', by: [0, 90, 0], start: 0, end: 2 },
+  build_sequence: { ids: ['e1', 'e2', 'e3'], effect: 'rise', order: 'bottom-up' },
+  turntable: { duration: 8 },
+  run_script: { code: 'for (let i = 0; i < 4; i++) await api.create_box({ width: 1, height: 1, depth: 1, position: [i * 2, 0, 0] });' },
+};
+
+const SYNONYMS = {
+  door: ['pivot', 'rotate', 'boolean', 'animate'],
+  window: ['boolean', 'wall'],
+  hinge: ['pivot', 'rotate'],
+  open: ['rotate', 'animate', 'pivot'],
+  colour: ['color', 'material'],
+  color: ['material'],
+  paint: ['material'],
+  put: ['place', 'move'],
+  on: ['place'],
+  top: ['place', 'stack'],
+  next: ['against', 'place'],
+  line: ['align', 'distribute'],
+  row: ['duplicate', 'distribute'],
+  array: ['duplicate'],
+  copy: ['duplicate'],
+  copies: ['duplicate'],
+  spin: ['animate', 'rotate', 'motion'],
+  sequence: ['build', 'stagger'],
+  build: ['sequence', 'create'],
+  hole: ['boolean', 'subtract'],
+  cut: ['boolean', 'subtract', 'section'],
+  find: ['select', 'query', 'raycast'],
+  where: ['raycast', 'bounds', 'select'],
+  space: ['free', 'find'],
+  height: ['measure', 'bounds'],
+  far: ['measure'],
+  distance: ['measure'],
+  camera: ['view', 'turntable', 'scene'],
+  video: ['export', 'render'],
+  save: ['file'],
+  load: ['open', 'import'],
+};
+
+const STOP = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'it', 'is', 'with', 'for', 'by', 'me', 'my', 'please', 'make', 'this', 'that', 'them']);
+const stem = (w) => w.replace(/(ing|ed|es|s)$/, '') || w;
+export const tokens = (text) =>
+  String(text || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1 && !STOP.has(w))
+    .map(stem);
+
+function inToolset(c, name) {
+  const t = TOOLSETS[name];
+  if (!t) throw new Error(`Unknown toolset "${name}". Toolsets: ${Object.keys(TOOLSETS).join(', ')}.`);
+  return t.categories.includes(c.category) || t.names.includes(c.name);
+}
+
+/** Commands in a toolset (or every command), ranked against a free-text query when one is given. */
+export function rankCommands(list, { query = '', toolset = null, limit = 0 } = {}) {
+  let cmds = toolset ? list.filter((c) => inToolset(c, toolset)) : list;
+  const q = tokens(query);
+  if (q.length) {
+    const want = new Set(q.flatMap((w) => [w, ...(SYNONYMS[w] || []).map(stem)]));
+    const score = (c) => {
+      const name = new Set(tokens(c.name.replace(/_/g, ' ')));
+      const desc = tokens(c.description);
+      let s = 0;
+      for (const w of want) {
+        if (name.has(w)) s += 3;
+        if (c.category === w) s += 1;
+        s += Math.min(2, desc.filter((d) => d === w).length);
+      }
+      return s;
+    };
+    cmds = cmds
+      .map((c) => [c, score(c)])
+      .filter(([, s]) => s > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([c]) => c);
+  }
+  return limit > 0 ? cmds.slice(0, limit) : cmds;
+}
+
+/**
+ * The tools a small model gets for one request: the always-on core, the commands it already used in this chat,
+ * and the best matches for what the user asked. Plugins come along when they match too.
+ */
+export function routeTools(list, { query = '', used = [], toolset = null, limit = 18 } = {}) {
+  const byName = new Map(list.map((c) => [c.name, c]));
+  const pick = new Set([...ALWAYS, ...used].filter((n) => byName.has(n)));
+  for (const c of rankCommands(list, { query, toolset })) {
+    if (pick.size >= limit) break;
+    pick.add(c.name);
+  }
+  if (toolset) for (const c of rankCommands(list, { toolset })) if (pick.size < limit) pick.add(c.name);
+  return [...pick].map((n) => byName.get(n));
+}
+
+/** Description with its example appended, the form small models get. */
+export const describe = (c) => (EXAMPLES[c.name] ? `${c.description} Example: ${JSON.stringify(EXAMPLES[c.name])}` : c.description);

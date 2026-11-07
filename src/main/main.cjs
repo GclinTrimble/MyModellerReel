@@ -23,6 +23,7 @@ const DEFAULTS = {
     ollama: { baseUrl: 'http://127.0.0.1:11434', model: 'mistral' },
     anthropic: { apiKey: '', model: 'claude-sonnet-5-5' },
     openai: { baseUrl: 'https://api.mistral.ai/v1', apiKey: '', model: 'mistral-large-latest' },
+    toolset: 'auto', // tools for local models: auto (routed per request) | all | a toolset name
   },
   api: { port: 7717 },
   startup: { defaultApplied: false }, // Start with Windows was turned on once, at the first start of the installed app

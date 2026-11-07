@@ -165,7 +165,7 @@ store.on((doc) => {
   }
   app.viewport.pose = app.timeline.active ? A.evaluate(doc, app.timeline.time) : null;
   app.viewport.rebuild();
-  app.viewport.highlight(app.selection);
+  app.viewport.showProposal(store.proposalDiff());
   app.ui.refresh();
   app.timeline.render();
   app.setFile(app.file, true);

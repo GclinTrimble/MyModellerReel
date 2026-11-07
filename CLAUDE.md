@@ -11,8 +11,11 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 ## Layout
 
 - `src/core/` pure modules, run in Node tests: `geometry.js` (polygon mesh kernel, push/pull, primitives,
-  triangulation), `document.js` (doc JSON, Store with snapshot undo, transforms), `animation.js` (keys, easing,
-  evaluate), `commands.js` (registry + GUIDE text sent to AIs).
+  triangulation), `document.js` (doc JSON, Store with snapshot undo and proposals, transforms), `animation.js` (keys,
+  easing, evaluate), `commands.js` (registry + GUIDE text sent to AIs), `schema.js` (argument checking),
+  `routing.js` (toolsets, ranking, examples), `query.js` (selection, raycast, free space, placement maths),
+  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`).
+- Keep command bodies in `commands.js` short: put the maths in a pure module with its own test.
 - `src/main/main.cjs` window, settings (`%APPDATA%\MyModellerReel\settings.json`), file IPC with extension allow-lists,
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
@@ -27,7 +30,10 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 
 ## Check your work
 
-- `npm test` (core). `npm run e2e` (Playwright on Electron, sign-in against a mock Supabase).
+- `npm test` (core). `npm run e2e` (Playwright on Electron: sign-in against a mock Supabase, and
+  `features.e2e.js` driving `window.mmr` in the real renderer). `npm run eval -- --model mock` checks the eval tasks.
+- To run the app without sign-in and with its own data folder: `MMR_TEST=1 MMR_SUITE_URL= MMR_HOME=<dir> npx electron .`
+  (`src/main/suite.json` from a release build otherwise turns the sign-in gate on).
 - Sign-in is required (#115, MyVoiceReel's `docs/SUITE_ACCOUNT.md`): `npm start` without `MYSTUDIOREEL_SUPABASE_URL`
   and `MYSTUDIOREEL_SUPABASE_ANON_KEY` has no sign-in screen; `npm run dist` refuses to build without them (repo
   variables). E2E sets `MMR_TEST`, `MMR_SUITE_URL` and `MMR_HOME`, and uses the `MyStudioReel/account-test` credential.

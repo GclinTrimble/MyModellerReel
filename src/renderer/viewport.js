@@ -8,6 +8,7 @@ import * as A from '../core/animation.js';
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
 const EDGE_COLOR = 0x1d262c;
+const PROPOSAL_COLOR = '#e8bc5e';
 
 export function meshGeometry(mesh) {
   const b = G.toBuffers(mesh);
@@ -66,6 +67,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     } else o = new THREE.Group();
     o.name = e.name;
     o.userData.entityId = e.id;
+    if (e.meta) o.userData.meta = e.meta; // glTF extras: other tools see the metadata too
     applyTransform(o, e);
     o.visible = e.visible && tagVisible.get(e.tag) !== false;
     objs.set(e.id, o);
@@ -186,6 +188,9 @@ export class Viewport {
     this.pose = null; // animation overrides currently shown
     this.raycaster = new THREE.Raycaster();
     this.listeners = new Set();
+    this.proposed = new Set(); // ids an AI proposal added or changed (tinted until accepted)
+    this.ghosts = new THREE.Group(); // what a proposal would remove
+    this.scene.add(this.ghosts);
 
     this.setCamera(store.doc.camera);
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
@@ -285,11 +290,35 @@ export class Viewport {
     for (const [id, o] of this.objs) {
       if (!o.isMesh) continue;
       const on = lit.has(id);
-      o.material.emissive.set(on ? '#2f6f86' : doc.entities.find((e) => e.id === id)?.material.emissive || '#000000');
-      o.material.emissiveIntensity = on ? 0.35 : 1;
+      const proposed = this.proposed.has(id);
+      o.material.emissive.set(on ? '#2f6f86' : proposed ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.emissive || '#000000');
+      o.material.emissiveIntensity = on ? 0.35 : proposed ? 0.45 : 1;
       for (const c of o.children) if (c.userData.isEdges) c.material.color.set(on ? '#2f6f86' : EDGE_COLOR);
     }
     this.dirty = true;
+  }
+
+  /** Tint what a pending proposal adds or changes, and draw red ghosts of what it removes. */
+  showProposal(diff) {
+    this.proposed = new Set(diff ? [...diff.added, ...diff.changed].flatMap((id) => [id, ...D.descendants(this.store.doc, id).map((x) => x.id)]) : []);
+    for (const o of this.ghosts.children) disposeTree(o);
+    this.ghosts.clear();
+    if (diff?.removed.length) {
+      const { root, objs } = buildModel(diff.before, { edges: false });
+      root.updateMatrixWorld(true);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xd2453c, transparent: true, opacity: 0.28, depthWrite: false });
+      for (const id of diff.removed) {
+        const o = objs.get(id);
+        if (!o?.isMesh) continue;
+        const g = new THREE.Mesh(o.geometry.clone(), mat);
+        g.matrixAutoUpdate = false;
+        g.matrix.copy(o.matrixWorld);
+        g.raycast = () => {};
+        this.ghosts.add(g);
+      }
+      disposeTree(root);
+    }
+    this.highlight(this.selection);
   }
 
   // ---------------------------------------------------------------- camera
@@ -351,6 +380,12 @@ export class Viewport {
     const normal = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
     if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate(); // back side of a lone face
     return { entityId: h.object.userData.entityId, faceIndex: h.object.geometry.userData.triFace[h.faceIndex], point: h.point.clone(), normal, object: h.object };
+  }
+  /** pick() at a viewport point given as fractions (0..1 from the left and top). */
+  pickAt(x, y) {
+    const r = this.canvas.getBoundingClientRect();
+    this.modelRoot.updateMatrixWorld(true);
+    return this.pick({ clientX: r.left + x * r.width, clientY: r.top + y * r.height });
   }
   toScreen(p) {
     const v = p.clone().project(this.camera);

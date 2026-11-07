@@ -8,9 +8,18 @@ import { createRequire } from 'node:module';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { rankCommands, ALWAYS } from '../core/routing.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DATA = process.env.APPDATA ? join(process.env.APPDATA, 'MyModellerReel') : join(homedir(), '.config', 'MyModellerReel');
+const DATA = process.env.MMR_HOME || (process.env.APPDATA ? join(process.env.APPDATA, 'MyModellerReel') : join(homedir(), '.config', 'MyModellerReel'));
+// Optional: MMR_TOOLSETS=modelling,animation in the MCP server config lists only those toolsets (plus the core),
+// for MCP clients that handle few tools well. list_commands still reaches everything.
+const TOOLSETS = (process.env.MMR_TOOLSETS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const filterTools = (list) => {
+  if (!TOOLSETS.length) return list;
+  const keep = new Set([...ALWAYS, ...TOOLSETS.flatMap((t) => rankCommands(list, { toolset: t }).map((c) => c.name))]);
+  return list.filter((c) => keep.has(c.name));
+};
 const log = (...a) => process.stderr.write(`[mymodellerreel-mcp] ${a.join(' ')}\n`); // stdout is the protocol
 
 function apiInfo() {
@@ -97,7 +106,7 @@ async function handle(msg) {
       return reply(id, { tools: [{ name: 'get_scene', description: 'Start MyModellerReel and summarise the model.', inputSchema: { type: 'object', properties: {} } }] });
     }
     return reply(id, {
-      tools: list.map((c) => ({
+      tools: filterTools(list).map((c) => ({
         name: c.name,
         description: `[${c.category}] ${c.description}`,
         inputSchema: { type: 'object', ...c.params },

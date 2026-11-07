@@ -1,24 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as G from '../src/core/geometry.js';
-import { Store, newDoc } from '../src/core/document.js';
+import { newDoc } from '../src/core/document.js';
 import * as A from '../src/core/animation.js';
-import { createRegistry } from '../src/core/commands.js';
-
-const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
-
-function makeCtx() {
-  const store = new Store(newDoc());
-  let sel = [];
-  const ctx = {
-    store,
-    get doc() {
-      return store.doc;
-    },
-    selection: { get: () => sel, set: (x) => (sel = x) },
-  };
-  return { ctx, reg: createRegistry(ctx) };
-}
+import { makeCtx, near } from './helpers.js';
 
 test('primitives are closed and outward facing', () => {
   near(G.volume(G.box(2, 3, 4)), 24);
