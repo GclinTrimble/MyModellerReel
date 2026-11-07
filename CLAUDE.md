@@ -49,3 +49,16 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 - Run the app (`npm start`) and drive it over the HTTP API: `POST /api/run`, `GET /api/window-screenshot`,
   `POST /api/input` for real clicks (DIP coordinates: screenshots are physical pixels, divide by the display scale).
 - Read `%APPDATA%\MyModellerReel\renderer.log` for page errors.
+
+## Releases
+
+- Bump `package.json` (minor per milestone), build with the repo variables
+  (`MYSTUDIOREEL_SUPABASE_URL=$(gh variable get …)` …, `npm run dist`), run the packaged `dist/win-unpacked` app once
+  under `MMR_TEST` and drive a few new commands, then `gh release create vX.Y.Z` with
+  `MyModellerReel-Setup-X.Y.Z.exe`, its `.blockmap` and `latest.yml` (dashes, as `latest.yml` names them).
+- **Every release shows its enhancements**: an image, GIF or video of each visible feature, uploaded as release assets
+  and embedded in the notes (`![…](https://github.com/GclinTrimble/MyModellerReel/releases/download/vX.Y.Z/file.gif)`;
+  link MP4s, GitHub does not play release-asset videos inline). Skip only what has nothing to see (an API, a speed-up).
+  Make them from the app itself: stage a scene over the HTTP API, `GET /api/window-screenshot` per step (wait about
+  1.5 s first: a background window repaints slowly), a toast naming each step (`window.mmr.toast`), ffmpeg to turn
+  the frames into a GIF; animation features through `render_video` (GIF and MP4). Look at every frame before uploading.
