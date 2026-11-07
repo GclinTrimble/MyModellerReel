@@ -36,6 +36,10 @@
       "plugins/**",
       "resources/**",
       "node_modules/three/**",
+      {
+        "from": "node_modules/three/examples/jsm",
+        "to": "node_modules/three/examples/jsm"
+      },
       "package.json"
     ],
     "win": {
