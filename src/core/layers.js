@@ -32,7 +32,7 @@ export const colorOf = (doc, e) => (e.byLayer && layerOf(doc, e.tag)?.color) || 
 /** Layer table with counts and plan extents (world boxes), for people and AIs. */
 export function listLayers(doc) {
   const by = new Map(doc.tags.map((t) => [t.name, []]));
-  for (const e of doc.entities) if (!e.parent) by.get(e.tag)?.push(e);
+  for (const e of doc.entities) if (e.type !== 'group') by.get(e.tag)?.push(e); // shapes inside groups (storeys, components) count too
   return doc.tags.map((t) => {
     const ents = by.get(t.name);
     const box = ents.length ? D.unionBox(ents.map((e) => D.worldBox(doc, e))) : null;

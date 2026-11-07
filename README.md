@@ -39,6 +39,10 @@ Electron's binary download is an install script; if your npm blocks install scri
   coordinates. Extract a PDF's vector linework by layer, colour and window; draft on it (offset, trim, extend, fillet,
   chamfer, join, break); then take it to 3D: heights from spot-level text, breaklines for the surface, buildings from
   footprints, kerbs swept along lines. A layer panel with colours, locks, the current layer and saved states.
+- **Open formats**: LandXML (points, TIN surfaces, alignments with profiles, linework), IFC (BIM elements with
+  storeys, property sets, layers and georeferencing, out as IFC4 or IFC4X3) and DXF (layers with colours and line
+  types, polylines with arcs, blocks as components, 3D faces), in and out, with an import report. Feature layers
+  have an attribute table.
 - **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
   sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
   live arrays, recipes that rebuild a model with other values, and a macro recorder.

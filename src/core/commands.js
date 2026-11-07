@@ -19,6 +19,10 @@ import * as DR from './drafting.js';
 import * as DW from './drawings.js';
 import * as PDF from './pdf.js';
 import * as Assets from './assets.js';
+import * as F from './formats.js';
+import './landxml.js';
+import './dxf.js';
+import './ifc.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
 import * as D from './document.js';
@@ -63,6 +67,9 @@ export const GUIDE = `MyModellerReel conventions:
   curves on layers (filter by PDF layer, colour, width, window); list_drawing_text reads spot heights. Drafting on
   curves: offset_curve, trim, extend, fillet, chamfer, join_curves, break_curve, simplify_curve, divide_curve.
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
+- Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
+  (schema IFC4 or IFC4X3; roles in metadata become IFC classes, metadata becomes property sets) and dxf.
+  query_features / edit_attributes work on feature layers by attribute values.
 - Layers: create_layer / set_layer (colour, lock, current, globs like "C-ROAD/*"), move_to_layer, list_layers,
   merge_layers, map_layers, save_layer_state / restore_layer_state. New geometry goes on the current layer.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
@@ -2535,8 +2542,104 @@ function registerCore(reg, ctx) {
   };
   def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
   def('file', 'open', 'Open a .glb/.gltf (MyModellerReel files reopen fully editable).', obj({ path: str('absolute path') }), (a) => needIO().open(a.path));
-  def('file', 'import', 'Insert a model file (glb, gltf, obj, stl, fbx) into the current model.', obj({ path: str('absolute path') }), (a) => needIO().importModel(a.path));
-  def('file', 'export', 'Export: glb, gltf, obj, stl, png (viewport image) or video (renders the timeline; render_video has all the options).', obj({ format: str('format', ['glb', 'gltf', 'obj', 'stl', 'png', 'video']), path: str('absolute output path; omit to be asked') }, ['format']), (a) => needIO().exportAs(a.format, a.path));
+  // ---------------------------------------------------------------- files: models and exchange formats (#152)
+  const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'png', 'video'];
+  def('file', 'list_formats', 'File formats this app reads and writes, with their options (LandXML, IFC, DXF and models).', obj({}), () => [...F.listFormats(), { id: 'glb / gltf / obj / stl / fbx', label: '3D models (insert)', import: true, export: true }]);
+  def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)') }), async (a) => {
+    const doc = ctx.doc;
+    if (!a.path && a.text === undefined) {
+      a.path = await needIO().pick('import', false);
+      if (!a.path) return { cancelled: true };
+    }
+    let fmt = a.format ? F.getFormat(a.format) : a.path ? F.formatFor(a.path) : null;
+    if (a.format && !fmt) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
+    if (!fmt && a.path) return needIO().importModel(a.path);
+    if (!fmt) throw new Error('Give path, or text with format.');
+    if (!fmt.read) throw new Error(`${fmt.label}: export only.`);
+    let data = a.text;
+    if (data === undefined) data = fmt.binary ? await needIO().readBinary(a.path) : await needIO().readText(a.path);
+    if (!a.format && a.path) fmt = F.formatFor(a.path, data); // .xml is shared: look inside
+    if (fmt.binary && typeof data === 'string') data = new TextEncoder().encode(data);
+    const report = F.newReport();
+    const before = new Set(doc.entities.map((e) => e.id));
+    const extra = await fmt.read(data, { doc, cmd: (n, x) => reg.commands.get(n).run(x), report, opts: a });
+    const made = doc.entities.filter((e) => !before.has(e.id) && (!e.parent || before.has(e.parent)));
+    if (!made.length) throw new Error(`Nothing to import in that ${fmt.id.toUpperCase()} file${report.done().skipped.length ? `: ${report.done().skipped.map((x) => x.what).join('; ')}` : ''}.`);
+    ctx.selection.set(made.filter((e) => !S.isPoint(e)).map((e) => e.id).slice(0, 2000));
+    return report.done({ format: fmt.id, file: a.path ? String(a.path).split(/[\\/]/).pop() : undefined, ...(extra || {}) });
+  }, true);
+  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file') }, ['format']), async (a) => {
+    const fmt = F.getFormat(a.format);
+    if (!fmt) {
+      if (!MODEL_FORMATS.includes(a.format)) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
+      return needIO().exportAs(a.format, a.path);
+    }
+    if (!fmt.write) throw new Error(`${fmt.label}: import only.`);
+    const doc = ctx.doc;
+    const ents = a.selection ? [...new Set(targets(ctx, {}).flatMap((e) => [e, ...D.descendants(doc, e.id)]))] : doc.entities;
+    if (!ents.length) throw new Error('Nothing to export (the selection is empty).');
+    const text = fmt.write(doc, { ents, opts: { ...a, version: ctx.version } });
+    const io = needIO();
+    const path = a.path || (await io.pick(fmt.id, true, `Model.${fmt.extensions[0]}`));
+    if (!path) return { cancelled: true };
+    await io.writeText(path, text);
+    return { path, format: fmt.id, bytes: text.length, entities: ents.length };
+  }, true);
+  reg.commands.get('import').compound = true;
+
+  // ---------------------------------------------------------------- feature layers and their attribute table (#125)
+  const WHERE = { description: 'attribute filters: { field: value | { min, max } | { contains: "text" } }' };
+  const featuresOf = (a) => {
+    const doc = ctx.doc;
+    const match = L.matcher(a.layer || '*');
+    let list = (a.ids?.length ? D.resolve(doc, a.ids) : doc.entities.filter((e) => match(e.tag))).filter((e) => !e.parent || !D.getEntity(doc, e.parent)?.component);
+    if (a.code) list = list.filter((e) => S.isPoint(e) && S.parseCode(e.point.code).code === a.code.toUpperCase());
+    for (const [k, w] of Object.entries(a.where || {})) {
+      const val = (e) => (k === 'name' ? e.name : k === 'code' && e.point ? e.point.code : e.meta?.[k]);
+      list = list.filter((e) => {
+        const v = val(e);
+        if (w && typeof w === 'object') return (w.min === undefined || v >= w.min) && (w.max === undefined || v <= w.max) && (w.contains === undefined || String(v ?? '').toLowerCase().includes(String(w.contains).toLowerCase()));
+        return String(v) === String(w);
+      });
+    }
+    if (a.min_z !== undefined || a.max_z !== undefined) {
+      list = list.filter((e) => {
+        const z = S.toProject(doc, D.worldBox(doc, e).min).z;
+        return (a.min_z === undefined || z >= a.min_z) && (a.max_z === undefined || z <= a.max_z);
+      });
+    }
+    if (a.inside) {
+      const [b] = D.resolve(doc, a.inside);
+      const ring = (b.curve ? D.curvePoints(doc, b) : b.line ? S.lineworkPath(doc, b) : null)?.map((p) => [p[0], p[2]]);
+      if (!ring || ring.length < 3) throw new Error(`${b.name} is not a closed curve or boundary.`);
+      const inRing = ([x, z]) => {
+        let c = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) if (ring[i][1] > z !== ring[j][1] > z && x < ((ring[j][0] - ring[i][0]) * (z - ring[i][1])) / (ring[j][1] - ring[i][1]) + ring[i][0]) c = !c;
+        return c;
+      };
+      list = list.filter((e) => {
+        const bx = D.worldBox(doc, e);
+        return inRing([(bx.min[0] + bx.max[0]) / 2, (bx.min[2] + bx.max[2]) / 2]);
+      });
+    }
+    return list;
+  };
+  def('layers', 'query_features', 'Find features by layer (glob), code, attribute values (equal, range, contains), elevation range or inside a closed boundary; selects them and returns their attributes.', obj({ layer: str('layer name or glob'), code: str('survey code'), where: WHERE, min_z: num('elevation at least (project)'), max_z: num('elevation at most'), inside: str('a closed curve or boundary'), select: bool('select them (default true)'), limit: num('rows returned, default 200') }), (a) => {
+    const list = featuresOf(a);
+    if (a.select !== false) ctx.selection.set(list.map((e) => e.id));
+    return { count: list.length, features: list.slice(0, a.limit || 200).map((e) => ({ id: e.id, name: e.name, layer: e.tag, ...(e.point ? { code: e.point.code } : {}), attributes: e.meta || {} })) };
+  });
+  def('layers', 'edit_attributes', 'Set attribute values on many features at once: picked by ids, or by layer + where (the same filters as query_features). Values are checked against the layer\'s attribute schema.', obj({ ids, layer: str('layer name or glob'), where: WHERE, code: str('survey code'), values: obj({}, []), remove: { type: 'array', items: { type: 'string' }, description: 'attribute names to delete' } }), (a) => {
+    if (!a.ids?.length && !a.layer && !a.where && !a.code) a.ids = ctx.selection.get();
+    const list = featuresOf(a);
+    if (!list.length) throw new Error('No features match.');
+    for (const e of list) {
+      e.meta = { ...(e.meta || {}), ...L.checkAttributes(L.layerOf(ctx.doc, e.tag), a.values || {}) };
+      for (const k of a.remove || []) delete e.meta[k];
+      if (!Object.keys(e.meta).length) delete e.meta;
+    }
+    return { edited: list.length };
+  }, true);
   def('file', 'render_video', 'Render the timeline frame by frame (no dropped frames at any size): mp4 (H.264), webm (VP9, can be transparent), gif, or a png sequence (name_0001.png …). Captions are burned in.', obj({ path: str('absolute .mp4 / .webm / .gif / .png path; omit to be asked'), format: str('default: from the path', ['mp4', 'webm', 'gif', 'png']), width: num('pixels, default 1920'), height: num('pixels, default 1080'), fps: num('default: the timeline\'s'), from: T('default 0'), to: T('default: the end'), transparent: bool('no background (webm, png, gif)'), quality: str('default high', ['medium', 'high', 'very-high']) }), (a) => {
     const io = needIO();
     const from = at(a.from, 0);

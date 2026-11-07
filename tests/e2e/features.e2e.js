@@ -291,3 +291,32 @@ test('drawings: a PDF sheet on screen, calibrated and georeferenced with the mou
   const picked = await w.evaluate(() => window.mmr.app.selection.map((i) => window.mmr.doc.entities.find((e) => e.id === i).tag));
   assert.ok(picked.length && !picked.includes('PDF Kerbs'), `box select skips the locked layer: ${picked}`);
 });
+
+test('formats: DXF in, attribute typed in the layer table, IFC out and back in the renderer (web-ifc in the browser)', async () => {
+  const { DXF_MM } = await import('../fixtures/formats.js');
+  const dxf = path.join(home, 'plan.dxf');
+  fs.writeFileSync(dxf, DXF_MM);
+  await ok('new_model');
+  const r = await ok('import', { path: dxf });
+  assert.equal(r.created.instances, 2);
+  await ok('create_layer', { name: 'Trees', schema: { species: { type: 'string' } } });
+  await ok('create_cylinder', { radius: 0.3, height: 4, name: 'Oak', tag: 'Trees' });
+  // the attribute table of the Trees layer: type the species
+  await w.click('[data-tab="outliner"]');
+  await w.getByRole('button', { name: 'Attribute table of Trees' }).click();
+  const cell = w.locator('dialog[open] input[aria-label="species of Oak"]');
+  await cell.fill('quercus');
+  await cell.press('Tab');
+  await w.waitForFunction(() => window.mmr.doc.entities.find((e) => e.name === 'Oak').meta?.species === 'quercus');
+  await w.keyboard.press('Escape');
+  // IFC out, and back into an empty model
+  const ifc = path.join(home, 'out.ifc');
+  await ok('export', { format: 'ifc', path: ifc });
+  assert.match(fs.readFileSync(ifc, 'utf8'), /IFCBUILDINGSTOREY/);
+  await ok('new_model');
+  const back = await ok('import', { path: ifc });
+  assert.ok(back.created.elements >= 3, `IFC elements read back: ${JSON.stringify(back.created)}`);
+  const q = await ok('query_features', { layer: 'Trees' });
+  assert.equal(q.features[0].attributes['Pset_MyModellerReel.species'], 'quercus');
+  assert.ok(await w.evaluate(() => window.mmr.app.viewport.objs.size > 3));
+});

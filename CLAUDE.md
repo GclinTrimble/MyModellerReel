@@ -24,7 +24,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   current layer, ByLayer, schemas, states), `underlay.js` (drawing ↔ plan affine, calibration, least-squares
   georeferencing, world files), `pdf.js` (pdf.js reading: pages, layers, paths and text), `drafting.js` (2D polyline
   offset, trim, extend, fillet, join, simplify), `drawings.js` (underlay frames, extraction clean-up, the extrude
-  generator), `assets.js` (PDF / image bytes kept out of the document JSON, packed into saved files).
+  generator), `assets.js` (PDF / image bytes kept out of the document JSON, packed into saved files), `formats.js` (the
+  import / export registry and reports), `xml.js`, `landxml.js`, `dxf.js`, `ifc.js` (web-ifc reads; we write IFC).
 - Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are

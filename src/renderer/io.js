@@ -28,6 +28,10 @@ const FILTERS = {
   png: [{ name: 'PNG image', extensions: ['png'] }],
   video: [{ name: 'MP4 video (H.264)', extensions: ['mp4'] }, { name: 'WebM video (VP9, can be transparent)', extensions: ['webm'] }, { name: 'Animated GIF', extensions: ['gif'] }, { name: 'PNG sequence', extensions: ['png'] }],
   models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'xml', 'landxml', 'ifc', 'dxf'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  landxml: [{ name: 'LandXML 1.2', extensions: ['xml'] }],
+  ifc: [{ name: 'IFC', extensions: ['ifc'] }],
+  dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
 };
 
 export class IO {

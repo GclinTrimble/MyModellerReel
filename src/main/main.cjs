@@ -53,7 +53,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc)$/i;
 
 let win;
 function createWindow(page) {
@@ -125,15 +125,15 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF and image files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|ifc)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image and IFC files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 });
 // survey files, feature libraries and world files, as text
 ipcMain.handle('file:read-text', (_, p) => {
-  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only .csv, .txt, .json and world files.`);
-  if (fs.statSync(p).size > 50e6) throw new Error('That file is over 50 MB.');
+  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld|xml|landxml|dxf|ifc)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only text, world and exchange files.`);
+  if (fs.statSync(p).size > (/\.(dxf|ifc|xml|landxml)$/i.test(p) ? 300e6 : 50e6)) throw new Error('That file is too big.');
   return fs.readFileSync(p, 'utf8');
 });
 ipcMain.handle('file:write', (_, p, data) => {

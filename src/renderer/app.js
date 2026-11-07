@@ -53,6 +53,7 @@ app.ctx = {
   view: app.viewport,
   timeline: app.timeline,
   io: app.io,
+  version: app.info?.version,
   plugins: {
     list: () => app.plugins,
     async create(name, code) {

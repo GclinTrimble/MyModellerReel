@@ -5,7 +5,7 @@
 // files store each part's mesh once.
 import * as D from './document.js';
 
-const FIELDS = ['type', 'name', 'mesh', 'curve', 'material', 'position', 'rotation', 'scale', 'meta', 'visible', 'tag', 'derived'];
+const FIELDS = ['type', 'name', 'mesh', 'curve', 'material', 'position', 'rotation', 'scale', 'meta', 'visible', 'tag', 'byLayer', 'derived'];
 
 /** The parts of an instance as definition entries: { key, parentKey, …FIELDS }, in a stable order. */
 function partsOf(doc, inst) {

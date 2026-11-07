@@ -101,7 +101,10 @@ export class UI {
       open: { label: 'Open…', icon: 'folder-open', key: 'Ctrl+O', run: run('open', {}) },
       save: { label: 'Save', icon: 'floppy-disk', key: 'Ctrl+S', run: () => app.reg.run('save', { path: app.file || undefined }).catch((e) => this.toast(e.message, 'danger')) },
       saveAs: { label: 'Save as…', icon: 'floppy-disk', key: 'Ctrl+Shift+S', run: run('save', {}) },
-      import: { label: 'Import model…', icon: 'tray-arrow-down', run: run('import', {}) },
+      import: { label: 'Import (LandXML, IFC, DXF, models)…', icon: 'tray-arrow-down', run: () => app.reg.run('import', {}).then((r) => r && !r.cancelled && r.created && this.importReport(r)).catch((e) => this.toast(e.message, 'danger')) },
+      exportLandxml: { label: 'Export LandXML…', icon: 'export', run: run('export', { format: 'landxml' }) },
+      exportIfc: { label: 'Export IFC…', icon: 'export', run: run('export', { format: 'ifc' }) },
+      exportDxf: { label: 'Export DXF…', icon: 'export', run: run('export', { format: 'dxf' }) },
       exportGlb: { label: 'Export GLB', icon: 'export', run: run('export', { format: 'glb' }) },
       exportGltf: { label: 'Export glTF', icon: 'export', run: run('export', { format: 'gltf' }) },
       exportObj: { label: 'Export OBJ', icon: 'export', run: run('export', { format: 'obj' }) },
@@ -264,7 +267,7 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
@@ -458,7 +461,7 @@ export class UI {
   layerRows(doc, run) {
     const cur = doc.settings.current_layer || 'Untagged';
     const counts = new Map();
-    for (const e of doc.entities) if (!e.parent) counts.set(e.tag, (counts.get(e.tag) || 0) + 1);
+    for (const e of doc.entities) if (e.type !== 'group') counts.set(e.tag, (counts.get(e.tag) || 0) + 1);
     return [...doc.tags]
       .sort((a, b) => (a.name === 'Untagged' ? -1 : b.name === 'Untagged' ? 1 : a.name.localeCompare(b.name)))
       .map((t) => {
@@ -472,6 +475,7 @@ export class UI {
           h('span.name', {}, leaf),
           h('span.muted.small', {}, counts.get(t.name) || 0),
           h('button.icon-btn.sm', { title: isCur ? 'Current layer: new geometry goes here' : 'Make current', 'aria-label': isCur ? `${t.name} is the current layer` : `Make ${t.name} current`, 'aria-pressed': String(isCur), onclick: () => run('set_layer', { name: t.name, current: true }) }, icon(isCur ? 'check-circle' : 'circle')),
+          h('button.icon-btn.sm', { title: 'Attribute table', 'aria-label': `Attribute table of ${t.name}`, onclick: () => this.attributeTable(t.name) }, icon('table')),
           h('button.icon-btn.sm', { title: t.locked ? 'Unlock layer' : 'Lock layer', 'aria-label': t.locked ? `Unlock ${t.name}` : `Lock ${t.name}`, onclick: () => run('set_layer', { name: t.name, locked: !t.locked }) }, icon(t.locked ? 'lock-simple' : 'lock-simple-open')),
           h('button.icon-btn.sm', { title: t.visible ? 'Hide layer' : 'Show layer', 'aria-label': t.visible ? `Hide ${t.name}` : `Show ${t.name}`, onclick: () => run('set_layer', { name: t.name, visible: !t.visible }) }, icon(t.visible ? 'eye' : 'eye-slash')),
         );
@@ -492,6 +496,61 @@ export class UI {
     } catch (err) {
       this.toast(err.message, 'danger');
     }
+  }
+
+  /** What an import brought in, what it skipped and why. */
+  importReport(r) {
+    const rows = Object.entries(r.created).map(([k, v]) => h('tr', {}, h('td', {}, k.replace(/_/g, ' ')), h('td', {}, String(v))));
+    this.modal(
+      `Imported ${r.file || r.format.toUpperCase()}`,
+      h(
+        'div',
+        {},
+        h('div.qty', {}, h('table', {}, h('tbody', {}, rows))),
+        r.layers?.length ? h('p.small', {}, `Layers: ${r.layers.join(', ')}`) : null,
+        r.skipped?.length ? h('div', {}, h('div.overline', {}, 'Skipped'), ...r.skipped.map((s) => h('div.small', {}, `${s.what} (${s.count})`))) : null,
+        r.warnings?.length ? h('div', {}, h('div.overline', {}, 'Warnings'), ...r.warnings.map((w) => h('div.small.param-error', {}, w))) : null,
+      ),
+    );
+  }
+
+  /** A feature layer's attribute table: one row per feature, a column per attribute; edit in place, sort, filter. */
+  attributeTable(layer, sortBy = 'name', filter = '') {
+    const app = this.app;
+    const doc = app.store.doc;
+    const t = doc.tags.find((x) => x.name === layer);
+    const feats = doc.entities.filter((e) => e.tag === layer && !e.parent);
+    // survey points show their code and coordinates too
+    const pts = feats.some((e) => e.point) ? ['code', 'N', 'E', 'Z'] : [];
+    const cols = [...pts, ...new Set([...Object.keys(t?.schema || {}), ...feats.flatMap((e) => Object.keys(e.meta || {}))])];
+    const PT = { code: (e) => e.point?.code, N: (e) => e.point?.n, E: (e) => e.point?.e, Z: (e) => e.point?.z };
+    const val = (e, c) => (c === 'name' ? e.name : PT[c] && pts.length ? PT[c](e) : e.meta?.[c]);
+    const rows = feats
+      .filter((e) => !filter || [e.name, ...cols.map((c) => e.meta?.[c])].some((v) => String(v ?? '').toLowerCase().includes(filter.toLowerCase())))
+      .sort((a, b) => String(val(a, sortBy) ?? '').localeCompare(String(val(b, sortBy) ?? ''), undefined, { numeric: true }));
+    const cell = (e, c) => {
+      if (PT[c] && pts.length) {
+        if (!e.point) return '';
+        if (c === 'code') return h('input.cell', { value: e.point.code, 'aria-label': `Code of ${e.name}`, onchange: (ev) => app.reg.run('edit_points', { points: [e.id], code: ev.target.value }).catch((err) => this.toast(err.message, 'danger')) });
+        return h('span.small', {}, PT[c](e).toFixed(3));
+      }
+      const f = t?.schema?.[c];
+      const v = e.meta?.[c];
+      const put = (x) => app.reg.run('edit_attributes', { ids: [e.id], values: { [c]: x } }).catch((err) => this.toast(err.message, 'danger'));
+      if (f?.type === 'boolean') return h('input', { type: 'checkbox', checked: !!v, 'aria-label': `${c} of ${e.name}`, onchange: (ev) => put(ev.target.checked) });
+      if (f?.options) return h('select.cell', { 'aria-label': `${c} of ${e.name}`, onchange: (ev) => put(ev.target.value) }, ['', ...f.options].map((o) => h('option', { value: o, selected: o === v }, o)));
+      return h('input.cell', { value: v ?? '', 'aria-label': `${c} of ${e.name}`, onchange: (ev) => put(f?.type === 'number' || typeof v === 'number' ? +ev.target.value : ev.target.value) });
+    };
+    const box = h('input', { type: 'search', placeholder: 'Filter', value: filter, 'aria-label': 'Filter features', onchange: (ev) => (this.closeModal?.(), this.attributeTable(layer, sortBy, ev.target.value)) });
+    this.modal(
+      `${layer} · ${rows.length} of ${feats.length} features`,
+      h(
+        'div',
+        {},
+        h('div.row', {}, box, h('button.btn', { onclick: () => app.select(rows.map((e) => e.id)) }, icon('cursor'), 'Select these')),
+        h('div.qty.attr', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['name', ...cols].map((c) => h('th', { onclick: () => (this.closeModal?.(), this.attributeTable(layer, c, filter)), title: 'Sort', style: { cursor: 'pointer' } }, c + (c === sortBy ? ' ▲' : ''))))), h('tbody', {}, rows.slice(0, 500).map((e) => h('tr', {}, h('td', {}, e.name), ...cols.map((c) => h('td', {}, cell(e, c)))))))),
+      ),
+    );
   }
 
   /** A read-only result in a dialog (counts, text lists). */
@@ -904,6 +963,10 @@ export class UI {
     const t = h(`div.toast${kind ? `.${kind}` : ''}`, { role: kind === 'danger' ? 'alert' : 'status' }, msg);
     this.$('toasts').append(t);
     setTimeout(() => t.remove(), kind === 'danger' ? 6000 : 2600);
+  }
+  closeModal() {
+    const d = this.$('modal');
+    if (d.open) d.close();
   }
   modal(title, body, buttons = [['Close', null]]) {
     const dlg = this.$('modal');
