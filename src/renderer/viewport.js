@@ -68,7 +68,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     let o;
     if (e.mesh) {
       const g = geo(e.mesh);
-      o = new THREE.Mesh(g.geometry, makeMaterial(e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc }));
+      o = new THREE.Mesh(g.geometry, makeMaterial(e.byLayer ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc }));
       o.material.clippingPlanes = clipping;
       o.castShadow = o.receiveShadow = true;
       if (wireframe) o.material.visible = false;
