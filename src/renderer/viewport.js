@@ -70,7 +70,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
       if (wireframe) o.material.visible = false;
       if (edges || wireframe) {
         const lines = new THREE.LineSegments(
-          (g.edges ||= featureEdges(o.geometry)),
+          (g.edges ||= withImprints(featureEdges(o.geometry), e.mesh)),
           new THREE.LineBasicMaterial({ color: EDGE_COLOR, clippingPlanes: clipping }),
         );
         lines.raycast = () => {};
@@ -130,6 +130,18 @@ function featureEdges(geo) {
   }
   eg.dispose();
   return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(keep, 3));
+}
+
+/** Add the outlines of imprinted faces to an edge geometry. */
+function withImprints(edges, mesh) {
+  const extra = G.imprintEdges(mesh);
+  if (!extra.length) return edges;
+  const old = edges.attributes.position.array;
+  const pos = new Float32Array(old.length + extra.length * 6);
+  pos.set(old);
+  extra.forEach(([a, b], i) => pos.set([...a, ...b], old.length + i * 6));
+  edges.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  return edges;
 }
 
 export function skyTexture(top, bottom) {

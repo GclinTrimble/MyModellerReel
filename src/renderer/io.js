@@ -13,6 +13,7 @@ import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
 import { buildModel } from './viewport.js';
 import { renderVideo } from './render.js';
+import { stripForSave, hydrate } from '../core/components.js';
 
 const D2R = Math.PI / 180;
 const native = () => window.native;
@@ -41,11 +42,12 @@ export class IO {
   /** Export scene + baked animation clip. withDoc keeps the editable document inside (our save format). */
   async toGLTF(binary, withDoc) {
     const doc = this.app.store.doc;
-    const { root, objs } = buildModel(doc, { edges: false });
+    // shared parts (component instances) share one geometry, which the GLB then stores once
+    const { root, objs } = buildModel(doc, { edges: false, cache: { map: new WeakMap(), used: new Set() } });
     const scene = new THREE.Scene();
     scene.name = 'MyModellerReel';
     scene.add(root);
-    if (withDoc) scene.userData.mymodellerreel = JSON.stringify(doc);
+    if (withDoc) scene.userData.mymodellerreel = JSON.stringify(doc, stripForSave);
     const animations = this.clips(doc, objs, scene);
     return new GLTFExporter().parseAsync(scene, { binary, animations, onlyVisible: false });
   }
@@ -121,7 +123,9 @@ export class IO {
     const gltf = await this.load(path);
     const raw = gltf.scene?.userData?.mymodellerreel;
     if (raw) {
-      this.app.store.replace(JSON.parse(raw));
+      const opened = JSON.parse(raw);
+      hydrate(opened);
+      this.app.store.replace(opened);
       this.app.afterOpen(path);
       return { opened: path, entities: this.app.store.doc.entities.length, editable: true };
     }

@@ -152,3 +152,49 @@ test('the copilot end to end (stubbed provider): routed tools, a proposal to acc
   assert.equal(review.images.length, 4);
   assert.match(review.critique, /sits on AI box/);
 });
+
+test('modelling depth with the mouse: a rectangle drawn on a face imprints it, the Arc tool draws an arc; components share geometry', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 3, height: 0.4, depth: 3, name: 'Slab' });
+  await ok('set_camera', { position: [3.5, 5, 4.5], target: [0, 0.4, 0] });
+  const screen = (x, y, z) => w.evaluate(([px, py, pz]) => {
+    const v = window.mmr.app.viewport;
+    const p = v.toScreen(new window.mmr.THREE.Vector3(px, py, pz));
+    return [p.x, p.y];
+  }, [x, y, z]);
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  await w.keyboard.press('r');
+  for (const [x, z] of [[-0.6, -0.6], [0.6, 0.6]]) {
+    const [sx, sy] = await screen(x, 0.4, z);
+    await w.mouse.move(sx, sy);
+    await w.mouse.down();
+    await w.mouse.up();
+  }
+  const slab = await ok('get_entity', { id: 'Slab' });
+  assert.equal((await ok('get_scene')).entities.length, 1, 'imprinted into the slab, not a new face entity');
+  const inner = slab.faces.at(-1);
+  assert.ok(inner.area > 1 && inner.area < 2, `imprinted face area ${inner.area}`);
+  await ok('push_pull', { id: 'Slab', face: inner.index, distance: -0.4 });
+  assert.ok((await ok('get_entity', { id: 'Slab' })).volume < 3.6 - 0.4);
+  await w.keyboard.press('a');
+  for (const [x, z] of [[2, 0.8], [2, -1.6], [2.8, -0.4]]) {
+    const [sx, sy] = await screen(x, 0, z);
+    await w.mouse.move(sx, sy);
+    await w.mouse.down();
+    await w.mouse.up();
+  }
+  const arc = (await ok('get_scene')).entities.find((e) => e.type === 'curve');
+  assert.ok(arc && arc.points > 8, 'an arc was drawn');
+  await w.keyboard.press('Escape');
+  await w.keyboard.press(' ');
+  await ok('create_box', { width: 1, height: 1, depth: 0.1, name: 'Pane', position: [6, 0, 0] });
+  const g = await ok('make_component', { ids: ['Pane'], name: 'Pane set' });
+  const copy = (await ok('duplicate', { ids: [g.id], offset: [1.5, 0, 0] })).created[0];
+  const shared = await w.evaluate(([a, b]) => {
+    const v = window.mmr.app.viewport;
+    const doc = window.mmr.doc;
+    const part = (id) => doc.entities.find((e) => e.parent === id).id;
+    return v.objs.get(part(a)).geometry === v.objs.get(part(b)).geometry;
+  }, [g.id, copy]);
+  assert.equal(shared, true, 'instances share one GPU geometry');
+});

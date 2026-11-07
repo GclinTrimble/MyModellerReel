@@ -62,6 +62,10 @@ app.ctx = {
   },
   autoKey: false,
   onMacro: () => app.ui.refresh(),
+  onEditComponent: (id) => {
+    app.context = id; // edit inside the instance, like double-clicking a group
+    app.ui.refresh();
+  },
   skill: localStorage.getItem('mymodellerreel.skill') || null,
   onSkill: (name) => {
     localStorage.setItem('mymodellerreel.skill', name || '');

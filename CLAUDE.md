@@ -17,7 +17,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `curves.js` (curves,
   sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
   `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
-  `materials.js` (the material catalogue).
+  `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
+  (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files).
 - Entities: `type` mesh | group | curve. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are

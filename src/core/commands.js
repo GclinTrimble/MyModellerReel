@@ -10,6 +10,8 @@ import { booleanMeshes } from './csg.js';
 import { quantities, toCsv } from './quantities.js';
 import { reviewChecks, reviewStats } from './review.js';
 import { SKILLS, skillPrompt } from './skills.js';
+import * as Topo from './topology.js';
+import * as Comp from './components.js';
 import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
@@ -39,6 +41,9 @@ export const GUIDE = `MyModellerReel conventions:
 - create_curve makes paths (polyline, smooth spline, bezier) for sweeps and motion.
 - Recipes: save_recipe keeps how the model was built (with {{param}} placeholders); replay_recipe rebuilds it with
   other values. record_macro / stop_macro turn what was just done into a recipe or a plugin command.
+- Modelling depth: imprint an outline on a face (or offset_face to inset it), then push_pull it into a recess,
+  a boss or a hole; move_elements moves a face, edge ("top front") or corner; repair_mesh cleans imports; create_arc.
+  make_component links copies: edit any instance's parts (edit_component) and every instance follows.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
@@ -101,7 +106,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) R.rebuildDerived(ctx.doc);
+        if (c.mutates) R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -177,6 +182,7 @@ function summary(doc, e) {
       : e.mesh
         ? { color: e.material.color, faces: e.mesh.f.length }
         : { children: D.childrenOf(doc, e.id).length }),
+    ...(e.component ? { component: e.component } : {}),
     ...(e.derived ? { generator: e.derived.generator, ...(e.derived.error ? { error: e.derived.error } : {}) } : {}),
     ...(e.material.opacity < 1 ? { opacity: e.material.opacity } : {}),
     ...(e.tag !== 'Untagged' ? { tag: e.tag } : {}),
@@ -394,7 +400,17 @@ function registerCore(reg, ctx) {
     const [e] = D.resolve(doc, ref);
     const fi = pickFace(doc, e, face);
     R.bake(e); // hand edits end the parametric recipe
-    e.mesh = G.pushPull(e.mesh, fi, distance / (e.scale[0] || 1)); // shortcut: assumes uniform scale
+    const d = distance / (e.scale[0] || 1); // shortcut: assumes uniform scale
+    // an imprinted face pushed all the way through the solid becomes a hole
+    const n = G.faceNormal(e.mesh, fi);
+    const c0 = G.dot(n, G.faceCenter(e.mesh, fi));
+    const depth = Math.max(...e.mesh.v.map((p) => c0 - G.dot(n, p)));
+    const imprinted = e.mesh.f.some((f, g) => g !== fi && G.dot(G.faceNormal(e.mesh, g), n) > 1 - 1e-6 && Math.abs(G.dot(n, e.mesh.v[f[0]]) - c0) < 1e-6 && f.some((i) => e.mesh.f[fi].includes(i)));
+    if (d < 0 && imprinted && -d >= depth - 1e-6) {
+      const pts = G.facePoints(e.mesh, fi).map((p) => G.add(p, G.scl(n, 0.01)));
+      const cutter = G.extrude(G.flatFace(pts, n), 0, -(depth + 0.02));
+      e.mesh = Topo.repairMesh(booleanMeshes('subtract', e.mesh, [G.orient(cutter)]), { closeHoles: false }).mesh;
+    } else e.mesh = G.pushPull(e.mesh, fi, d);
     return summary(doc, e);
   }, true);
 
@@ -714,6 +730,198 @@ function registerCore(reg, ctx) {
     }
     return ents.map((e) => summary(doc, e));
   }, true);
+
+  // ---------------------------------------------------------------- modelling depth: imprint, offset, repair, elements, arcs
+  /** World points → an entity's local mesh space. */
+  const toLocal = (e, pts) => {
+    const inv = D.worldMatrix(ctx.doc, e).invert();
+    return pts.map((p) => new Vector3(...p).applyMatrix4(inv).toArray());
+  };
+  const meshOf = (ref) => {
+    const [e] = D.resolve(ctx.doc, ref);
+    if (!e.mesh) throw new Error(`${e.name} is not a shape.`);
+    return e;
+  };
+
+  def('edit', 'imprint', 'Draw a closed outline onto a face so push_pull can raise or sink just that part (a recess, a boss, or a hole when pushed all the way through) without a boolean. Give world points on the face, or a rectangle / circle centred on it.', obj({ id, face: { description: 'face index or top | bottom | left | right | front | back (default top)' }, points: { type: 'array', items: v3('point'), description: 'closed outline on the face, world [x,y,z]' }, shape: str('or a shape', ['rectangle', 'circle']), size: { type: 'array', items: { type: 'number' }, description: 'rectangle [width, depth] in m, in the face plane' }, radius: num('circle radius, m'), center: v3('shape centre on the face (default: face centre)'), segments: num('circle sides, default 32') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const e = meshOf(a.id);
+    let fi = pickFace(doc, e, a.face ?? 'top');
+    // "top" is the outermost top face; an outline drawn lower down (beside a boss) belongs to the face on its plane
+    const anchor = a.points ? toLocal(e, a.points)[0] : a.center ? toLocal(e, [a.center])[0] : null;
+    if (anchor && typeof (a.face ?? 'top') === 'string' && !/^\d+$/.test(a.face ?? '')) {
+      const n0 = G.faceNormal(e.mesh, fi);
+      const on = e.mesh.f.findIndex((f, g) => G.dot(G.faceNormal(e.mesh, g), n0) > 1 - 1e-6 && Math.abs(G.dot(n0, G.sub(anchor, e.mesh.v[f[0]]))) < 1e-4);
+      if (on >= 0) fi = on;
+    }
+    let loop;
+    if (a.points) loop = toLocal(e, a.points);
+    else {
+      if (!a.shape) throw new Error('Give points, or a shape (rectangle with size, circle with radius).');
+      const n = G.faceNormal(e.mesh, fi);
+      const c = a.center ? toLocal(e, [a.center])[0] : G.faceCenter(e.mesh, fi);
+      const fr = Topo.planeFrame(n, c);
+      const pts2 =
+        a.shape === 'circle'
+          ? Array.from({ length: a.segments || 32 }, (_, i) => [a.radius * Math.cos((i / (a.segments || 32)) * 2 * Math.PI), a.radius * Math.sin((i / (a.segments || 32)) * 2 * Math.PI)])
+          : [[-a.size[0] / 2, -a.size[1] / 2], [a.size[0] / 2, -a.size[1] / 2], [a.size[0] / 2, a.size[1] / 2], [-a.size[0] / 2, a.size[1] / 2]];
+      if (a.shape === 'circle' && !(a.radius > 0)) throw new Error('A circle needs a radius.');
+      if (a.shape === 'rectangle' && !(a.size?.[0] > 0 && a.size?.[1] > 0)) throw new Error('A rectangle needs size [width, depth].');
+      loop = pts2.map(fr.from);
+    }
+    const r = Topo.imprint(e.mesh, fi, loop);
+    R.bake(e);
+    e.mesh = r.mesh;
+    return { ...summary(doc, e), face: r.face };
+  }, true);
+
+  def('edit', 'offset_face', 'Offset a face\'s outline in its plane: a positive distance insets it (window frames, sills: the inner face is then ready for push_pull), a negative one grows a lone flat face.', obj({ id, face: { description: 'face index or top | bottom | left | right | front | back (default top)' }, distance: num('m, positive = inset') }, ['id', 'distance']), (a) => {
+    const doc = ctx.doc;
+    const e = meshOf(a.id);
+    const fi = pickFace(doc, e, a.face ?? 'top');
+    if (!a.distance) throw new Error('distance must not be 0.');
+    const loop = Topo.offsetFaceLoop(e.mesh, fi, a.distance);
+    R.bake(e);
+    if (a.distance > 0) {
+      const r = Topo.imprint(e.mesh, fi, loop);
+      e.mesh = r.mesh;
+      return { ...summary(doc, e), face: r.face };
+    }
+    if (e.mesh.f.length !== 1) throw new Error('Outsetting works on a lone flat face; on a solid, inset instead.');
+    e.mesh = G.flatFace(loop, G.faceNormal(e.mesh, 0));
+    return { ...summary(doc, e), face: 0 };
+  }, true);
+
+  def('edit', 'repair_mesh', 'Clean shapes after imports and booleans: weld duplicate vertices, drop broken faces, fix flipped faces, merge coplanar triangles into single faces (so push_pull moves a whole face), close holes.', obj({ ids, tolerance: num('weld distance, m (default 0.00001)'), merge: bool('merge coplanar faces (default true)'), close_holes: bool('cap open edges (default true)') }), (a) => {
+    const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(ctx.doc, e.id)]).filter((e) => e.mesh);
+    if (!ents.length) throw new Error('No shapes to repair.');
+    return ents.map((e) => {
+      const before = e.mesh.f.length;
+      const r = Topo.repairMesh(e.mesh, { tol: a.tolerance || 1e-5, merge: a.merge !== false, closeHoles: a.close_holes !== false });
+      R.bake(e);
+      e.mesh = r.mesh;
+      return { id: e.id, name: e.name, faces_before: before, faces: r.mesh.f.length, ...r.report };
+    });
+  }, true);
+
+  /** Vertex indices named by words: one word = a face, two = an edge, three = a corner ("top front left"). */
+  const verticesByWords = (e, words) => {
+    const ws = String(words).toLowerCase().split(/[\s,]+/).filter(Boolean);
+    const sets = ws.map((w) => new Set(e.mesh.f[pickFace(ctx.doc, e, w)]));
+    const out = [...sets[0]].filter((i) => sets.every((s) => s.has(i)));
+    if (!out.length) throw new Error(`"${words}" names no part of ${e.name}: those faces do not meet.`);
+    return out;
+  };
+  def('scene', 'list_elements', 'The vertices (index, world point) and faces of a shape, for move_elements.', obj({ id }, ['id']), (a) => {
+    const e = meshOf(a.id);
+    const m = D.worldMatrix(ctx.doc, e);
+    return { id: e.id, vertices: e.mesh.v.map((p, i) => ({ index: i, point: D.round3(new Vector3(...p).applyMatrix4(m).toArray()) })), faces: e.mesh.f.slice(0, 300).map((f, i) => ({ ...worldFaceInfo(ctx.doc, e, i), vertices: f })) };
+  });
+  def('edit', 'move_elements', 'Move part of a shape: a face, an edge or a corner (by words like "top", "top front", "top front left", or by index), or vertex indices from list_elements. Moving the top front edge up makes a roof slope. Faces that bend are split into triangles.', obj({ id, face: { description: 'face index or word' }, edge: { description: 'two face words ("top front") or [vertex, vertex]' }, vertex: { description: 'three face words ("top front left") or a vertex index' }, vertices: { type: 'array', items: { type: 'number' }, description: 'vertex indices' }, by: v3('world offset [dx,dy,dz]') }, ['id', 'by']), (a) => {
+    const doc = ctx.doc;
+    const e = meshOf(a.id);
+    let ids = a.vertices;
+    if (!ids && a.face !== undefined) ids = e.mesh.f[pickFace(doc, e, a.face)];
+    if (!ids && a.edge !== undefined) ids = Array.isArray(a.edge) ? a.edge : verticesByWords(e, a.edge);
+    if (!ids && a.vertex !== undefined) ids = typeof a.vertex === 'number' || /^\d+$/.test(a.vertex) ? [+a.vertex] : verticesByWords(e, a.vertex);
+    if (!ids?.length) throw new Error('Say what to move: face, edge, vertex or vertices.');
+    if (ids.some((i) => !e.mesh.v[i])) throw new Error(`${e.name} has vertices 0…${e.mesh.v.length - 1}.`);
+    const inv = D.worldMatrix(doc, e).invert();
+    const o = new Vector3(0, 0, 0).applyMatrix4(inv);
+    const d = new Vector3(...a.by).applyMatrix4(inv).sub(o).toArray();
+    R.bake(e);
+    e.mesh = Topo.moveVertices(e.mesh, ids, d);
+    return { ...summary(doc, e), moved: ids.length };
+  }, true);
+
+  def('create', 'create_arc', 'Arc as a curve (or a pie-shaped face): three_point (start, through, end), two_point (start, end, sagitta = bulge height), center (center, radius, start_angle, end_angle in degrees), tangent (continues a curve `from` smoothly, or leaves start along `direction`, to end).', obj({ kind: str('how it is given', ['three_point', 'two_point', 'center', 'tangent']), start: v3('start point'), through: v3('a point on the arc'), end: v3('end point'), sagitta: num('two_point: bulge height, m (sign = side)'), center: v3('centre'), radius: num('m'), start_angle: num('degrees'), end_angle: num('degrees'), normal: v3('plane of the arc (default up: on the ground)'), from: str('tangent: a curve to continue from its end'), direction: v3('tangent: direction at start'), segments: num('points along it (default by angle)'), pie: bool('close it through the centre into a flat face'), name: common.name, color: common.color }, ['kind']), (a) => {
+    const doc = ctx.doc;
+    let r;
+    if (a.kind === 'three_point') r = C.arcThrough(a.start, a.through, a.end, a.segments);
+    else if (a.kind === 'two_point') r = C.arcBulge(a.start, a.end, a.sagitta, a.normal, a.segments);
+    else if (a.kind === 'center') r = C.arcCenter(a.center, a.radius, a.start_angle ?? 0, a.end_angle ?? 90, a.normal, a.segments);
+    else {
+      let start = a.start;
+      let dir = a.direction;
+      if (a.from) {
+        const [c] = D.resolve(doc, a.from);
+        if (!c.curve) throw new Error(`${c.name} is not a curve.`);
+        const pts = D.curvePoints(doc, c);
+        start = pts.at(-1);
+        dir = G.sub(pts.at(-1), pts.at(-2));
+      }
+      if (!start || !dir || !a.end) throw new Error('tangent needs from (or start and direction) and end.');
+      r = C.arcTangent(start, dir, a.end, a.segments);
+    }
+    if (!r || r.points.some((p) => p.some((x) => !Number.isFinite(x)))) throw new Error('Give the points this kind of arc needs.');
+    if (a.pie) return reg.commands.get('create_face').run({ points: [r.center, ...r.points], name: a.name || D.uniqueName(doc, 'Pie'), color: a.color, normal: a.normal });
+    const res = reg.commands.get('create_curve').run({ points: r.points.map(D.round3), kind: 'polyline', name: a.name || `Arc ${doc.entities.filter((x) => x.type === 'curve').length + 1}`, color: a.color });
+    return { ...res, radius: r4(r.radius), center: D.round3(r.center), angle: r4((Math.abs(r.sweep) * 180) / Math.PI) };
+  }, true);
+
+  // ---------------------------------------------------------------- components (#38)
+  def('edit', 'make_component', 'Turn entities into a component: they become one instance, and copies (duplicate, place_component) stay linked. Edit the parts of any instance and every instance updates.', obj({ ids, name: str('component name') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const ents = targets(ctx, a);
+    if (ents.some((e) => e.component || e.compKey)) throw new Error('Already part of a component: make_unique first.');
+    if (new Set(ents.map((e) => e.parent)).size > 1) throw new Error('Pick entities at one level (not some inside a group and some outside).');
+    const b = D.unionBox(ents.map((e) => D.worldBox(doc, e)));
+    const g = Comp.define(doc, a.name, ents, D.round3([(b.min[0] + b.max[0]) / 2, b.min[1], (b.min[2] + b.max[2]) / 2]));
+    ctx.selection.set([g.id]);
+    return { ...summary(doc, g), component: a.name, parts: D.descendants(doc, g.id).length };
+  }, true);
+
+  def('create', 'place_component', 'Place a new instance of a component.', obj({ name: str('component name'), position: common.position, rotation: common.rotation, parent: common.parent }, ['name']), (a) => {
+    const g = Comp.instantiate(ctx.doc, a.name, { position: a.position || [0, 0, 0], rotation: a.rotation || [0, 0, 0], parent: a.parent ? D.resolve(ctx.doc, a.parent)[0].id : null });
+    ctx.selection.set([g.id]);
+    return summary(ctx.doc, g);
+  }, true);
+
+  def('edit', 'edit_component', 'The parts of a component instance, selected so they can be edited: any change to them (move, push_pull, set_material, adding or deleting parts) updates every instance.', obj({ id: str('an instance') }, ['id']), (a) => {
+    const [g] = D.resolve(ctx.doc, a.id);
+    if (!g.component) throw new Error(`${g.name} is not a component instance.`);
+    const parts = D.childrenOf(ctx.doc, g.id).map((c) => c.id);
+    ctx.selection.set(parts);
+    ctx.onEditComponent?.(g.id);
+    return { component: g.component, instance: g.id, instances: Comp.instancesOf(ctx.doc, g.component).length, parts: parts.map((x) => ({ id: x, name: D.getEntity(ctx.doc, x).name })) };
+  });
+
+  def('edit', 'make_unique', 'Unlink instances from their component: they get their own new component (or none with plain: true), so editing them no longer changes the others.', obj({ ids, name: str('new component name (default: "<name> 2")'), plain: bool('become plain groups instead') }), (a) => {
+    const doc = ctx.doc;
+    const insts = targets(ctx, a).filter((e) => e.component);
+    if (!insts.length) throw new Error('None of them is a component instance.');
+    const src = insts[0].component;
+    let name = null;
+    if (!a.plain) {
+      name = a.name || D.uniqueName({ entities: Object.keys(doc.components).map((n) => ({ name: n })) }, src);
+      if (doc.components[name]) throw new Error(`There is already a component "${name}".`);
+      doc.components[name] = { parts: structuredClone(doc.components[src].parts) };
+    }
+    for (const g of insts) {
+      if (name) g.component = name;
+      else {
+        delete g.component;
+        for (const d of D.descendants(doc, g.id)) delete d.compKey;
+      }
+    }
+    return { instances: insts.map((g) => g.id), component: name };
+  }, true);
+
+  def('edit', 'replace_component', 'Swap instances to another component (their place and turn stay).', obj({ ids, with: str('component to use') }, ['with']), (a) => {
+    const doc = ctx.doc;
+    if (!doc.components?.[a.with]) throw new Error(`No component "${a.with}".`);
+    const insts = targets(ctx, a).filter((e) => e.component);
+    if (!insts.length) throw new Error('None of them is a component instance.');
+    for (const g of insts) {
+      g.component = a.with;
+      Comp.refill(doc, g);
+    }
+    return { replaced: insts.map((g) => g.id), with: a.with };
+  }, true);
+
+  def('scene', 'list_components', 'Components in the model: name, parts and how many instances.', obj({}), () =>
+    Object.entries(ctx.doc.components || {}).map(([name, c]) => ({ name, parts: c.parts.length, instances: Comp.instancesOf(ctx.doc, name).map((g) => g.id) })),
+  );
 
   // ---------------------------------------------------------------- curves, sweeps, profiles
   def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {

@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import { AXIS_COLORS, meshGeometry } from './viewport.js';
+import { arcThrough } from '../core/curves.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 const AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -19,6 +20,7 @@ export const TOOLS = [
   { id: 'circle', label: 'Circle', key: 'C', icon: 'circle', group: 'draw' },
   { id: 'polygon', label: 'Polygon', key: 'G', icon: 'hexagon', group: 'draw' },
   { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
+  { id: 'arc', label: 'Arc (start, end, bulge)', key: 'A', icon: 'circle-half', group: 'draw' },
   { id: 'pushpull', label: 'Push/Pull', key: 'P', icon: 'arrow-fat-lines-up', group: 'edit' },
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
@@ -282,6 +284,7 @@ class DrawBase {
   }
   startPlane(inf) {
     this.p0 = inf.point.clone();
+    this.on = inf.hit && inf.kind !== 'On ground' ? { id: inf.hit.entityId, face: inf.hit.faceIndex } : null;
     const n = inf.hit && inf.kind !== 'On ground' ? inf.hit.normal.clone() : V(0, 1, 0);
     this.n = n;
     this.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, this.p0);
@@ -294,8 +297,14 @@ class DrawBase {
   async commit(points, name) {
     const p = points.map((x) => D.round3(x.toArray()));
     const area = G.len(G.cross(G.sub(p[1], p[0]), G.sub(p[2], p[0])));
+    const on = this.on;
     this.cancel();
     if (area < 1e-8) return;
+    if (on && this.t.app.entity(on.id)?.mesh) {
+      // drawn on a face: imprint it there, so Push/Pull makes a recess, a boss or a hole
+      const ok = await this.t.run('imprint', { id: on.id, face: on.face, points: p }).then(() => true, () => false);
+      if (ok) return this.t.status('Imprinted on the face. Push/Pull (P) it in or out; all the way through makes a hole.');
+    }
     await this.t.run('create_face', { points: p, normal: this.n.toArray(), name });
     this.t.status('Face made. Push/Pull (P) gives it thickness.');
   }
@@ -323,8 +332,8 @@ class LineTool extends DrawBase {
   }
   async down(ev) {
     const inf = this.t.infer(ev, { from: this.pts.at(-1), extra: this.pts.slice(0, 1) });
-    if (!this.pts.length && inf.hit) this.n = inf.hit.normal.clone();
-    else if (!this.pts.length) this.n = V(0, 1, 0);
+    if (!this.pts.length && inf.hit) (this.n = inf.hit.normal.clone()), (this.on = inf.kind !== 'On ground' ? { id: inf.hit.entityId, face: inf.hit.faceIndex } : null);
+    else if (!this.pts.length) (this.n = V(0, 1, 0)), (this.on = null);
     await this.add(inf.point);
   }
   async add(p) {
@@ -777,6 +786,47 @@ class CameraTool {
   }
 }
 
+/** Arc: click its start, its end, then where it bulges through (or type the bulge height). */
+class ArcTool extends DrawBase {
+  hint = 'Click the start, then the end, then a point the arc passes through. Type a bulge height (sagitta) instead of the last click.';
+  vcbLabel = 'Bulge';
+  cancel() {
+    super.cancel();
+    this.p1 = null;
+  }
+  preview(through) {
+    this.t.vp.overlay.clear();
+    if (!this.p1) return this.t.lines([this.p0, through], ACCENT);
+    try {
+      const a = arcThrough(this.p0.toArray(), through.toArray(), this.p1.toArray(), 32);
+      this.t.lines(a.points.map((p) => V(...p)), ACCENT);
+      this.t.status(`Radius ${fmt(a.radius)}, angle ${Math.round((a.sweep * 180) / Math.PI)}°`);
+    } catch {
+      this.t.lines([this.p0, this.p1], ACCENT);
+    }
+  }
+  move(ev) {
+    if (!this.p0) return this.t.infer(ev);
+    this.cur = this.onPlane(ev);
+    this.preview(this.cur);
+  }
+  async down(ev) {
+    if (!this.p0) return this.startPlane(this.t.infer(ev));
+    if (!this.p1) return void (this.p1 = this.onPlane(ev));
+    const [s, t, e] = [this.p0, this.onPlane(ev), this.p1].map((p) => D.round3(p.toArray()));
+    this.cancel();
+    await this.t.run('create_arc', { kind: 'three_point', start: s, through: t, end: e });
+  }
+  async vcb(text) {
+    const h = parseLength(text);
+    if (!this.p0 || !this.p1 || !h) return;
+    const [s, e] = [this.p0, this.p1].map((p) => D.round3(p.toArray()));
+    const n = this.n.toArray();
+    this.cancel();
+    await this.t.run('create_arc', { kind: 'two_point', start: s, end: e, sagitta: h, normal: n });
+  }
+}
+
 /** Click points of a path; Enter or double-click finishes. Three or more points make a smooth spline. */
 class CurveTool {
   hint = 'Click the points of a path (they snap like lines). Enter or double-click finishes; 3+ points make a smooth curve. Esc cancels.';
@@ -823,6 +873,7 @@ const IMPL = {
   circle: CircleTool,
   polygon: PolygonTool,
   curve: CurveTool,
+  arc: ArcTool,
   pushpull: PushPullTool,
   move: MoveTool,
   rotate: RotateTool,

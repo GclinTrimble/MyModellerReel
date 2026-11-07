@@ -258,9 +258,10 @@ export function unionBox(boxes) {
 }
 
 /** Deep-copy an entity (and its children) with fresh ids. Returns the new top entity. */
-export function duplicateEntity(doc, e, parent = e.parent) {
-  const copy = addEntity(doc, { ...JSON.parse(JSON.stringify(e)), id: undefined, parent, name: `${e.name} copy` });
-  for (const c of childrenOf(doc, e.id)) duplicateEntity(doc, c, copy.id);
+export function duplicateEntity(doc, e, parent = e.parent, top = true) {
+  // only the top copy is renamed: the parts inside it keep their names (and stay in step with a component)
+  const copy = addEntity(doc, { ...JSON.parse(JSON.stringify(e)), id: undefined, parent, name: top ? `${e.name} copy` : e.name });
+  for (const c of childrenOf(doc, e.id)) duplicateEntity(doc, c, copy.id, false);
   return copy;
 }
 

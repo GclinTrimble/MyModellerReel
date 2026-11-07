@@ -252,3 +252,26 @@ function dropDegenerate(m) {
     .filter((face) => new Set(face).size >= 3);
   return m;
 }
+
+/**
+ * Edges the eye cannot find by angle: where a drawn (imprinted) face meets the coplanar face around it. Returns
+ * [[a, b], …] point pairs for the outlines of polygon faces (4+ sides) whose neighbour across the edge is coplanar.
+ * Seams between triangles (imports, booleans) stay hidden.
+ */
+export function imprintEdges(mesh) {
+  const owner = new Map();
+  mesh.f.forEach((f, fi) => f.forEach((a, k) => {
+    const b = f[(k + 1) % f.length];
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    (owner.get(key) || owner.set(key, []).get(key)).push(fi);
+  }));
+  const out = [];
+  for (const [key, fs] of owner) {
+    if (fs.length !== 2 || fs[0] === fs[1]) continue;
+    if (mesh.f[fs[0]].length < 4 && mesh.f[fs[1]].length < 4) continue;
+    if (dot(faceNormal(mesh, fs[0]), faceNormal(mesh, fs[1])) < 1 - 1e-6) continue; // a crease: drawn anyway
+    const [a, b] = key.split('_').map(Number);
+    out.push([mesh.v[a], mesh.v[b]]);
+  }
+  return out;
+}

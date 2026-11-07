@@ -27,6 +27,9 @@ Electron's binary download is an install script; if your npm blocks install scri
   Measurements box: while a tool works, just type `2`, `3,2`, `150mm`, `45`, `x5`.
 - **Solids and structure**: groups (edit inside with double-click), pivots/hinges, mirror, radial arrays, booleans
   (union, subtract, intersect), tags, hide/lock, PBR materials.
+- **Modelling depth**: draw on a face and push/pull it into a recess, a boss or a hole (imprint), offset/inset faces,
+  move a face, edge or corner (roof slopes), arcs (Arc tool, A), mesh repair for imports, and components: edit one
+  window and every copy updates (shared geometry, lighter files).
 - **Parametric**: shapes keep their parameters (change a box's width or a stair's steps later), curves (Curve tool, U),
   sweeps along curves with a profile library (pipe, kerb, gutter, I-beam, retaining wall…) that follow the curve live,
   live arrays, recipes that rebuild a model with other values, and a macro recorder.

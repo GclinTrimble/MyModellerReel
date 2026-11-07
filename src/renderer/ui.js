@@ -167,6 +167,14 @@ export class UI {
       selectSimilar: { label: 'Select similar', icon: 'selection-plus', run: () => (sel()[0] ? app.reg.run('select_where', { similar_to: sel()[0], mode: 'add' }).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select one thing first.')) },
       selectWhere: { label: 'Select by…', icon: 'list-magnifying-glass', run: form('select_where') },
       metadata: { label: 'Set metadata…', icon: 'tag-simple', run: form('set_metadata') },
+      makeComponent: { label: 'Make component…', icon: 'squares-four', run: () => (sel().length ? this.commandDialog('make_component', { name: app.entity(sel()[0])?.name }) : this.toast('Select what the component is made of.')) },
+      placeComponent: { label: 'Place component…', icon: 'squares-four', run: form('place_component') },
+      makeUnique: { label: 'Make unique', icon: 'link-break', run: () => sel().length && app.reg.run('make_unique', {}).then((r) => this.toast(`Now its own component: ${r.component}`)).catch((e) => this.toast(e.message, 'danger')) },
+      replaceComponent: { label: 'Replace component…', icon: 'swap', run: form('replace_component') },
+      imprint: { label: 'Imprint on a face…', icon: 'selection-foreground', run: () => this.commandDialog('imprint', { id: sel()[0], face: 'top', shape: 'rectangle', size: [0.5, 0.5] }) },
+      offsetFace: { label: 'Offset (inset) a face…', icon: 'frame-corners', run: () => this.commandDialog('offset_face', { id: sel()[0], face: 'top', distance: 0.1 }) },
+      moveElements: { label: 'Move a face, edge or corner…', icon: 'arrows-out-cardinal', run: () => this.commandDialog('move_elements', { id: sel()[0], edge: 'top front', by: [0, 1, 0] }) },
+      repair: { label: 'Repair mesh', icon: 'first-aid-kit', run: () => sel().length && app.reg.run('repair_mesh', {}).then((r) => this.toast(r.map((x) => `${x.name}: ${x.faces_before} → ${x.faces} faces`).join(' · ').slice(0, 200))).catch((e) => this.toast(e.message, 'danger')) },
       proposeToggle: { label: 'Propose AI changes for review', icon: 'git-pull-request', checked: () => app.ai.propose, run: () => app.ai.setPropose(!app.ai.propose) },
       proposeAccept: { label: 'Accept proposal', icon: 'check-circle', run: run('propose', { action: 'accept' }) },
       proposeReject: { label: 'Reject proposal', icon: 'x-circle', run: run('propose', { action: 'reject' }) },
@@ -192,10 +200,10 @@ export class UI {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
       File: ['new', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
-      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
+      Edit: ['undo', 'redo', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['shortcuts', 'mcp', 'about'],
@@ -356,7 +364,7 @@ export class UI {
           h(
             `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
             { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
-            icon(e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : 'cube'),
+            icon(e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : 'cube'),
             e.mesh || e.curve ? h('span.swatch-dot', { style: { background: e.material.color } }) : null,
             h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
             animated ? icon('film-strip') : null,
@@ -455,6 +463,16 @@ export class UI {
   paramsCard(e) {
     const app = this.app;
     const run = (n, a) => app.reg.run(n, a).catch((x) => this.toast(x.message, 'danger'));
+    if (e.component) {
+      const n = app.store.doc.entities.filter((x) => x.component === e.component).length;
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `Component · ${e.component} · ${n} instance${n > 1 ? 's' : ''}`),
+        h('div.small.muted', {}, 'Edit its parts (double-click it) and every instance follows.'),
+        h('div.row.wrap', {}, h('button.btn', { onclick: () => run('edit_component', { id: e.id }) }, icon('pencil-simple'), 'Edit parts'), h('button.btn', { onclick: () => run('make_unique', { ids: [e.id] }) }, icon('link-break'), 'Make unique')),
+      );
+    }
     if (e.curve)
       return h(
         'div.card',

@@ -141,3 +141,74 @@ export function sweep(profile, path, { closed = null } = {}) {
   }
   return G.orient({ v, f });
 }
+
+// ---------------------------------------------------------------- arcs (#28): sampled as polyline points
+
+const rot = (v, axis, a) => {
+  // Rodrigues: v rotated by a about unit axis
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return G.add(G.add(G.scl(v, c), G.scl(G.cross(axis, v), s)), G.scl(axis, G.dot(axis, v) * (1 - c)));
+};
+
+/** An arc about center, from `from` (a point on it), turning `sweep` radians about the unit normal. */
+function arcAround(center, from, normal, sweep, segments) {
+  const r0 = G.sub(from, center);
+  const n = Math.max(2, Math.round(segments ?? Math.max(8, (Math.abs(sweep) / (2 * Math.PI)) * 48)));
+  return Array.from({ length: n + 1 }, (_, i) => G.add(center, rot(r0, normal, (sweep * i) / n)));
+}
+
+/** Arc through three points (start, a point on the arc, end). */
+export function arcThrough(a, b, c, segments) {
+  const ab = G.sub(b, a);
+  const ac = G.sub(c, a);
+  const n0 = G.cross(ab, ac);
+  if (G.len(n0) < 1e-9) throw new Error('The three points are in a line: no arc goes through them.');
+  const n = G.norm(n0);
+  // circumcentre
+  const d = 2 * G.dot(n0, n0);
+  const center = G.add(a, G.scl(G.add(G.scl(G.cross(n0, ab), G.dot(ac, ac)), G.scl(G.cross(ac, n0), G.dot(ab, ab))), 1 / d));
+  const ang = (p) => {
+    const r = G.sub(p, center);
+    const ref = G.sub(a, center);
+    return Math.atan2(G.dot(G.cross(ref, r), n), G.dot(ref, r));
+  };
+  let sweep = ang(c);
+  if (sweep <= 0) sweep += 2 * Math.PI; // a, b, c run counter-clockwise about n by construction
+  return { points: arcAround(center, a, n, sweep, segments), center, radius: G.len(G.sub(a, center)), sweep };
+}
+
+/** Arc about a centre: radius, start and end angles in degrees, measured in the plane of `normal` (default: the ground, from +x towards −z). */
+export function arcCenter(center, radius, startDeg, endDeg, normal = [0, 1, 0], segments) {
+  const n = G.norm(normal);
+  const ref = Math.abs(n[1]) > 0.99 ? [1, 0, 0] : G.norm(G.cross([0, 1, 0], n));
+  const from = G.add(center, G.scl(rot(ref, n, (startDeg * Math.PI) / 180), radius));
+  const sweep = ((endDeg - startDeg) * Math.PI) / 180;
+  if (!sweep) throw new Error('start_angle and end_angle are the same.');
+  return { points: arcAround(center, from, n, sweep, segments), center, radius, sweep };
+}
+
+/** Two-point arc bulging by `sagitta` (m, the height of the arc above its chord) to the left of start→end about normal. */
+export function arcBulge(a, c, sagitta, normal = [0, 1, 0], segments) {
+  const chord = G.sub(c, a);
+  const side = G.norm(G.cross(G.norm(normal), chord));
+  if (!sagitta) throw new Error('sagitta must not be 0 (that is a straight line).');
+  return arcThrough(a, G.add(G.scl(G.add(a, c), 0.5), G.scl(side, sagitta)), c, segments);
+}
+
+/** Arc that leaves `a` along `tangent` and ends at `c`. */
+export function arcTangent(a, tangent, c, segments) {
+  const t = G.norm(tangent);
+  const ac = G.sub(c, a);
+  const perp = G.sub(ac, G.scl(t, G.dot(ac, t)));
+  if (G.len(perp) < 1e-9) throw new Error('The end point is straight ahead: no arc is needed.');
+  const u = G.norm(perp);
+  const r = G.dot(ac, ac) / (2 * G.dot(ac, u));
+  const center = G.add(a, G.scl(u, r));
+  const n = G.norm(G.cross(G.sub(a, center), t)); // turning direction
+  const ref = G.sub(a, center);
+  const rc = G.sub(c, center);
+  let sweep = Math.atan2(G.dot(G.cross(ref, rc), n), G.dot(ref, rc));
+  if (sweep < 0) sweep += 2 * Math.PI;
+  return { points: arcAround(center, a, n, sweep, segments), center, radius: Math.abs(r), sweep };
+}
