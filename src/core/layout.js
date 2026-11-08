@@ -2,7 +2,8 @@
 // the renderer turns the rectangles (fractions of the area, 0–1 from the left and top) into canvases.
 
 export const ARRANGEMENTS = ['columns', 'rows', 'grid', 'main_left', 'main_right', 'main_top', 'main_bottom'];
-export const VIEWS = ['perspective', 'top', 'front', 'back', 'left', 'right', 'bottom', 'iso'];
+export const ROAD_VIEWS = ['profile', 'section']; // 2D drawings of a corridor (#167, #168)
+export const VIEWS = ['perspective', 'top', 'front', 'back', 'left', 'right', 'bottom', 'iso', ...ROAD_VIEWS];
 export const MAX_PANES = 4;
 
 /** What a new pane shows: 3D first, then the plan and two elevations, like a drafting quad view. */
@@ -24,7 +25,9 @@ export function normalize(layout = {}) {
   const split = [0, 1].map((i) => clamp(layout.split?.[i] ?? (main && (i === 0) === /left|right/.test(arrangement) ? 0.6 : 0.5)));
   const panes = Array.from({ length: count }, (_, i) => ({ ...DEFAULT_PANES[i], ...(layout.panes?.[i] || {}) }));
   const max = Number.isInteger(layout.max) && layout.max >= 0 && layout.max < count ? layout.max : null;
-  return { count, arrangement, split, panes, max };
+  const out = { count, arrangement, split, panes, max };
+  if (layout.station !== undefined) out.station = layout.station; // where the section panes cut the road
+  return out;
 }
 
 const even = (n, i) => [i / n, (i + 1) / n];

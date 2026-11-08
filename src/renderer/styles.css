@@ -465,3 +465,4 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .doc-tabs button[aria-selected="true"] { color: var(--my-text); font-weight: 600; box-shadow: inset 0 2px 0 var(--my-accent); }
 .doc-tabs .x { color: var(--my-text-muted); padding: 0 2px; }
 .doc-tabs .x:hover { color: var(--my-danger, #c8553d); }
+.pane-board { position: absolute; display: block; cursor: crosshair; }

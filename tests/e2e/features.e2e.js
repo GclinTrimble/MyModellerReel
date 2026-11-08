@@ -585,3 +585,37 @@ test('multiple views: four panes, drawing in the plan, maximise, a detached wind
   await ok('set_layout', { count: 1 });
   assert.equal(await w.locator('.pane-canvas').count(), 0);
 });
+
+test('roads: corridor with ditch and layers, road views, a click in the profile, finished ground, volumes and solids', async () => {
+  await ok('new_model');
+  await ok('create_terrain', { width: 160, depth: 80, spacing: 4, name: 'Ground' });
+  await w.evaluate(() => {
+    const e = window.mmr.doc.entities.find((x) => x.name === 'Ground');
+    delete e.derived;
+    e.mesh.v = e.mesh.v.map(([x, , z]) => [x, 8 * Math.exp(-((x + e.position[0]) ** 2) / 1800) - 2, z]);
+    window.mmr.app.store.changed?.();
+  });
+  await ok('create_alignment', { name: 'Main road', points: [[-70, 0], [70, 0]], pvis: [[0, 1], [140, 1]] });
+  await ok('create_corridor', { alignment: 'Main road', surface: 'Ground', name: 'Road', template: { ditch: { width: 0.5, depth: 0.5 }, layers: [{ name: 'Asphalt', thickness: 0.1, material: 'Asphalt' }] } });
+  const l = await ok('road_views', { corridor: 'Road', station: 70 });
+  assert.deepEqual(l.panes.map((p) => p.view), ['perspective', 'top', 'profile', 'section']);
+  assert.equal(await w.locator('.pane-board:visible').count(), 2, 'the profile and the section draw on their boards');
+  // a click in the profile moves the section
+  const b = await w.locator('.pane-board').nth(1).boundingBox();
+  const x = await w.evaluate(() => window.mmr.app.panes.extra[1].view2d.map.X(30));
+  await w.mouse.click(b.x + x, b.y + b.height * 0.5);
+  await w.waitForTimeout(300);
+  const st = await w.evaluate(() => window.mmr.doc.settings.layout.station);
+  assert.ok(Math.abs(st - 30) < 1.5, `section at ${st}`);
+  const sec = await ok('road_section', { corridor: 'Road', station: 70 });
+  assert.equal(sec.left, 'cut');
+  assert.ok(sec.points.some((p) => p.code === 'ditch'));
+  const fs2 = await ok('corridor_surface', { corridor: 'Road' });
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'Ground').visible), false);
+  assert.ok(fs2.cut > 0 && fs2.fill > 0);
+  const v = await ok('corridor_volumes', { corridor: 'Road' });
+  const s = await ok('corridor_solids', { corridor: 'Road' });
+  const cut = s.solids.find((x) => x.name === 'Cut');
+  assert.ok(Math.abs(cut.volume_m3 - v.totals.cut) < v.totals.cut * 0.05, `solid ${cut.volume_m3} vs table ${v.totals.cut}`);
+  await ok('set_layout', { count: 1 });
+});

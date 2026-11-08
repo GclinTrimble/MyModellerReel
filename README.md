@@ -59,6 +59,10 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Multiple views**: split the view into 2, 3 or 4 panes (3D, plan, elevations), each with its own camera, view,
   projection and wireframe; draw in any of them, resize them with the bars, maximise one, or move one to its own window
   on a second screen.
+- **Roads through the terrain**: corridors with ditches, benches, a slope per side, pavement layers and superelevation;
+  the road views (3D, plan, profile, cross-section) side by side; the cut through the ground shown without changing
+  it, then written in when you decide; earthwork volumes with the balance, and the cut, fill and pavement as solids
+  with their tonnages.
 - **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
   editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
   shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a

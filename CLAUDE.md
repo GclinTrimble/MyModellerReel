@@ -20,7 +20,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
   (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files), `survey.js` (points,
   coordinates, codes, point files), `terrain.js` (TIN triangulation, sampling, cut/fill, alignments, corridors),
-  `sitework.js` (surface / corridor / design generators), `layers.js` (the tag list is the layer list: colour, lock,
+  `sitework.js` (surface / corridor / finished ground / design generators), `roads.js` (corridor sections with ditches,
+  benches and superelevation, cut / fill areas, average-end-area volumes, earthwork and pavement solids, finished ground), `layers.js` (the tag list is the layer list: colour, lock,
   current layer, ByLayer, schemas, states), `underlay.js` (drawing ↔ plan affine, calibration, least-squares
   georeferencing, world files), `pdf.js` (pdf.js reading: pages, layers, paths and text), `drafting.js` (2D polyline
   offset, trim, extend, fillet, join, simplify), `drawings.js` (underlay frames, extraction clean-up, the extrude
@@ -54,7 +55,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   seamless AI textures), `captions.js` (2D caption drawing shared
   by the live overlay and the render), `scale.js` (BVH raycasting, point cloud drawing and snaps, PDF snaps, the
   transform gizmo, walking), `panes.js` (the extra view panes: a renderer, cameras and controls each, over the same scene;
-  tools run in a pane through `viewport.withPane`; detached windows). New browser modules need an entry in the importmap in `index.html`.
+  tools run in a pane through `viewport.withPane`; detached windows; road panes draw on a 2D board), `roadviews.js` (the
+  profile and cross-section drawings). New browser modules need an entry in the importmap in `index.html`.
 - `src/main/stream.cjs` streams AI replies (text to the page as it arrives, the same reply object at the end).
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 

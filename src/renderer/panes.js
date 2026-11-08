@@ -5,8 +5,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as LY from '../core/layout.js';
 import { h, icon } from './ui.js';
+import * as SW from '../core/sitework.js';
+import * as RD from '../core/roads.js';
+import * as S from '../core/survey.js';
+import { drawProfile, drawSection, boardInput } from './roadviews.js';
 
-const LABEL = { perspective: 'Perspective', top: 'Top', front: 'Front', back: 'Back', left: 'Left', right: 'Right', bottom: 'Bottom', iso: 'Iso', custom: 'Custom', scene: 'Scene' };
+const LABEL = { perspective: 'Perspective', top: 'Top', front: 'Front', back: 'Back', left: 'Left', right: 'Right', bottom: 'Bottom', iso: 'Iso', custom: 'Custom', scene: 'Scene', profile: 'Profile', section: 'Section' };
+const is2D = (cfg) => cfg?.view === 'profile' || cfg?.view === 'section';
 const GLYPH_LAYER = 1; // the main camera's mark, seen only by the other panes (#164)
 const WIRE = new THREE.MeshBasicMaterial({ color: 0x3a3a36, wireframe: true });
 const pct = (x) => `${(x * 100).toFixed(3)}%`;
@@ -47,6 +52,21 @@ class Pane {
     this.canvas.dataset.tool = vp.canvas.dataset.tool || '';
     this.observer = new win.ResizeObserver(() => this.resize());
     this.observer.observe(this.canvas);
+    // the 2D board of a road pane (#167, #168): a profile or a cross-section, over the (hidden) 3D canvas
+    this.board = doc.createElement('canvas');
+    this.board.className = 'pane-board';
+    this.board.setAttribute('aria-label', `View ${this.i + 1}: road drawing`);
+    Object.assign(this.board.style, doc === document ? { position: 'absolute', display: 'none' } : { width: '100vw', height: '100vh', display: 'none' });
+    this.canvas.after(this.board);
+    this.view2d ||= {};
+    boardInput(
+      this.board,
+      () => this.view2d,
+      (v) => ((this.view2d = { ...this.view2d, ...v }), (vp.dirty = true)),
+      (x) => this.mgr.pick2d(this, x),
+    );
+    this.board.addEventListener('pointerdown', () => this.mgr.focus(this.i));
+    this.observer.observe(this.board);
   }
 
   unmount() {
@@ -56,6 +76,7 @@ class Pane {
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.canvas.remove();
+    this.board.remove();
   }
 
   resize() {
@@ -73,8 +94,9 @@ class Pane {
   draw() {
     const vp = this.mgr.vp;
     const scene = vp.scene;
-    vp.syncProjection();
     if (this.i === 1) this.mgr.updateGlyph();
+    if (is2D(this.cfg)) return this.mgr.draw2d(this);
+    vp.syncProjection();
     const keep = { env: scene.environment, bg: scene.background };
     scene.environment = null; // a PMREM map lives in the main renderer's context
     if (keep.bg?.isRenderTargetTexture) scene.background = vp.skyBackground;
@@ -125,6 +147,13 @@ export class Panes {
     this.glyph.renderOrder = 50;
     this.glyph.frustumCulled = false;
     this.vp.scene.add(this.glyph);
+    // where the section pane cuts the road, across the corridor in every 3D view (#168)
+    this.marker = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc8553d, depthTest: false, transparent: true }));
+    this.marker.renderOrder = 51;
+    this.marker.frustumCulled = false;
+    this.marker.visible = false;
+    this.vp.scene.add(this.marker);
+    this.roadCache = new Map();
     Object.assign(this.vp, {
       inPane: (n, fn) => this.inPane(n, fn),
       syncPanes: () => this.sync(),
@@ -145,6 +174,7 @@ export class Panes {
   sync() {
     const L = this.layout;
     const fresh = [];
+    this.roadCache.clear(); // the document changed: profiles and sections are worked out again
     while (this.extra.length < L.count - 1) {
       const p = new Pane(this, this.extra.length + 1);
       p.cfg = L.panes[p.i];
@@ -165,12 +195,68 @@ export class Panes {
     this.layoutDom();
     for (const p of fresh) {
       p.resize();
+      if (is2D(p.cfg)) continue;
       this.vp.withPane(p, () => {
         if (p.cfg.camera) this.vp.setCamera(p.cfg.camera);
         else this.vp.setView(LY.viewDirection(p.cfg.view) ? p.cfg.view : 'iso');
       });
     }
+    this.updateMarker();
     this.vp.dirty = true;
+  }
+
+  // ---------------------------------------------------------------- road panes (#167, #168)
+  /** The corridor a road pane shows (its own, or the first one in the model) and its worked-out sections. */
+  road(cfg) {
+    const doc = this.vp.store.doc;
+    const c = (cfg.corridor && doc.entities.find((e) => e.id === cfg.corridor)) || doc.entities.find((e) => e.derived?.generator === 'corridor');
+    if (!c) return null;
+    if (!this.roadCache.has(c.id)) {
+      try {
+        const r = SW.corridorOf(doc, c);
+        const len = r.path.at(-1)[3];
+        r.profile = RD.profileSamples(r.path, r.groundZ, Math.max(0.5, len / 600));
+        r.ranges = r.template.superelevation ? RD.curveRanges(r.path) : null;
+        r.entity = c;
+        this.roadCache.set(c.id, r);
+      } catch {
+        this.roadCache.set(c.id, null);
+      }
+    }
+    return this.roadCache.get(c.id);
+  }
+  station(r) {
+    const s = this.vp.store.doc.settings.layout?.station ?? 0;
+    return Math.max(0, Math.min(r.path.at(-1)[3], s));
+  }
+  draw2d(p) {
+    const r = this.road(p.cfg);
+    const base = S.geo(this.vp.store.doc).base?.[2] || 0;
+    if (p.cfg.view === 'profile') {
+      const data = r && { name: r.entity.name, samples: r.profile, pvis: r.alignment.alignment?.pvis || [], length: r.path.at(-1)[3], station: this.station(r), base };
+      p.view2d.map = drawProfile(p.board, data, { from: p.view2d.from, to: p.view2d.to });
+      if (data && p.view2d.from === undefined) Object.assign(p.view2d, { from: 0, to: data.length });
+    } else {
+      const sec = r && RD.sectionAt(r.path, this.station(r), r.template, r.groundZ, r.ranges);
+      p.view2d.map = drawSection(p.board, sec, { from: p.view2d.from, to: p.view2d.to }, r?.entity.name, base);
+      if (sec && p.view2d.from === undefined) Object.assign(p.view2d, { from: sec.points[0].o - 3, to: sec.points.at(-1).o + 3 });
+    }
+  }
+  /** A click in a profile cuts a section there. */
+  pick2d(p, x) {
+    if (p.cfg.view !== 'profile') return;
+    this.app.reg.run('set_pane', { pane: p.i + 1, station: Math.round(x * 10) / 10 }).catch((e) => this.app.ui.toast(e.message, 'danger'));
+  }
+  updateMarker() {
+    const L = this.layout;
+    const sp = L.panes.find((c, i) => i && c.view === 'section');
+    const r = sp && this.road(sp);
+    this.marker.visible = !!r;
+    if (!r) return;
+    const sec = RD.sectionAt(r.path, this.station(r), r.template, r.groundZ, r.ranges);
+    this.marker.geometry.setFromPoints(sec.points.map((q) => new THREE.Vector3(sec.p[0] + sec.r[0] * q.o, q.y + 0.05, sec.p[2] + sec.r[1] * q.o)));
+    // a new section: reframe the section panes on it
+    for (const p of this.extra) if (p.cfg.view === 'section' && p.view2d.station !== sec.station) p.view2d = { station: sec.station };
   }
 
   /** Run fn in pane n (1-based). */
@@ -213,10 +299,25 @@ export class Panes {
     docked.forEach((p, k) => {
       const r = rects[k];
       p.visible = !!r;
-      p.canvas.style.display = r ? '' : 'none';
+      const flat = !p.main && is2D(p.cfg);
+      p.canvas.style.display = r && !flat ? '' : 'none';
       if (r) Object.assign(p.canvas.style, { position: 'absolute', left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) });
+      if (p.board) {
+        p.board.style.display = r && flat ? '' : 'none';
+        if (r) Object.assign(p.board.style, { left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) });
+      }
     });
-    for (const p of all) if (p.win) p.visible = true;
+    // the view bar sits in the bottom corner of pane 1 when there are several (the chips are at the top, the road
+    // drawings have their axes at the bottom)
+    const vb = document.getElementById('viewbar');
+    const r1 = rects[0];
+    if (vb) Object.assign(vb.style, L.count > 1 && r1 ? { right: `calc(${pct(1 - r1.x - r1.w)} + 12px)`, bottom: `calc(${pct(1 - r1.y - r1.h)} + 12px)` } : { right: '', bottom: '' });
+    for (const p of all)
+      if (p.win) {
+        p.visible = true;
+        p.canvas.style.display = is2D(p.cfg) ? 'none' : 'block';
+        p.board.style.display = is2D(p.cfg) ? 'block' : 'none';
+      }
     // title chips
     for (const el of this.heads) el?.remove();
     this.heads = [];
@@ -256,10 +357,12 @@ export class Panes {
     const cfg = L.panes[p.i];
     const proj = p.main ? this.vp.store.doc.settings.projection || 'perspective' : cfg.projection;
     const scenes = this.vp.store.doc.scenes || [];
+    const roads = !p.main && this.vp.store.doc.entities.some((e) => e.derived?.generator === 'corridor');
+    const flat = is2D(cfg);
     const select = h(
       'select.pane-view',
       { 'aria-label': `View ${n}`, onchange: (e) => (e.target.value.startsWith('scene:') ? run('set_pane', { pane: n, scene: e.target.value.slice(6) }) : run('set_pane', { pane: n, view: e.target.value })) },
-      ...LY.VIEWS.map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
+      ...LY.VIEWS.filter((v) => roads || !LY.ROAD_VIEWS.includes(v) || v === cfg.view).map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
       ...(['custom', 'scene'].includes(cfg.view) ? [h('option', { value: cfg.view, selected: true, disabled: true }, cfg.view === 'scene' ? cfg.scene : LABEL.custom)] : []),
       ...scenes.map((s) => h('option', { value: `scene:${s.name}` }, `Scene: ${s.name}`)),
     );
@@ -269,13 +372,27 @@ export class Panes {
       { ondblclick: (e) => !e.target.closest('select, button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: 'Double-click to maximise or restore' },
       h('span.pane-num', {}, String(n)),
       select,
-      btn('perspective', proj === 'parallel' ? 'Parallel projection (click for perspective)' : 'Perspective (click for parallel)', () => run('set_pane', { pane: n, projection: proj === 'parallel' ? 'perspective' : 'parallel' }), proj === 'parallel'),
-      btn('cube-transparent', 'Wireframe', () => run('set_pane', { pane: n, style: cfg.style === 'wireframe' ? 'shaded' : 'wireframe' }), cfg.style === 'wireframe'),
+      ...(cfg.view === 'section'
+        ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))]
+        : []),
+      ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
+      ...(flat ? [] : [btn('perspective', proj === 'parallel' ? 'Parallel projection (click for perspective)' : 'Perspective (click for parallel)', () => run('set_pane', { pane: n, projection: proj === 'parallel' ? 'perspective' : 'parallel' }), proj === 'parallel'),
+      btn('cube-transparent', 'Wireframe', () => run('set_pane', { pane: n, style: cfg.style === 'wireframe' ? 'shaded' : 'wireframe' }), cfg.style === 'wireframe')]),
       btn(L.max === p.i ? 'corners-in' : 'corners-out', L.max === p.i ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: L.max === p.i ? 0 : n })),
       ...(p.main ? [] : [btn('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane: n }))]),
     );
     el.classList.toggle('focused', this.focusI === p.i);
     return el;
+  }
+
+  /** Next or previous section, one corridor interval along. */
+  step(n, k) {
+    const cfg = this.layout.panes[n - 1];
+    const r = this.road(cfg);
+    if (!r) return;
+    const iv = r.entity.derived.params.interval || 5;
+    const s = Math.max(0, Math.min(r.path.at(-1)[3], Math.round((this.station(r) + k * iv) / iv) * iv));
+    this.app.reg.run('set_pane', { pane: n, station: s }).catch((e) => this.app.ui.toast(e.message, 'danger'));
   }
 
   drag(e, bar, el) {

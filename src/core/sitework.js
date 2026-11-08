@@ -6,6 +6,7 @@ import * as S from './survey.js';
 import * as TR from './terrain.js';
 import { registerGenerator } from './derived.js';
 import * as SF from './surfaces.js';
+import * as RD from './roads.js';
 
 const wpos = (doc, e) => D.worldMatrix(doc, e).elements.slice(12, 15);
 const key = (x, z) => `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
@@ -119,6 +120,8 @@ const world = (fn) => (args) => {
   const out = fn(args);
   const report = out.report;
   const r = G.recenter(out.mesh || out);
+  const fc = (out.mesh || out).fc; // per-face colours (a corridor's cut and fill slopes)
+  if (fc) r.mesh.fc = fc;
   return report ? { ...r, report } : r;
 };
 
@@ -138,17 +141,43 @@ registerGenerator('surface', {
   }),
 });
 
+/** The alignment as sampled [x, y, z, station] points. */
+export function alignmentPath(doc, al) {
+  if (!al?.curve) throw new Error('A corridor needs an alignment.');
+  const pts = D.curvePoints(doc, al, 8);
+  let s = 0;
+  return pts.map((q, i) => (i && (s += Math.hypot(q[0] - pts[i - 1][0], q[2] - pts[i - 1][2])), [...q, s]));
+}
+
+/** A corridor's cross-sections, path, alignment and ground (#166–#170). */
+export function corridorOf(doc, e) {
+  if (e?.derived?.generator !== 'corridor') throw new Error(`${e?.name || 'That'} is not a corridor (create_corridor makes one).`);
+  const [al, ground] = e.derived.inputs.map((id) => D.getEntity(doc, id));
+  const path = alignmentPath(doc, al);
+  const g = ground ? surfaceSampler(doc, ground).z : null;
+  const { template = {}, interval = 5 } = e.derived.params;
+  return { path, alignment: al, ground, groundZ: g, template, sections: RD.corridorSections(path, template, g, interval) };
+}
+
 registerGenerator('corridor', {
-  description: 'A cross-section template swept along an alignment, daylighting to the ground',
+  description: 'A cross-section template swept along an alignment, daylighting to the ground: lanes, shoulders, ditches, benches, cut and fill slopes coloured',
   world: true,
-  params: { template: '{ lanes: [{ width, crossfall }], shoulder: { width, crossfall }, cut_slope, fill_slope }', interval: 'm between sections' },
+  params: { template: '{ lanes: [{ width, crossfall }], shoulder: { width, crossfall }, cut_slope, fill_slope, left / right: { cut_slope, fill_slope }, ditch: { width, depth, slope }, bench: { every, width }, layers: [{ name, thickness, material }], superelevation: { rate, runoff } }', interval: 'm between sections' },
   run: world(({ params, inputs, doc }) => {
     const [al, ground] = inputs;
-    if (!al?.curve) throw new Error('A corridor needs an alignment.');
-    const pts = D.curvePoints(doc, al, 8);
-    let s = 0;
-    const path = pts.map((q, i) => (i && (s += Math.hypot(q[0] - pts[i - 1][0], q[2] - pts[i - 1][2])), [...q, s]));
-    return TR.corridorMesh(path, params.template || {}, ground ? surfaceSampler(doc, ground).z : null, params.interval || 5);
+    const path = alignmentPath(doc, al);
+    return RD.corridorMesh(RD.corridorSections(path, params.template || {}, ground ? surfaceSampler(doc, ground).z : null, params.interval || 5));
+  }),
+});
+
+/** The existing ground with the corridor let into it (#166): live, the ground itself is never edited. */
+registerGenerator('finished_ground', {
+  description: 'The existing ground with a corridor let into it (the cut and the fill it makes), kept live',
+  world: true,
+  params: {},
+  run: world(({ inputs, doc }) => {
+    const [corridor, ground] = inputs;
+    return RD.finishedGround(D.worldMesh(doc, ground), corridorOf(doc, corridor).sections, ground.material?.color);
   }),
 });
 

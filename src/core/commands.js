@@ -55,6 +55,8 @@ import * as A from './animation.js';
 import * as Q from './query.js';
 import { validate } from './schema.js';
 import * as LY from './layout.js';
+import * as RD from './roads.js';
+import { MATERIALS } from './materials.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
 export const GUIDE = `MyModellerReel conventions:
@@ -1464,17 +1466,131 @@ function registerCore(reg, ctx) {
     e.alignment = { ...next, length: r4(geom.length), interval: next.station_interval || next.interval || 20 };
     return { ...summary(doc, e), length: r4(geom.length) };
   }, true);
-  def('terrain', 'create_corridor', 'A road / channel / embankment: a cross-section template (lanes with crossfall, shoulders, cut and fill batter slopes H:V) swept along an alignment, daylighting to the ground surface. Live: it follows the alignment and the ground.', obj({ alignment: str('alignment'), surface: str('existing ground to daylight to'), template: obj({ lanes: { type: 'array', items: obj({ width: num('m'), crossfall: num('%') }, []) }, shoulder: obj({ width: num('m'), crossfall: num('%') }, []), cut_slope: num('H:V, default 2'), fill_slope: num('H:V, default 3') }, []), interval: num('m between sections, default 5'), name: common.name, color: common.color }, ['alignment']), (a) => {
+  const SIDE = obj({ cut_slope: num('H:V'), fill_slope: num('H:V') }, []);
+  const TEMPLATE = obj({
+    lanes: { type: 'array', items: obj({ width: num('m'), crossfall: num('%') }, []) },
+    shoulder: obj({ width: num('m'), crossfall: num('%') }, []),
+    cut_slope: num('H:V, default 2'),
+    fill_slope: num('H:V, default 3'),
+    left: SIDE,
+    right: SIDE,
+    ditch: obj({ width: num('bottom width, m (default 0.5)'), depth: num('m (default 0.6)'), slope: num('fore slope H:V (default 3)') }, []),
+    bench: obj({ every: num('m of height between benches (default 5)'), width: num('m (default 2)') }, []),
+    layers: { type: 'array', items: obj({ name: str('e.g. Asphalt'), thickness: num('m'), material: str('Asphalt, Crushed stone, Gravel, Concrete…') }, []), description: 'pavement layers under the lanes and shoulders, top down; earthworks are then measured to the bottom of them' },
+    superelevation: obj({ rate: num('% on curves (default 6)'), runoff: num('m to reach it before a curve (default 30)') }, []),
+  }, []);
+  def('terrain', 'create_corridor', 'A road / channel / embankment: a cross-section template (lanes with crossfall, shoulders, cut and fill batter slopes H:V, per side, a ditch at the foot of cuts, benches on high slopes, pavement layers, superelevation on curves) swept along an alignment, daylighting to the ground. Faces are coloured: road grey, cut slopes red-brown, fill slopes blue. Live: it follows the alignment and the ground; the ground itself is not changed (corridor_surface shows the result, apply_corridor writes it).', obj({ alignment: str('alignment'), surface: str('existing ground to daylight to'), template: TEMPLATE, interval: num('m between sections, default 5'), name: common.name, color: common.color }, ['alignment']), (a) => {
     const doc = ctx.doc;
     const [al] = D.resolve(doc, a.alignment);
     if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
     const inputs = [al.id, ...(a.surface ? [surfaceOf(a.surface).id] : [])];
     const params = { template: a.template || {}, interval: a.interval || 5 };
     R.getGenerator('corridor').run({ params, inputs: inputs.map((x) => D.getEntity(doc, x)), doc });
-    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Corridor'), material: { color: a.color || '#6b6f74', roughness: 0.95 } });
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Corridor'), material: { color: a.color || '#ffffff', roughness: 0.95 } });
     R.derive(doc, e, 'corridor', params, inputs);
     ctx.selection.set([e.id]);
     return { ...summary(doc, e), surface: TR.surfaceStats(e.mesh) };
+  }, true);
+
+  // roads through the terrain (#166–#172)
+  const corridorArg = (ref) => {
+    const [c] = D.resolve(ctx.doc, ref);
+    return { c, ...SW.corridorOf(ctx.doc, c) };
+  };
+  def('terrain', 'set_corridor', 'Change a corridor: its template (merged into the current one: lanes, shoulder, slopes, left / right, ditch, bench, layers, superelevation; null removes a part) or its interval. The finished ground, profile and sections follow.', obj({ id: str('corridor'), template: TEMPLATE, interval: num('m between sections') }, ['id']), (a) => {
+    const [c] = D.resolve(ctx.doc, a.id);
+    if (c.derived?.generator !== 'corridor') throw new Error(`${c.name} is not a corridor.`);
+    const p = c.derived.params;
+    if (a.template) {
+      p.template = { ...(p.template || {}), ...a.template };
+      for (const [k, v] of Object.entries(p.template)) if (v === null) delete p.template[k];
+    }
+    if (a.interval) p.interval = a.interval;
+    R.regenerate(ctx.doc, c);
+    return { ...summary(ctx.doc, c), template: RD.normTemplate(p.template), interval: p.interval || 5 };
+  }, true);
+  def('terrain', 'corridor_surface', 'See the cut a corridor makes through the ground without changing it: a live finished-ground surface (the existing ground with the road let into it) is shown and the existing ground hidden. show: false hides the finished ground and shows the existing one again. apply_corridor writes it into the ground for good.', obj({ corridor: str('corridor'), show: bool('default true'), name: common.name }, ['corridor']), (a) => {
+    const doc = ctx.doc;
+    const { c, ground, sections } = corridorArg(a.corridor);
+    if (!ground) throw new Error(`${c.name} has no ground surface: create_corridor with surface first.`);
+    let fg = doc.entities.find((e) => e.derived?.generator === 'finished_ground' && e.derived.inputs[0] === c.id);
+    if (!fg) {
+      fg = D.addEntity(doc, { name: a.name || D.uniqueName(doc, `${ground.name} with ${c.name}`), material: { ...(ground.material || { color: '#8a9a6b', roughness: 1 }) }, tag: ground.tag, meta: { surface: true } });
+      R.derive(doc, fg, 'finished_ground', {}, [c.id, ground.id]);
+    }
+    const show = a.show !== false;
+    fg.visible = show;
+    ground.visible = !show;
+    c.visible = !show; // the finished ground already carries the road
+    const v = RD.corridorVolumes(sections);
+    return { id: fg.id, name: fg.name, showing: show ? 'finished ground' : 'existing ground', ground: ground.name, cut: v.totals.cut, fill: v.totals.fill, note: 'The existing ground is only hidden, not changed. apply_corridor writes the finished ground into it.' };
+  }, true);
+  def('terrain', 'apply_corridor', 'Write a corridor into its ground surface for good (one undo step): the ground becomes the finished ground, and the live finished-ground surface is removed.', obj({ corridor: str('corridor') }, ['corridor']), (a) => {
+    const doc = ctx.doc;
+    const { c, ground, sections } = corridorArg(a.corridor);
+    if (!ground) throw new Error(`${c.name} has no ground surface.`);
+    const fin = RD.finishedGround(D.worldMesh(doc, ground), sections, ground.material?.color);
+    R.bake(ground);
+    const inv = D.worldMatrix(doc, ground).clone().invert().elements;
+    const local = (q) => {
+      const [x, y, z] = q;
+      const w = inv[3] * x + inv[7] * y + inv[11] * z + inv[15];
+      return [0, 1, 2].map((k) => D.round3([(inv[k] * x + inv[4 + k] * y + inv[8 + k] * z + inv[12 + k]) / w])[0]);
+    };
+    ground.mesh = { v: fin.v.map(local), f: fin.f, fc: fin.fc }; // the road keeps its colours in the ground
+    ground.visible = true;
+    // the corridor and anything live on the old ground now see the new one; the finished-ground preview goes
+    for (const e of doc.entities.filter((x) => x.derived?.generator === 'finished_ground' && x.derived.inputs[0] === c.id)) D.removeEntity(doc, e);
+    R.bake(c);
+    c.visible = false;
+    return { ground: ground.name, triangles: fin.f.length, note: `${c.name} is written into ${ground.name}; the corridor is kept (hidden, no longer live). Undo brings the old ground back.` };
+  }, true);
+  def('terrain', 'road_profile', 'The long section of a corridor (or an alignment over a surface): ground and design elevations every interval, cut (−) / fill (+) depth, and the PVIs and grades.', obj({ corridor: str('corridor'), alignment: str('or: an alignment'), surface: str('with an alignment: the ground'), interval: num('m, default 2') }), (a) => {
+    const doc = ctx.doc;
+    let path;
+    let g;
+    let al;
+    if (a.corridor) ({ path, groundZ: g, alignment: al } = corridorArg(a.corridor));
+    else {
+      [al] = D.resolve(doc, a.alignment);
+      path = SW.alignmentPath(doc, al);
+      g = a.surface ? SW.surfaceSampler(doc, surfaceOf(a.surface)).z : null;
+    }
+    const samples = RD.profileSamples(path, g, a.interval || 2);
+    const pvis = al.alignment?.pvis || [];
+    const grades = pvis.slice(1).map((q, i) => ({ from: pvis[i][0], to: q[0], grade_pct: r4(((q[1] - pvis[i][1]) / (q[0] - pvis[i][0])) * 100) }));
+    const depths = samples.filter((x) => x.depth !== null).map((x) => x.depth);
+    return { alignment: al.name, length: r4(path.at(-1)[3]), samples, pvis, grades, deepest_cut: depths.length ? r4(-Math.min(0, ...depths)) : null, highest_fill: depths.length ? r4(Math.max(0, ...depths)) : null };
+  });
+  def('terrain', 'road_section', 'The cross-section of a corridor at a station: the design points (offset, elevation, what they are), the ground line, the cut and fill areas (m²), and whether each side is in cut or fill.', obj({ corridor: str('corridor'), station: num('m along the alignment') }, ['corridor', 'station']), (a) => {
+    const { path, template, groundZ, c } = corridorArg(a.corridor);
+    const len = path.at(-1)[3];
+    if (a.station < 0 || a.station > len + 1e-6) throw new Error(`${c.name} runs from station 0 to ${r4(len)}.`);
+    const tpl = RD.normTemplate(template);
+    const s = RD.sectionAt(path, a.station, tpl, groundZ, tpl.superelevation ? RD.curveRanges(path) : null);
+    const pt = (q) => ({ offset: r4(q.o), elevation: r4(q.y), ...(q.code ? { code: q.code } : {}) });
+    return { station: a.station, points: s.points.map(pt), ground: s.ground.map(pt), cut_area: r4(s.cut), fill_area: r4(s.fill), left: s.left, right: s.right, width: r4(s.points.at(-1).o - s.points[0].o) };
+  });
+  def('terrain', 'corridor_volumes', 'Earthwork volumes of a corridor by average end areas: cut and fill areas per station, volumes between stations, running totals, the mass haul ordinate, and the balance (cut left over or fill to bring in) with bulking and shrinkage. With pavement layers, earthworks are measured to the bottom of them. Can save a CSV.', obj({ corridor: str('corridor'), bulking: num('cut volume factor when loose, e.g. 1.25'), shrinkage: num('fill factor when compacted, e.g. 0.9'), csv: str('absolute .csv path') }, ['corridor']), async (a) => {
+    const { c, sections } = corridorArg(a.corridor);
+    const v = RD.corridorVolumes(sections, { bulking: a.bulking || 1, shrinkage: a.shrinkage || 1 });
+    await csvOut(a.csv, RD.volumesCsv(v.rows));
+    return { corridor: c.name, stations: v.rows.length, totals: v.totals, rows: v.rows, ...(a.csv ? { csv: a.csv } : {}) };
+  });
+  def('terrain', 'corridor_solids', 'What a corridor needs, as solids with materials you can see and export: the cut body and the fill body between the ground and the road, one solid per pavement layer (template layers), and the topsoil strip (topsoil m) over the footprint. Returns each volume (m³) and weight (t). Not live: run it again after a change.', obj({ corridor: str('corridor'), topsoil: num('topsoil strip depth, m (0 = none)'), replace: bool('remove the solids made before for this corridor (default true)') }, ['corridor']), (a) => {
+    const doc = ctx.doc;
+    const { c, sections, template, groundZ } = corridorArg(a.corridor);
+    if (a.replace !== false) for (const e of doc.entities.filter((x) => x.meta?.solidsOf === c.id && x.type === 'group')) D.removeEntity(doc, e);
+    const solids = RD.corridorSolids(sections, template, groundZ, { topsoil: a.topsoil || 0 });
+    const group = D.addEntity(doc, { type: 'group', name: D.uniqueName(doc, `Earthworks: ${c.name}`), meta: { solidsOf: c.id } });
+    const look = { cut: { color: '#c4703a', opacity: 0.85 }, fill: { color: '#4f86b0', opacity: 0.85 }, topsoil: { color: '#4e3b2a' }, layer: null };
+    const rows = solids.map((s) => {
+      const lib = MATERIALS.find((m) => m.name === s.material);
+      const { mesh, origin } = G.recenter(s.mesh);
+      const e = D.addEntity(doc, { name: s.name, parent: group.id, mesh, position: D.round3(origin), material: { roughness: 1, ...(lib || {}), ...(look[s.kind] || {}), name: s.material }, meta: { volume_m3: r4(s.volume), tonnes: s.tonnes, material: s.material, kind: s.kind } });
+      return { id: e.id, name: s.name, material: s.material, volume_m3: r4(s.volume), tonnes: s.tonnes };
+    });
+    return { group: group.id, solids: rows, note: 'Cut and fill are measured to the bottom of the pavement layers. Run again after changing the corridor.' };
   }, true);
 
   // quick field designs
@@ -3300,9 +3416,16 @@ function registerCore(reg, ctx) {
     ctx.view?.syncPanes?.();
     return ctx.view?.layoutInfo?.() ?? s.layout;
   }, true);
-  def('view', 'set_pane', 'What one view pane shows: view perspective | top | front | back | left | right | bottom | iso (top, front… switch to parallel), or a saved scene; projection perspective | parallel; style shaded | wireframe.', obj({ pane: PANE, view: str('standard view', LY.VIEWS), scene: str('a saved scene to look from'), projection: str('perspective | parallel', ['perspective', 'parallel']), style: str('shaded | wireframe', ['shaded', 'wireframe']) }, ['pane']), (a) => {
+  def('view', 'set_pane', 'What one view pane shows: view perspective | top | front | back | left | right | bottom | iso (top, front… switch to parallel), a saved scene, or a road drawing: profile (the long section of a corridor) or section (its cross-section at station; panes 2–4); projection perspective | parallel; style shaded | wireframe. station: where the section panes cut the road (all of them).', obj({ pane: PANE, view: str('standard view or road drawing', LY.VIEWS), scene: str('a saved scene to look from'), projection: str('perspective | parallel', ['perspective', 'parallel']), style: str('shaded | wireframe', ['shaded', 'wireframe']), corridor: str('profile / section: the corridor (default the first one)'), station: num('m along the road, for the section panes') }, ['pane']), (a) => {
     const s = ctx.doc.settings;
     const { L, cfg } = paneCfg(a.pane);
+    if (LY.ROAD_VIEWS.includes(a.view) && a.pane === 1) throw new Error('Pane 1 stays a 3D view; put the profile or section in pane 2, 3 or 4.');
+    if (a.corridor || LY.ROAD_VIEWS.includes(a.view)) {
+      const c = a.corridor ? D.resolve(ctx.doc, a.corridor)[0] : ctx.doc.entities.find((e) => e.derived?.generator === 'corridor');
+      if (!c || c.derived?.generator !== 'corridor') throw new Error('No corridor to draw: create_corridor first.');
+      cfg.corridor = c.id;
+    }
+    if (a.station !== undefined) L.station = Math.max(0, a.station);
     const scene = a.scene && ctx.doc.scenes.find((x) => x.name === a.scene);
     if (a.scene && !scene) throw new Error(`No scene "${a.scene}". Scenes: ${ctx.doc.scenes.map((x) => x.name).join(', ') || 'none (add_scene)'}.`);
     if (a.view) {
@@ -3318,13 +3441,30 @@ function registerCore(reg, ctx) {
     s.layout = { ...s.layout, ...L };
     if (ctx.view?.syncPanes) {
       ctx.view.syncPanes();
-      inPane(a.pane, () => {
-        if (scene) ctx.view.setCamera(scene.camera);
-        else if (a.view) ctx.view.setView(a.view === 'perspective' ? 'iso' : a.view);
-        else if (a.projection) ctx.view.setCamera({});
-      });
+      if (!LY.ROAD_VIEWS.includes(cfg.view))
+        inPane(a.pane, () => {
+          if (scene) ctx.view.setCamera(scene.camera);
+          else if (a.view) ctx.view.setView(a.view === 'perspective' ? 'iso' : a.view);
+          else if (a.projection) ctx.view.setCamera({});
+        });
     }
     return ctx.view?.layoutInfo?.() ?? s.layout;
+  }, true);
+  def('view', 'road_views', 'The road layout (#167, #168): four panes with the 3D view, the plan, the profile of a corridor and its cross-section at a station.', obj({ corridor: str('corridor (default the first one)'), station: num('m along the road for the section (default the middle)') }), (a) => {
+    const c = a.corridor ? D.resolve(ctx.doc, a.corridor)[0] : ctx.doc.entities.find((e) => e.derived?.generator === 'corridor');
+    if (!c || c.derived?.generator !== 'corridor') throw new Error('No corridor: create_corridor first.');
+    const len = SW.corridorOf(ctx.doc, c).path.at(-1)[3];
+    const cur = LY.normalize(ctx.doc.settings.layout);
+    ctx.doc.settings.layout = {
+      ...LY.normalize({ count: 4, arrangement: 'grid', panes: [cur.panes[0], { view: 'top', projection: 'parallel' }, { view: 'profile', corridor: c.id }, { view: 'section', corridor: c.id }] }),
+      station: a.station ?? Math.round(len / 2),
+      show_camera: ctx.doc.settings.layout?.show_camera !== false,
+    };
+    if (ctx.view?.syncPanes) {
+      ctx.view.syncPanes();
+      inPane(2, () => (ctx.view.setView('top'), ctx.view.zoomExtents([c.id]))); // the plan framed on the road
+    }
+    return ctx.view?.layoutInfo?.() ?? ctx.doc.settings.layout;
   }, true);
   def('view', 'detach_pane', 'Move a view pane (2–4) to its own window, e.g. for a second screen; detached: false docks it back (closing the window docks it too).', obj({ pane: PANE, detached: bool('default true') }, ['pane']), (a) => {
     if (!ctx.view?.detachPane) throw new Error('Needs the desktop app.');

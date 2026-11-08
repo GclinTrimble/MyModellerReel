@@ -59,6 +59,16 @@ const fresh = async () => {
 const hidePoints = async () => run('set_properties', { ids: (await run('get_scene')).entities.filter((e) => e.type === 'point').map((e) => e.id), visible: false });
 const panel = (tab) => js(`window.mmr.app.ui.show('${tab}'); return 1;`);
 
+/** A rolling ground with a ridge, a road alignment over it, and (with a template) its corridor. */
+async function roadScene(template = null) {
+  await run('create_terrain', { width: 220, depth: 140, spacing: 4, name: 'Ground', color: '#8a9a6b' });
+  await js("const e = api.doc.entities.find((x) => x.name === 'Ground'); delete e.derived; e.mesh.v = e.mesh.v.map(([x, y, z]) => { const X = x + e.position[0], Z = z + e.position[2]; return [x, 9 * Math.exp(-(X * X) / (2 * 38 * 38)) + 0.05 * Z - 2.5 + 1.2 * Math.sin(X / 23) * Math.cos(Z / 31), z]; }); e.meta = { ...(e.meta || {}), surface: true }; return 1;");
+  await run('set_style', { grid: false });
+  await run('create_alignment', { name: 'Main road', points: [[-95, 25], [0, 0], [95, 15]], radii: [70], pvis: [[0, 1.5], [100, 4], [200, 1]], curves: [80] });
+  if (template) await run('create_corridor', { alignment: 'Main road', surface: 'Ground', name: 'Road', interval: 5, template });
+}
+const ROAD = { lanes: [{ width: 3.5, crossfall: -2.5 }], shoulder: { width: 1.5, crossfall: -4 }, cut_slope: 1.5, fill_slope: 2, ditch: { width: 0.6, depth: 0.6 }, layers: [{ name: 'Asphalt', thickness: 0.1, material: 'Asphalt' }, { name: 'Base course', thickness: 0.3, material: 'Crushed stone' }], superelevation: { rate: 5, runoff: 25 } };
+
 const PAGES = {
   async 'push-pull-and-components'() {
     await fresh();
@@ -864,6 +874,61 @@ const PAGES = {
     }
     await run('detach_pane', { pane: 2, detached: false });
     await run('set_layout', { count: 1 });
+  },
+  async 'road-through-terrain'() {
+    await fresh();
+    await roadScene();
+    await camera([10, 120, 105], [0, 0, 12]);
+    await none();
+    await shot('An alignment over the ground: straights, an arc and a vertical curve');
+    await run('create_corridor', { alignment: 'Main road', surface: 'Ground', name: 'Road', interval: 5, template: { lanes: [{ width: 3.5, crossfall: -2.5 }], shoulder: { width: 1.5, crossfall: -4 }, cut_slope: 1.5, fill_slope: 2 } });
+    await camera([38, 30, 62], [0, 2, 12]);
+    await none();
+    await shot('Site › Corridor: the road with its side slopes, red-brown in cut, blue in fill');
+    await run('road_views', { corridor: 'Road', station: 100 });
+    await camera([45, 32, 70], [0, 2, 12]);
+    await none();
+    await shot('Road views: 3D, plan, the profile and the cross-section, side by side');
+    // a real click in the profile cuts the section there
+    const b = await js("const p = window.mmr.app.panes.extra[1]; const r = p.board.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, p.view2d.map.X(165)];");
+    const [x, y] = [Math.round(b[4] + b[0]), Math.round(b[1] + b[3] * 0.6)];
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x, y }, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 400 }] });
+    await shot('Click the profile to cut a section there; the plan and 3D show where');
+    await run('set_corridor', { id: 'Road', template: { ditch: { width: 0.6, depth: 0.6 }, bench: { every: 3, width: 2 }, right: { cut_slope: 1 } } });
+    await run('set_pane', { pane: 4, station: 100 });
+    await shot('Change the template: a ditch in cut, a bench every 3 m, a steeper right side');
+    await run('set_layout', { count: 1 });
+    await run('corridor_surface', { corridor: 'Road' });
+    await camera([-40, 22, 50], [8, 3, 10]);
+    await none();
+    await shot('See the cut through the ground: the finished ground is shown, the survey is untouched');
+    await run('set_style', { grid: true });
+  },
+  async 'road-earthworks'() {
+    await fresh();
+    await roadScene(ROAD);
+    const v = await run('corridor_volumes', { corridor: 'Road', bulking: 1.25, shrinkage: 0.9 });
+    await camera([60, 45, 85], [0, 2, 12]);
+    await none();
+    await js(`window.mmr.app.ui.roadVolumesDialog(${JSON.stringify(v)}); return 1;`);
+    await shot('Site › Road earthwork volumes: cut and fill station by station, and the balance');
+    await clean();
+    const s = await run('corridor_solids', { corridor: 'Road' });
+    await run('set_properties', { ids: ['Ground', 'Road'], visible: false });
+    await run('set_style', { edges: false });
+    await camera([40, 60, 95], [0, 0, 12]);
+    await none();
+    await shot('The cut (red-brown), the fill (blue) and the pavement layers as solids with their materials');
+    // a section plane across the fill shows the layers: asphalt, base course, then the fill body
+    await run('section', { normal: [-1, 0, 0], point: [-60, 0, 0] });
+    await camera([-70, 4.5, 8], [-60, 1.4, 15.8]);
+    await shot('Cut across: asphalt over the base course, on the fill body');
+    await run('section', { enabled: false });
+    await run('set_style', { edges: true });
+    await js(`window.mmr.app.ui.roadSolidsDialog(${JSON.stringify(s)}); return 1;`);
+    await shot('Quantities: each solid with its volume and weight');
+    await clean();
+    await run('set_style', { grid: true });
   },
   async 'check-for-clashes'() {
     await fresh();

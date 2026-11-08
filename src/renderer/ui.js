@@ -389,6 +389,12 @@ export class UI {
       volumeReport: { label: 'Volume report…', icon: 'table', run: form('volume_report') },
       alignment: { label: 'Alignment…', icon: 'path', run: form('create_alignment') },
       corridor: { label: 'Corridor…', icon: 'road-horizon', run: form('create_corridor') },
+      editCorridor: { label: 'Change the corridor (template, ditch, benches, layers)…', icon: 'sliders-horizontal', run: form('set_corridor', () => ({ id: this.firstCorridor() })) },
+      roadViews: { label: 'Road views: plan, 3D, profile, section', icon: 'squares-four', run: form('road_views', () => ({ corridor: this.firstCorridor() })) },
+      corridorSurface: { label: 'See the cut through the ground…', icon: 'mountains', run: form('corridor_surface', () => ({ corridor: this.firstCorridor() })) },
+      corridorVolumes: { label: 'Road earthwork volumes…', icon: 'table', run: async () => this.roadVolumesDialog(await this.commandDialog('corridor_volumes', { corridor: this.firstCorridor(), bulking: 1.25, shrinkage: 0.9 })) },
+      corridorSolids: { label: 'Earthwork and pavement solids…', icon: 'cube', run: async () => this.roadSolidsDialog(await this.commandDialog('corridor_solids', { corridor: this.firstCorridor() })) },
+      applyCorridor: { label: 'Write the road into the ground…', icon: 'check-square', run: form('apply_corridor', () => ({ corridor: this.firstCorridor() })) },
       trench: { label: 'Design: trench…', icon: 'shovel', run: form('design_trench') },
       lineSlope: { label: 'Design: line with cross slope…', icon: 'line-segment', run: form('design_line_slope') },
       plane: { label: 'Design: plane…', icon: 'square', run: form('design_plane') },
@@ -424,7 +430,7 @@ export class UI {
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', 'Views', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
@@ -859,6 +865,44 @@ export class UI {
   /** A picture of an exported sheet or section, so you see what you saved. */
   svgPreview(title, svg) {
     this.modal(title, h('img.svg-preview', { src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, alt: title }));
+  }
+  /** The name of the selected corridor, or the first one, to fill in the road forms. */
+  firstCorridor() {
+    const doc = this.app.store.doc;
+    const isC = (e) => e?.derived?.generator === 'corridor';
+    return (doc.entities.find((e) => this.app.selection.includes(e.id) && isC(e)) || doc.entities.find(isC))?.name;
+  }
+  /** Road earthwork volumes (#169): totals, then the table station by station. */
+  roadVolumesDialog(r) {
+    if (!r) return;
+    const t = r.totals;
+    const n = (x) => x.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    const cols = ['Station', 'Cut m²', 'Fill m²', 'Cut m³', 'Fill m³', 'Σ cut', 'Σ fill', 'Mass haul'];
+    const keys = ['station', 'cut_area', 'fill_area', 'cut', 'fill', 'cum_cut', 'cum_fill', 'mass'];
+    this.modal(
+      `Earthworks · ${r.corridor}`,
+      h(
+        'div',
+        {},
+        h('p.small', {}, `Cut ${n(t.cut)} m³ (${n(t.cut_loose)} m³ loose) · fill ${n(t.fill)} m³ (needs ${n(t.fill_needs_cut)} m³ of cut) · ${t.verdict}.`),
+        h('div.qty', {}, h('table', {}, h('thead', {}, h('tr', {}, ...cols.map((c) => h('th', {}, c)))), h('tbody', {}, r.rows.map((row) => h('tr', {}, ...keys.map((k) => h('td', {}, n(row[k])))))))),
+      ),
+    );
+  }
+  /** What the road needs (#170): each solid's material, volume and weight. */
+  roadSolidsDialog(r) {
+    if (!r) return;
+    const n = (x) => x.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    const total = r.solids.reduce((a, s) => a + s.tonnes, 0);
+    this.modal(
+      'Earthwork and pavement quantities',
+      h(
+        'div',
+        {},
+        h('div.qty', {}, h('table', {}, h('thead', {}, h('tr', {}, ...['Solid', 'Material', 'm³', 't'].map((c) => h('th', {}, c)))), h('tbody', {}, r.solids.map((s) => h('tr', {}, h('td', {}, s.name), h('td', { style: { textAlign: 'left' } }, s.material), h('td', {}, n(s.volume_m3)), h('td', {}, n(s.tonnes))))))),
+        h('p.small.muted', {}, `${n(total)} t in all. ${r.note}`),
+      ),
+    );
   }
   clashDialog(r) {
     const app = this.app;
