@@ -29,7 +29,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `surfaces.js` (contours, surface analysis, profiles, pads, smoothing, sculpting, DEM grids), `trimble.js` (JobXML and
   FXL), `gis.js` (GeoJSON, Shapefile and DBF), `annotate.js` (dimensions, labels and guides: curves recomputed from references by `syncAnnotations`), `font.js`
   (TrueType reader and 3D text; fonts registered as bytes), `section.js` (slicing meshes by a plane, nested rings, section
-  SVG), `sheet.js` (drawing sheet layout, SVG and a small PDF writer), `sun.js` (solar position, sun studies), `look.js` (texture projection, light / effect / environment
+  SVG), `sheet.js` (drawing sheet layout, SVG and a small PDF writer), `sequencing.js` (easing curves, clips, constraints, shots, schedules, key editing), `physics.js` (cannon-es
+  rigid bodies baked to keys), `sun.js` (solar position, sun studies), `look.js` (texture projection, light / effect / environment
   defaults), `imagegen.js` (ComfyUI and OpenAI-compatible image requests), `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
   pages' catalogue; the pages are `docs/how-to/*.md`).
 - Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
@@ -41,7 +42,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.
 - `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
-  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `help.js` (the Help panel and its Markdown), `underlays.js` (PDF pages and images as textures), `presentation.js` (textures, lights, environment, post effects, styles, the path tracer,
+  `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `help.js` (the Help panel and its Markdown), `underlays.js` (PDF pages and images as textures), `audio.js` (timeline audio and the render mix), `presentation.js` (textures, lights, environment, post effects, styles, the path tracer,
   seamless AI textures), `captions.js` (2D caption drawing shared
   by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
 - `src/main/stream.cjs` streams AI replies (text to the page as it arrives, the same reply object at the end).

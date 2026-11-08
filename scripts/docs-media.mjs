@@ -528,6 +528,93 @@ const PAGES = {
     await js("window.mmr.app.ui.commandDialog('ai_render', { prompt: 'warm summer evening, landscaped garden, people walking', strength: 0.55 }); return 1;");
     await shot('');
   },
+  async 'edit-timing-and-reuse-clips'() {
+    await fresh();
+    for (let i = 0; i < 4; i++) {
+      await run('create_box', { width: 1.2, height: 2.4, depth: 0.12, position: [i * 2.4, 0, -0.08], name: `Frame ${i + 1}`, color: '#5e3f2b' });
+      await run('create_box', { width: 0.9, height: 2.1, depth: 0.05, position: [i * 2.4, 0, 0.03], name: `Door ${i + 1}`, color: '#c8a77a' });
+      await run('set_pivot', { id: `Door ${i + 1}`, pivot: 'left' });
+    }
+    await run('animate', { target: 'Door 1', property: 'rotation', from: [0, 0, 0], to: [0, -100, 0], start: 0, end: 1.5 });
+    await camera([4, 3.5, 9], [3.6, 1.1, 0]);
+    await run('save_clip', { name: 'Door opens', ids: ['Door 1'], from: 0, to: 1.5 });
+    await run('apply_clip', { name: 'Door opens', ids: ['Door 2', 'Door 3', 'Door 4'], start: 0.8, stagger: 0.8 });
+    await none();
+    await run('playback', { action: 'seek', time: 0.05 });
+    await shot('One door animated, saved as the clip "Door opens"');
+    await run('playback', { action: 'seek', time: 2.2 });
+    await shot('Apply the clip to the other doors, 0.8 s apart');
+    await js("const tl = window.mmr.app.timeline; tl.selKeys = new Set(window.mmr.doc.animation.tracks.slice(1).map((t) => t.target + '|rotation|' + Math.round(t.keys.at(-1).t * 1000))); tl.layoutNow(); return 1;");
+    await shot('Shift-click keyframes: drag them together, Ctrl+C / Ctrl+V, Delete');
+    await js("const tl = window.mmr.app.timeline; const tr = window.mmr.doc.animation.tracks[0]; tl.selKey = { track: tr, t: tr.keys[1].t }; tl.selKeys = new Set(); tl.curveDialog(); return 1;");
+    await js("[...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent === 'Overshoot').click(); return 1;");
+    await shot('');
+  },
+  async 'carry-follow-and-fall'() {
+    await fresh();
+    await run('create_box', { width: 6, height: 2.6, depth: 0.3, position: [4, 0, -2], name: 'Wall', color: '#d8d0c0' });
+    await run('create_cylinder', { radius: 0.12, height: 9, position: [-4, 0, 0], name: 'Mast', color: '#e8bc5e' });
+    await run('create_box', { width: 0.25, height: 0.25, depth: 0.25, position: [0, 0.25, 0], name: 'Hook', color: '#c8553d' });
+    await run('create_box', { width: 4, height: 0.25, depth: 0.25, position: [0, 0, 0], name: 'Beam', color: '#7f8a93' });
+    await run('animate', { target: 'Hook', property: 'position', from: [0, 0.25, 0], to: [0, 6.5, 0], start: 1, end: 3 });
+    await run('animate', { target: 'Hook', property: 'position', from: [0, 6.5, 0], to: [4, 2.85, -2], start: 3, end: 6 });
+    await run('attach', { id: 'Beam', parent: 'Hook', start: 1, end: 6 });
+    await run('animate', { target: 'Hook', property: 'position', from: [4, 2.85, -2], to: [4, 6, -2], start: 6.5, end: 8 });
+    await camera([10, 7, 13], [1.5, 3, -1]);
+    await none();
+    await run('playback', { action: 'seek', time: 0 });
+    await shot('A hook, a beam on the ground, a wall');
+    await run('playback', { action: 'seek', time: 4 });
+    await shot('Attach the beam to the hook from 1 s to 6 s: it is carried');
+    await run('playback', { action: 'seek', time: 8 });
+    await shot('Released at 6 s: it stays on the wall, the hook goes up');
+    await clean();
+    await fresh();
+    await run('create_box', { width: 4, height: 0.3, depth: 4, name: 'Slab', color: '#a7a39a' });
+    const names = ['Crate 1', 'Crate 2', 'Crate 3', 'Crate 4'];
+    for (const [i, n] of names.entries()) await run('create_box', { width: 0.6, height: 0.6, depth: 0.6, position: [(i % 2) * 0.5 - 0.2, 2.5 + i * 0.9, (i > 1 ? 0.3 : -0.2)], rotation: [i * 17, i * 33, i * 11], name: n, color: ['#c8553d', '#2f6f86', '#e8bc5e', '#5e7f4a'][i] });
+    await run('simulate_physics', { ids: names, duration: 4, bounce: 0.25 });
+    await camera([6, 4, 7], [0, 0.6, 0]);
+    await none();
+    await run('playback', { action: 'seek', time: 4 });
+    await shot('Physics: four crates dropped, tumbled and settled');
+  },
+  async 'shots-music-and-section-reveal'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('add_shot', { name: 'Wide', start: 0, end: 4, position: [20, 10, 22], target: [0, 1, 0], lens: 24 });
+    await run('add_shot', { name: 'Entrance', start: 4, end: 8, position: [8, 2, 10], target: [0, 1.5, 4], position_end: [5, 1.8, 8] });
+    await run('add_shot', { name: 'Plan', start: 8, end: 12, position: [10, 14, 12], target: [0, 0.5, 0] });
+    await run('animate_section', { normal: [0, 1, 0], from: [0, 5.8, 0], to: [0, 0.6, 0], start: 8.5, end: 11.5 });
+    await run('add_audio', { path: `${SAMPLES}/theme.wav`, start: 0, fade_in: 1.5, fade_out: 2 });
+    await run('set_timeline', { duration: 12 });
+    await none();
+    await run('playback', { action: 'seek', time: 1 });
+    await shot('Shots: the Shots row shows the cuts (Wide, Entrance, Plan)');
+    await run('playback', { action: 'seek', time: 10.2 });
+    await shot('Section reveal: the cut comes down through the house');
+    await run('playback', { action: 'seek', time: 6 });
+    await shot('Music on its own row: it plays with the timeline and goes into the render');
+    await run('render_video', { path: path.join(dir, 'shots-music-and-section-reveal.mp4'), width: 960, height: 540, fps: 24 });
+  },
+  async 'build-a-4d-schedule'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await camera([14, 8, 16], [0, 1.5, 0]);
+    await panel('outliner');
+    await js("[...document.querySelectorAll('.overline')].find((x) => x.textContent === 'Layers').scrollIntoView(); return 1;");
+    await none();
+    await shot('Each part on its layer: A-SLAB, A-WALL, A-ROOF, A-DOOR, A-GLAZ');
+    const r = await run('import_schedule', { path: `${SAMPLES}/house-schedule.csv`, seconds_per_day: 0.3, effect: 'grow' });
+    await js(`window.mmr.app.ui.infoDialog('Schedule imported', ${JSON.stringify(`${r.tasks} tasks, ${r.matched} matched, ${r.seconds_per_day} s per day\n${r.schedule.map((x) => `${x.task}: ${x.start} → ${x.finish} builds ${x.builds.join(', ')}`).join('\n')}`)}); return 1;`);
+    await shot('');
+    await clean();
+    await panel('ai');
+    await js('window.mmr.app.timeline.open(); return 1;');
+    await run('playback', { action: 'seek', time: 4.4 });
+    await shot('The walls going up on 15 March: the date and the tasks under way, top left');
+    await run('render_video', { path: path.join(dir, 'build-a-4d-schedule.mp4'), width: 960, height: 540, fps: 24 });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

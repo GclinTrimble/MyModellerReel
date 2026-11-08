@@ -35,6 +35,8 @@ const FILTERS = {
   section: [{ name: 'SVG drawing', extensions: ['svg'] }, { name: 'DXF (R12)', extensions: ['dxf'] }],
   texture: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
   hdri: [{ name: 'HDR panoramas', extensions: ['hdr', 'exr'] }],
+  audio: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
+  schedule: [{ name: 'Schedules', extensions: ['csv', 'xml', 'xer', 'txt'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],

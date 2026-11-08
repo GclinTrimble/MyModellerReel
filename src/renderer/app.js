@@ -289,6 +289,7 @@ window.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (app.timeline.active && (app.timeline.selKeys.size || app.timeline.clipboard) && app.timeline.handleKey(ev)) return; // keyframes first
   const A_ = app.ui.actions;
   const combos = {
     'ctrl+z': 'undo', 'ctrl+y': 'redo', 'ctrl+shift+z': 'redo', 'ctrl+s': 'save', 'ctrl+shift+s': 'saveAs', 'ctrl+o': 'open', 'ctrl+n': 'new',

@@ -1,0 +1,5 @@
+Task,Start,Finish,Element
+Slab,2027-03-01,2027-03-05,A-SLAB
+Walls,2027-03-08,2027-03-19,A-WALL
+Roof,2027-03-22,2027-03-31,A-ROOF
+Doors and windows,2027-04-01,2027-04-07,A-DOOR|A-GLAZ

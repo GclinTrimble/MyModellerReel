@@ -1,7 +1,8 @@
 // Frame-accurate offline render (#72): step the timeline frame by frame, draw each frame at the output size,
 // burn in captions and encode. No real-time capture, so no dropped frames at any resolution.
 // MP4 is H.264 (VP9 when this PC has no H.264 encoder), WebM is VP9 (with transparency), plus GIF and PNG sequences.
-import { Output, Mp4OutputFormat, WebMOutputFormat, BufferTarget, CanvasSource, QUALITY_MEDIUM, QUALITY_HIGH, QUALITY_VERY_HIGH, canEncodeVideo } from 'mediabunny';
+import { Output, Mp4OutputFormat, WebMOutputFormat, BufferTarget, CanvasSource, AudioBufferSource, QUALITY_MEDIUM, QUALITY_HIGH, QUALITY_VERY_HIGH, canEncodeVideo, canEncodeAudio } from 'mediabunny';
+import { mixAudio } from './audio.js';
 import { GIFEncoder, quantize, applyPalette } from 'gifenc';
 import { drawCaptions } from './captions.js';
 
@@ -87,7 +88,13 @@ export async function renderVideo(app, opts, write) {
       const output = new Output({ format: format === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(), target: new BufferTarget() });
       const source = new CanvasSource(comp, { codec, bitrate: QUALITY[opts.quality || 'high'] || QUALITY_HIGH, alpha: opts.transparent ? 'keep' : 'discard', keyFrameInterval: 2 });
       output.addVideoTrack(source, { frameRate: fps });
+      // music and voiceover (#83): mixed for the rendered span, AAC in MP4, Opus in WebM
+      const mix = await mixAudio(doc, from, to).catch((e) => (console.error('audio mix:', e), null));
+      const acodec = mix && (format === 'webm' ? 'opus' : (await canEncodeAudio('aac')) ? 'aac' : 'opus');
+      const audio = mix && acodec && (format === 'webm' || acodec === 'aac') ? new AudioBufferSource({ codec: acodec, bitrate: 160e3 }) : null;
+      if (audio) output.addAudioTrack(audio);
       await output.start();
+      if (audio) await audio.add(mix);
       for (let i = 0; i < frames; i++) {
         draw(i);
         await source.add(i / fps, 1 / fps);

@@ -16,6 +16,8 @@ import * as SHT from './sheet.js';
 import * as SUN from './sun.js';
 import * as LK from './look.js';
 import * as IG from './imagegen.js';
+import * as SQ from './sequencing.js';
+import * as PH from './physics.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
@@ -2434,6 +2436,210 @@ function registerCore(reg, ctx) {
     const sel = a.ids?.length ? a.ids : ctx.selection.get();
     if (a.apply !== false && sel.length) await reg.run('set_texture', { ids: sel, asset, projection: 'box', size: [a.size || 1, a.size || 1] });
     return { asset, applied: a.apply !== false ? sel : [], image: `data:image/png;base64,${r.b64}` };
+  }, true);
+
+
+  // ---------------------------------------------------------------- animation depth (Phase 13)
+  const baseOf = (target, property) => (target === 'camera' ? ctx.doc.camera[property] : D.getEntity(ctx.doc, target)?.[property]);
+  const ids2 = (list) => D.resolve(ctx.doc, list).map((e) => e.id);
+  const putKeys = (list) => {
+    for (const k of list) A.setKey(ctx.doc, k.target, k.property, k.t, k.v, k.ease || 'ease-in-out', k.bezier || null);
+    return list.length;
+  };
+
+  def('animate', 'save_clip', 'Save what one or more things do between from and to as a reusable clip ("door opens"). Moves and turns are kept relative, so apply_clip plays it on other things where they are.', obj({ name: str('clip name'), ids, from: T('default 0'), to: T('default: the last key') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const targets = targets_(a);
+    const from = A.timeOf(doc, a.from, 0);
+    const to = A.timeOf(doc, a.to, Math.max(from, ...doc.animation.tracks.filter((t) => targets.includes(t.target)).flatMap((t) => t.keys.map((k) => k.t))));
+    const clip = SQ.makeClip(doc, { name: a.name, targets, from, to, base: (t, p) => (A.sample(doc.animation.tracks.find((x) => x.target === t && x.property === p) || { keys: [] }, from) ?? baseOf(t, p)) });
+    doc.animation.clips = [...(doc.animation.clips || []).filter((c) => c.name !== a.name), clip];
+    return { name: clip.name, duration: clip.duration, roles: clip.roles, tracks: clip.tracks.length };
+  }, true);
+  const targets_ = (a) => targets(ctx, a).map((e) => e.id);
+
+  def('animate', 'apply_clip', 'Play a saved clip on other things from start (speed 2 is twice as fast). With several things in the clip, give as many ids in the same order; with one, every id gets it (stagger s between them).', obj({ name: str('clip name'), ids, start: T('default: playhead or 0'), speed: num('default 1'), stagger: num('s between ids (default 0)') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const clip = (doc.animation.clips || []).find((c) => c.name.toLowerCase() === a.name.toLowerCase());
+    if (!clip) throw new Error(`No clip "${a.name}". Clips: ${(doc.animation.clips || []).map((c) => c.name).join(', ') || 'none (save_clip makes one)'}.`);
+    const ts = targets_(a);
+    const start = A.timeOf(doc, a.start, ctx.timeline?.time ?? 0);
+    const groups = clip.roles > 1 ? [ts] : ts.map((t) => [t]);
+    let n = 0;
+    groups.forEach((g, i) => (n += putKeys(SQ.clipKeys(clip, g, start + i * (a.stagger || 0), { base: baseOf, speed: a.speed || 1 }))));
+    return { clip: clip.name, on: ts, keys: n, ends: start + (groups.length - 1) * (a.stagger || 0) + clip.duration / (a.speed || 1) };
+  }, true);
+
+  def('animate', 'list_clips', 'Saved animation clips.', obj({}), () => (ctx.doc.animation.clips || []).map((c) => ({ name: c.name, duration: c.duration, roles: c.roles, properties: [...new Set(c.tracks.map((t) => t.property))] })));
+
+  def('animate', 'simulate_physics', 'Rigid-body physics baked to keyframes: the shapes fall, bounce, tumble and settle on the ground and on the colliders (default: every other visible shape). push [x, y, z] m/s throws them (a collapse). Keys from start.', obj({ ids, colliders: { type: 'array', items: { type: 'string' }, description: 'shapes that do not move (default: all other visible shapes)' }, start: T('default 0'), duration: num('s (default 4)'), gravity: num('m/s² (default 9.81)'), bounce: num('0–1 (default 0.15)'), friction: num('0–1 (default 0.6)'), push: v3('starting speed, m/s') }), (a) => {
+    const doc = ctx.doc;
+    const dyn = targets(ctx, a).filter((e) => e.mesh && !e.parent);
+    if (!dyn.length) throw new Error('Select the shapes that fall (top-level shapes).');
+    const skip = new Set(dyn.map((e) => e.id));
+    const off = new Set(doc.tags.filter((t) => !t.visible).map((t) => t.name));
+    const statics = (a.colliders ? D.resolve(doc, a.colliders) : doc.entities.filter((e) => e.mesh && !e.parent && e.visible && !off.has(e.tag))).filter((e) => !skip.has(e.id) && e.mesh);
+    const start = A.timeOf(doc, a.start, 0);
+    const r = PH.simulate(dyn, statics, { duration: a.duration || 4, gravity: a.gravity ?? 9.81, restitution: a.bounce ?? 0.15, friction: a.friction ?? 0.6, push: a.push });
+    for (const [id, list] of Object.entries(r.keys))
+      for (const k of list) A.setKey(doc, id, 'position', start + k.t, k.position, 'linear'), A.setKey(doc, id, 'rotation', start + k.t, k.rotation, 'linear');
+    return { moved: dyn.map((e) => e.name), colliders: statics.length, settled_at: r.settled === null ? null : start + r.settled, ends: start + (a.duration || 4) };
+  }, true);
+
+  def('animate', 'add_shot', 'A camera shot between start and end (cuts between shots, like a storyboard): the camera from position / target (or a saved scene), optionally moving to position_end / target_end over the shot. Shots win over camera keys.', obj({ name: str('shot name'), start: T('s'), end: T('s'), scene: str('a saved scene to take the camera from'), position: v3('eye'), target: v3('look-at'), lens: num('mm'), position_end: v3('eye at the end (a move)'), target_end: v3('look-at at the end') }, ['start', 'end']), (a) => {
+    const doc = ctx.doc;
+    const start = A.timeOf(doc, a.start, 0);
+    const end = A.timeOf(doc, a.end, start + 3);
+    if (!(end > start)) throw new Error('end must come after start.');
+    const sc = a.scene && (doc.scenes || []).find((s) => s.name.toLowerCase() === a.scene.toLowerCase());
+    if (a.scene && !sc) throw new Error(`No scene "${a.scene}".`);
+    const now = ctx.view?.getCamera() || doc.camera;
+    const cam = { position: a.position || sc?.camera.position || now.position, target: a.target || sc?.camera.target || now.target, fov: a.lens ? Math.round(LK.fovOfLens(a.lens) * 100) / 100 : sc?.camera.fov || now.fov || 45 };
+    const shot = { name: a.name || `Shot ${(doc.animation.shots || []).length + 1}`, start, end, camera: cam, ...(a.position_end || a.target_end ? { camera_end: { position: a.position_end || cam.position, target: a.target_end || cam.target, fov: cam.fov } } : {}) };
+    doc.animation.shots = [...(doc.animation.shots || []).filter((s) => s.name !== shot.name && (s.end <= start || s.start >= end)), shot].sort((x, y) => x.start - y.start);
+    doc.animation.duration = Math.max(doc.animation.duration, Math.ceil(end));
+    return { shots: doc.animation.shots.map((s) => ({ name: s.name, start: s.start, end: s.end, moves: !!s.camera_end })) };
+  }, true);
+
+  def('animate', 'remove_shot', 'Remove a camera shot by name ("all" for every shot).', obj({ name: str('shot name or "all"') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const before = (doc.animation.shots || []).length;
+    doc.animation.shots = a.name === 'all' ? [] : (doc.animation.shots || []).filter((s) => s.name.toLowerCase() !== a.name.toLowerCase());
+    return { removed: before - doc.animation.shots.length };
+  }, true);
+
+  def('animate', 'add_audio', 'Music or a voiceover on the timeline (MP3, WAV, OGG, M4A): from start or a marker, with volume and fades; played with the timeline and mixed into MP4 / WebM renders.', obj({ path: str('absolute audio file path'), start: T('s or a marker (default 0)'), volume: num('0–1 (default 0.8)'), fade_in: num('s'), fade_out: num('s'), name: common.name }, ['path']), async (a) => {
+    if (!ctx.io?.readBinary) throw new Error('Audio files need the desktop app.');
+    const doc = ctx.doc;
+    const ext = a.path.split('.').pop().toLowerCase();
+    const mime = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac' }[ext];
+    if (!mime) throw new Error('Audio: MP3, WAV, OGG, M4A, AAC or FLAC.');
+    const asset = Assets.put(await ctx.io.readBinary(a.path), { mime, name: a.path.split(/[\\/]/).pop() });
+    const clip = { name: a.name || a.path.split(/[\\/]/).pop().replace(/\.\w+$/, ''), asset, start: A.timeOf(doc, a.start, 0), volume: a.volume ?? 0.8, fade_in: a.fade_in || 0, fade_out: a.fade_out || 0 };
+    doc.animation.audio = [...(doc.animation.audio || []).filter((x) => x.name !== clip.name), clip];
+    return clip;
+  }, true);
+
+  def('animate', 'remove_audio', 'Remove an audio clip by name ("all" for every one).', obj({ name: str('audio name or "all"') }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const before = (doc.animation.audio || []).length;
+    doc.animation.audio = a.name === 'all' ? [] : (doc.animation.audio || []).filter((x) => x.name.toLowerCase() !== a.name.toLowerCase());
+    return { removed: before - doc.animation.audio.length };
+  }, true);
+
+  def('animate', 'animate_section', 'Section reveal: the section plane sweeps through the model between start and end (from and to: points on the plane, or distances along normal from the model\'s middle). normal: the side that is cut away (default down: a plan cut rising).', obj({ normal: v3('cut-away side (default [0, 1, 0]: everything above is cut)'), from: { description: '[x, y, z] or a distance along normal' }, to: { description: '[x, y, z] or a distance' }, start: T('default 0'), end: T('default start + 4'), ease: str('easing', Object.keys(A.EASES)) }), (a) => {
+    const doc = ctx.doc;
+    const n = G.norm(a.normal || [0, 1, 0]);
+    const box = D.unionBox(doc.entities.filter((e) => e.mesh && !e.parent).map((e) => D.worldBox(doc, e)));
+    const mid = box.min[0] === Infinity ? [0, 0, 0] : box.min.map((x, k) => (x + box.max[k]) / 2);
+    const half = box.min[0] === Infinity ? 1 : Math.abs(G.dot(G.sub(box.max, box.min), n)) / 2 + 0.01;
+    const pt = (v, d) => (Array.isArray(v) ? v : G.add(mid, G.scl(n, v ?? d)));
+    const start = A.timeOf(doc, a.start, 0);
+    const end = A.timeOf(doc, a.end, start + 4);
+    A.setKey(doc, 'section', 'point', start, D.round3(pt(a.from, -half)), 'linear');
+    A.setKey(doc, 'section', 'point', end, D.round3(pt(a.to, half)), a.ease || 'ease-in-out');
+    A.setKey(doc, 'section', 'normal', start, n.map((x) => Math.round(x * 1e4) / 1e4), 'step');
+    return { from: pt(a.from, -half), to: pt(a.to, half), start, end };
+  }, true);
+
+  const constraint = (type, a, extra) => {
+    const doc = ctx.doc;
+    const target = D.resolve(doc, a.id)[0];
+    const c = { type, target: target.id, start: A.timeOf(doc, a.start, 0), ...(a.end !== undefined ? { end: A.timeOf(doc, a.end, 0) } : {}), ...extra };
+    if (c.end !== undefined && !(c.end > c.start)) throw new Error('end must come after start.');
+    doc.animation.constraints = [...(doc.animation.constraints || []), c];
+    return c;
+  };
+  def('animate', 'attach', 'Attach a thing to another from start (and let go at end): it moves and turns with the parent, keeping where it was relative to it (a crane hook picking a beam). After end it stays where it was released.', obj({ id: str('what is carried'), parent: str('what carries it'), start: T('pick-up time (default 0)'), end: T('release time (default: never)') }, ['id', 'parent']), (a) => constraint('attach', a, { parent: D.resolve(ctx.doc, a.parent)[0].id }), true);
+  def('animate', 'follow', 'Follow another thing\'s movement (position only, no turning) from start to end.', obj({ id: str('the follower'), parent: str('what it follows'), start: T('default 0'), end: T('default: never') }, ['id', 'parent']), (a) => constraint('follow', a, { parent: D.resolve(ctx.doc, a.parent)[0].id }), true);
+  def('animate', 'look_at', 'Keep turning a thing (or the camera rig\'s object) to face another thing or a point from start to end: yaw only (a turret, a person) or with pitch.', obj({ id: str('what turns'), at: { description: 'entity id / name or [x, y, z]' }, pitch: bool('also tilt up and down'), yaw_offset: num('degrees, when its front is not +z'), start: T('default 0'), end: T('default: never') }, ['id', 'at']), (a) => constraint('look_at', a, { at: Array.isArray(a.at) ? a.at : D.resolve(ctx.doc, a.at)[0].id, ...(a.pitch ? { pitch: true } : {}), ...(a.yaw_offset ? { yaw_offset: a.yaw_offset } : {}) }), true);
+  def('animate', 'remove_constraints', 'Remove the attach / follow / look_at constraints of a thing (or "all").', obj({ id: str('entity or "all"') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const before = (doc.animation.constraints || []).length;
+    const id = a.id === 'all' ? null : D.resolve(doc, a.id)[0].id;
+    doc.animation.constraints = id ? (doc.animation.constraints || []).filter((c) => c.target !== id) : [];
+    return { removed: before - doc.animation.constraints.length };
+  }, true);
+
+  def('animate', 'set_ease', 'The easing into a keyframe: a named one, or a custom curve bezier [x1, y1, x2, y2] like CSS cubic-bezier (the graph editor\'s handles). time: the key\'s time (default: every key of the property).', obj({ id: str('entity or "camera"'), property: str('position | rotation | scale | opacity | color | fov | target'), time: T('the key'), ease: str('named easing', Object.keys(A.EASES)), bezier: { type: 'array', items: { type: 'number' }, description: '[x1, y1, x2, y2], x in 0–1' } }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const target = a.id === 'camera' ? 'camera' : D.resolve(doc, a.id)[0].id;
+    if (a.bezier && !(a.bezier.length === 4 && a.bezier[0] >= 0 && a.bezier[0] <= 1 && a.bezier[2] >= 0 && a.bezier[2] <= 1)) throw new Error('bezier is [x1, y1, x2, y2] with x1 and x2 between 0 and 1.');
+    const t = a.time !== undefined ? A.timeOf(doc, a.time, 0) : null;
+    let n = 0;
+    for (const tr of doc.animation.tracks)
+      if (tr.target === target && (!a.property || tr.property === a.property))
+        for (const k of tr.keys)
+          if (t === null || Math.abs(k.t - t) < 1e-3) {
+            if (a.bezier) (k.bezier = a.bezier), (k.ease = 'bezier');
+            else if (a.ease) (k.ease = a.ease), delete k.bezier;
+            n++;
+          }
+    if (!n) throw new Error('No keyframe there.');
+    return { keys: n };
+  }, true);
+
+  def('animate', 'retime', 'Dope sheet: scale and shift keyframes in time. Keys of ids (default: everything) between from and to are stretched by scale about from, then moved by offset s (scale 2: twice as slow).', obj({ ids, from: T('default 0'), to: T('default: the end'), scale: num('default 1'), offset: num('s (default 0)') }), (a) => {
+    const doc = ctx.doc;
+    const ids = a.ids?.length ? ids2(a.ids) : null;
+    const n = SQ.retime(doc, { targets: ids, from: A.timeOf(doc, a.from, 0), to: a.to === undefined ? Infinity : A.timeOf(doc, a.to, 0), scale: a.scale ?? 1, offset: a.offset || 0 });
+    return { keys: n, duration: doc.animation.duration };
+  }, true);
+
+  def('animate', 'copy_keys', 'Dope sheet: copy one thing\'s keyframes (between from and to, some properties) to others, shifted by offset s.', obj({ from_id: str('source entity'), to: { type: 'array', items: { type: 'string' }, description: 'destination entities' }, from: T('default 0'), until: T('default: the end'), offset: num('s (default 0)'), properties: { type: 'array', items: { type: 'string' } } }, ['from_id', 'to']), (a) => {
+    const doc = ctx.doc;
+    const list = SQ.copyKeys(doc, D.resolve(doc, a.from_id)[0].id, ids2(a.to), { from: A.timeOf(doc, a.from, 0), to: a.until === undefined ? Infinity : A.timeOf(doc, a.until, 0), offset: a.offset || 0, properties: a.properties });
+    return { keys: putKeys(list) };
+  }, true);
+
+  def('animate', 'delete_keys', 'Dope sheet: delete the keyframes of ids (default: selection) between from and to.', obj({ ids, from: T('default 0'), to: T('default: the end'), property: str('only this property') }), (a) => {
+    const doc = ctx.doc;
+    const ids = targets_(a);
+    const from = A.timeOf(doc, a.from, 0);
+    const to = a.to === undefined ? Infinity : A.timeOf(doc, a.to, 0);
+    let n = 0;
+    for (const tr of doc.animation.tracks)
+      if (ids.includes(tr.target) && (!a.property || tr.property === a.property)) {
+        const keep = tr.keys.filter((k) => k.t < from - 1e-9 || k.t > to + 1e-9);
+        n += tr.keys.length - keep.length;
+        tr.keys = keep;
+      }
+    doc.animation.tracks = doc.animation.tracks.filter((t) => t.keys.length);
+    return { deleted: n };
+  }, true);
+
+  def('animate', 'import_schedule', 'A 4D sequence from a schedule: CSV (Name, Start, Finish, optional Element / Tag), MS Project XML or Primavera P6 XER. Each task builds the shapes it matches (its Element column, else by layer or name, or a metadata field), between its start and finish; a date caption shows the day and the tasks.', obj({ path: str('absolute .csv / .xml / .xer path'), text: str('the file\'s text instead of path'), match: str('auto | tag | name', ['auto', 'tag', 'name']), field: str('metadata key holding the task id or name'), seconds_per_day: num('timeline seconds per day (default: the schedule in 20 s)'), effect: str('how pieces arrive', ['grow', 'rise', 'fade', 'appear']), caption: bool('show the date and tasks (default true)'), us_dates: bool('month first in 3/1/2027') }), async (a) => {
+    const doc = ctx.doc;
+    const text = a.text ?? (a.path ? await ctx.io?.readText?.(a.path) : null);
+    if (!text) throw new Error('Give path (a schedule file) or text.');
+    const tasks = SQ.parseSchedule(text, { us: !!a.us_dates });
+    const t0 = tasks[0].start;
+    const days = Math.max(1, (Math.max(...tasks.map((x) => x.finish)) - t0) / 86400000);
+    const spd = a.seconds_per_day || Math.round((20 / days) * 1000) / 1000;
+    const effect = a.effect || 'grow';
+    const report = [];
+    const seen = new Set();
+    for (const task of tasks) {
+      const ids = SQ.matchTask(doc, task, { by: a.match || 'auto', field: a.field }).filter((id) => !seen.has(id));
+      ids.forEach((id) => seen.add(id));
+      const s = SQ.scheduleTime(task.start, t0, spd);
+      const f = Math.max(s + 0.2, SQ.scheduleTime(task.finish, t0, spd));
+      for (const id of ids) {
+        const e = D.getEntity(doc, id);
+        A.setKey(doc, id, 'visible', 0, false, 'step');
+        A.setKey(doc, id, 'visible', s, true, 'step');
+        if (effect === 'grow') A.setKey(doc, id, 'scale', s, [e.scale[0], 0.001, e.scale[2]], 'linear'), A.setKey(doc, id, 'scale', f, e.scale, 'ease-out');
+        else if (effect === 'rise') A.setKey(doc, id, 'position', s, G.add(e.position, [0, -3, 0]), 'linear'), A.setKey(doc, id, 'position', f, e.position, 'ease-out');
+        else if (effect === 'fade') A.setKey(doc, id, 'opacity', s, 0, 'linear'), A.setKey(doc, id, 'opacity', f, e.material.opacity, 'ease-out');
+      }
+      report.push({ task: task.name, start: new Date(task.start).toISOString().slice(0, 10), finish: new Date(task.finish).toISOString().slice(0, 10), from: s, to: f, builds: ids.map((id) => D.getEntity(doc, id).name) });
+    }
+    const end = Math.max(...report.map((r) => r.to));
+    doc.animation.duration = Math.max(doc.animation.duration, Math.ceil(end + 1));
+    if (a.caption !== false) {
+      doc.animation.captions = [...(doc.animation.captions || []).filter((c) => !c.date), { text: '', date: true, start_date: t0, seconds_per_day: spd, tasks: report.map((r) => ({ name: r.task, start: r.from, end: r.to })), start: 0, end: Math.ceil(end + 1), style: 'label', position: 'top-left', fade: 0.01 }];
+    }
+    return { tasks: report.length, matched: report.filter((r) => r.builds.length).length, unmatched: report.filter((r) => !r.builds.length).map((r) => r.task), seconds_per_day: spd, duration: doc.animation.duration, schedule: report };
   }, true);
 
   // ---------------------------------------------------------------- insight: quantities, review, skills

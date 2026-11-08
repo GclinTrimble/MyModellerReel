@@ -341,6 +341,14 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 }
 .span-bar.cap { background: var(--mmr-fern-deep); color: #fff; border-left: 3px solid var(--my-mustard); }
 .span-bar.motion { background: repeating-linear-gradient(135deg, var(--my-accent-tint-strong) 0 6px, transparent 6px 12px); color: var(--my-text); }
+.span-bar.shot { background: var(--my-surface-3, var(--my-surface-2)); color: var(--my-text); border: 1px solid var(--my-border-strong, var(--my-border)); border-left: 3px solid var(--my-accent); }
+.span-bar.audio { background: repeating-linear-gradient(90deg, var(--my-accent-tint-strong) 0 2px, transparent 2px 5px); color: var(--my-text); }
+.tl-box { position: absolute; z-index: 3; border: 1px dashed var(--my-accent); background: var(--my-accent-tint); pointer-events: none; }
+.curve-editor { display: block; width: 300px; height: 300px; touch-action: none; }
+.curve-editor .ce-frame { fill: var(--my-surface-2); stroke: var(--my-border); }
+.curve-editor .ce-arm { stroke: var(--my-text-muted); stroke-width: 1.5; }
+.curve-editor .ce-curve { fill: none; stroke: var(--my-accent); stroke-width: 3; }
+.curve-editor .ce-handle { fill: var(--my-surface); stroke: var(--my-accent); stroke-width: 2.5; cursor: grab; }
 
 /* ---------- review (#100), quantities (#53), skill picker (#96) ---------- */
 .review-list { display: flex; flex-direction: column; gap: var(--my-space-1); max-height: 40vh; overflow: auto; }

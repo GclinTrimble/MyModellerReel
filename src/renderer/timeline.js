@@ -2,10 +2,164 @@
 import * as A from '../core/animation.js';
 import { h, icon } from './ui.js';
 import { drawCaptions } from './captions.js';
+import { AudioPlayer } from './audio.js';
 
 const PAD = 12; // px before 0 s in the lanes
 
+const keyId = (tr, t) => `${tr.target}|${tr.property}|${Math.round(t * 1000)}`;
+
 export class Timeline {
+  selKeys = new Set();
+  clipboard = null;
+
+  /** The selected keys as [{ track, key }] in the live document. */
+  selectedKeys() {
+    const out = [];
+    for (const tr of this.doc.animation.tracks) for (const k of tr.keys) if (this.selKeys.has(keyId(tr, k.t))) out.push({ track: tr, key: k });
+    return out;
+  }
+  layoutNow() {
+    const ruler = this.lanes?.querySelector('.ruler');
+    if (ruler) this.layout(ruler);
+  }
+
+  /** Shift-drag a box on the lanes: the keys inside it are selected. */
+  boxSelect(e) {
+    const r = this.lanes.getBoundingClientRect();
+    const box = h('div.tl-box');
+    this.lanes.append(box);
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const place = (ev) => Object.assign(box.style, { left: `${Math.min(x0, ev.clientX) - r.left + this.lanes.scrollLeft}px`, top: `${Math.min(y0, ev.clientY) - r.top + this.lanes.scrollTop}px`, width: `${Math.abs(ev.clientX - x0)}px`, height: `${Math.abs(ev.clientY - y0)}px` });
+    place(e);
+    this.lanes.setPointerCapture(e.pointerId);
+    this.lanes.onpointermove = place;
+    this.lanes.onpointerup = (ev) => {
+      this.lanes.onpointermove = this.lanes.onpointerup = null;
+      const [xa, xb, ya, yb] = [Math.min(x0, ev.clientX), Math.max(x0, ev.clientX), Math.min(y0, ev.clientY), Math.max(y0, ev.clientY)];
+      for (const el of this.lanes.querySelectorAll('.kf')) {
+        const b = el.getBoundingClientRect();
+        if (b.right >= xa && b.left <= xb && b.bottom >= ya && b.top <= yb) this.selKeys.add(el.dataset.key);
+      }
+      box.remove();
+      this.layoutNow();
+    };
+  }
+
+  /** Drag every selected key by the same time. */
+  dragMany(e, t0) {
+    const r = this.lanes.getBoundingClientRect();
+    const els = [...this.lanes.querySelectorAll('.kf.sel')].map((el) => [el, parseFloat(el.style.left)]);
+    let dt = 0;
+    const target = e.target;
+    target.setPointerCapture(e.pointerId);
+    target.onpointermove = (ev) => {
+      dt = this.tAt(ev.clientX - r.left) - t0;
+      const dx = this.x(Math.max(0, t0 + dt)) - this.x(t0);
+      for (const [el, left] of els) el.style.left = `${left + dx}px`;
+    };
+    target.onpointerup = () => {
+      target.onpointermove = target.onpointerup = null;
+      if (Math.abs(dt) < 1e-6) return;
+      this.moveSelected(dt);
+    };
+  }
+  moveSelected(dt) {
+    const store = this.app.store;
+    store.checkpoint();
+    const sel = this.selectedKeys();
+    const min = Math.min(...sel.map((s) => s.key.t));
+    dt = Math.max(-min, dt); // nothing before 0
+    const moved = new Set(sel.map((s) => s.key));
+    const next = new Set();
+    for (const { track, key } of sel) {
+      key.t = Math.round((key.t + dt) * 1000) / 1000;
+      next.add(keyId(track, key.t));
+    }
+    for (const tr of store.doc.animation.tracks) {
+      tr.keys = tr.keys.filter((k) => moved.has(k) || !tr.keys.some((m) => moved.has(m) && Math.abs(m.t - k.t) < 1e-3));
+      tr.keys.sort((a, b) => a.t - b.t);
+    }
+    const last = Math.max(0, ...store.doc.animation.tracks.flatMap((tr) => tr.keys.map((k) => k.t)));
+    if (last > store.doc.animation.duration) store.doc.animation.duration = Math.ceil(last);
+    this.selKeys = next;
+    store.changed();
+  }
+
+  /** Keys for selected keyframes: Ctrl+C, Ctrl+V (at the playhead; onto the selected shapes when copied from one), Delete. */
+  handleKey(ev) {
+    const ctrl = ev.ctrlKey || ev.metaKey;
+    const k = ev.key.toLowerCase();
+    const store = this.app.store;
+    if (ctrl && k === 'c' && this.selKeys.size) {
+      const sel = this.selectedKeys();
+      const min = Math.min(...sel.map((s) => s.key.t));
+      this.clipboard = sel.map(({ track, key }) => ({ target: track.target, property: track.property, dt: key.t - min, v: structuredClone(key.v), ease: key.ease, bezier: key.bezier }));
+      this.app.ui.toast(`Copied ${sel.length} keyframes`);
+      return ev.preventDefault(), true;
+    }
+    if (ctrl && k === 'v' && this.clipboard) {
+      const sources = [...new Set(this.clipboard.map((c) => c.target))];
+      const dests = sources.length === 1 && this.app.selection.length ? this.app.selection : null;
+      store.checkpoint();
+      for (const c of this.clipboard) for (const target of dests || [c.target]) A.setKey(store.doc, target, c.property, this.time + c.dt, c.v, c.ease, c.bezier || null);
+      store.changed();
+      this.app.ui.toast(`Pasted ${this.clipboard.length * (dests?.length || 1)} keyframes at ${this.time.toFixed(2)} s`);
+      return ev.preventDefault(), true;
+    }
+    if ((k === 'delete' || k === 'backspace') && this.selKeys.size) {
+      store.checkpoint();
+      const gone = new Set(this.selectedKeys().map((s) => s.key));
+      for (const tr of store.doc.animation.tracks) tr.keys = tr.keys.filter((x) => !gone.has(x));
+      store.doc.animation.tracks = store.doc.animation.tracks.filter((t) => t.keys.length);
+      this.selKeys = new Set();
+      this.selKey = null;
+      store.changed();
+      return ev.preventDefault(), true;
+    }
+    return false;
+  }
+
+  /** The curve editor (#77): drag the two handles of the easing into the selected key. */
+  curveDialog() {
+    const k = this.keyObj();
+    if (!k) return;
+    const tr = this.selKey.track;
+    let b = k.bezier ? [...k.bezier] : [0.42, 0, 0.58, 1];
+    const S = 240;
+    const P = 30;
+    const X = (x) => P + x * S;
+    const Y = (y) => P + (1 - y) * S;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${S + 2 * P} ${S + 2 * P}`);
+    svg.setAttribute('class', 'curve-editor');
+    const draw = () => {
+      svg.innerHTML = `<rect x="${P}" y="${P}" width="${S}" height="${S}" class="ce-frame"/><line x1="${X(0)}" y1="${Y(0)}" x2="${X(b[0])}" y2="${Y(b[1])}" class="ce-arm"/><line x1="${X(1)}" y1="${Y(1)}" x2="${X(b[2])}" y2="${Y(b[3])}" class="ce-arm"/><path d="M${X(0)},${Y(0)} C${X(b[0])},${Y(b[1])} ${X(b[2])},${Y(b[3])} ${X(1)},${Y(1)}" class="ce-curve"/><circle cx="${X(b[0])}" cy="${Y(b[1])}" r="7" class="ce-handle" data-i="0"/><circle cx="${X(b[2])}" cy="${Y(b[3])}" r="7" class="ce-handle" data-i="2"/>`;
+      readout.textContent = `cubic-bezier(${b.map((x) => x.toFixed(2)).join(', ')})`;
+    };
+    const readout = h('p.small.muted', {});
+    svg.onpointerdown = (e) => {
+      const i = e.target.dataset?.i;
+      if (i === undefined) return;
+      svg.setPointerCapture(e.pointerId);
+      const r = svg.getBoundingClientRect();
+      svg.onpointermove = (ev) => {
+        const sx = ((ev.clientX - r.left) / r.width) * (S + 2 * P);
+        const sy = ((ev.clientY - r.top) / r.height) * (S + 2 * P);
+        b[+i] = Math.round(Math.max(0, Math.min(1, (sx - P) / S)) * 100) / 100;
+        b[+i + 1] = Math.round(Math.max(-0.5, Math.min(1.5, 1 - (sy - P) / S)) * 100) / 100;
+        draw();
+      };
+      svg.onpointerup = () => (svg.onpointermove = svg.onpointerup = null);
+    };
+    draw();
+    const presets = h('div.row', {}, ...[['Ease in-out', [0.42, 0, 0.58, 1]], ['Ease out', [0, 0, 0.2, 1]], ['Overshoot', [0.3, 1.4, 0.6, 1]], ['Slow start', [0.8, 0, 0.9, 0.6]]].map(([l, v]) => h('button.btn.sm', { onclick: () => ((b = [...v]), draw()) }, l)));
+    this.app.ui.modal(`Easing into ${tr.property} @ ${k.t}s`, h('div', {}, svg, readout, presets), [['Apply', 'ok'], ['Cancel', null]]).then((r) => {
+      if (r !== 'ok') return;
+      this.app.reg.run('set_ease', { id: tr.target, property: tr.property, time: k.t, bezier: b }).catch((e) => this.app.ui.toast(e.message, 'danger'));
+    });
+  }
+
   constructor(app) {
     this.app = app;
     this.el = document.getElementById('timeline');
@@ -65,6 +219,8 @@ export class Timeline {
     if (!this.active) this.open();
     if (this.time >= this.doc.animation.duration - 1e-3) this.seek(0);
     this.playing = true;
+    this.audio ||= new AudioPlayer();
+    if (!this.recording) this.audio.update(this.doc, this.time);
     let last = performance.now();
     const tick = (now) => {
       if (!this.playing) return;
@@ -74,6 +230,7 @@ export class Timeline {
         if (this.loop && !this.recording) this.seek(0);
         else return this.seek(this.doc.animation.duration), this.pause();
       } else this.seek(t);
+      if (!this.recording) this.audio.update(this.doc, this.time);
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
@@ -81,6 +238,7 @@ export class Timeline {
   }
   pause() {
     this.playing = false;
+    this.audio?.stop();
     this.renderHead();
     this.onPause?.();
   }
@@ -120,7 +278,8 @@ export class Timeline {
       h('label', {}, 'Length', h('input', { type: 'number', min: 1, step: 1, value: a.duration, onchange: (e) => run('set_timeline', { duration: +e.target.value }) }), 's'),
       h('label', {}, 'FPS', h('input', { type: 'number', min: 1, max: 120, value: a.fps, onchange: (e) => run('set_timeline', { fps: +e.target.value }) })),
       h('span.spacer'),
-      this.selKey ? h('select', { title: 'Easing into the selected keyframe', onchange: (e) => this.setEase(e.target.value) }, Object.keys(A.EASES).map((k) => h('option', { value: k, selected: this.keyObj()?.ease === k }, k))) : null,
+      this.selKey ? h('select', { title: 'Easing into the selected keyframe', onchange: (e) => this.setEase(e.target.value) }, Object.keys(A.EASES).map((k) => h('option', { value: k, selected: this.keyObj()?.ease === k }, k)), this.keyObj()?.bezier ? h('option', { value: 'bezier', selected: true }, 'custom curve') : null) : null,
+      this.selKey ? btn('bezier-curve', 'Curve editor: drag the easing handles', () => this.curveDialog()) : null,
       this.selKey ? btn('trash', 'Delete the selected keyframe (Del)', () => this.deleteKey()) : null,
       btn('film-script', 'Render video (frame by frame)…', () => app.ui.commandDialog('render_video', {})),
       btn('x', 'Close timeline (Ctrl+T)', () => this.close()),
@@ -142,7 +301,7 @@ export class Timeline {
     const store = this.app.store;
     store.checkpoint();
     const k = this.keyObj();
-    if (k) k.ease = ease;
+    if (k && ease !== 'bezier') (k.ease = ease), delete k.bezier;
     store.changed();
   }
   deleteKey() {
@@ -191,10 +350,30 @@ export class Timeline {
       this.lanes.append(lane);
       this.special.push({ lane, bars: [{ t0: m.start ?? 0, t1: m.end ?? doc.animation.duration, label: m.type, cls: 'motion', title: `${m.id} · ${m.type}. Double-click to delete.`, del: () => run('remove_motion', { id: m.id }) }] });
     }
+    const shots = doc.animation.shots || [];
+    if (shots.length) {
+      names.append(h('div', {}, icon('film-strip'), 'Shots'));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({ lane, bars: shots.map((s) => ({ t0: s.start, t1: s.end, label: s.name, cls: 'shot', title: `${s.name} · ${s.start}–${s.end}s${s.camera_end ? ' · moving' : ''}. Double-click to delete.`, del: () => run('remove_shot', { name: s.name }) })) });
+    }
+    for (const c of doc.animation.audio || []) {
+      names.append(h('div', { title: c.name }, icon('music-notes'), c.name));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({ lane, bars: [{ t0: c.start, t1: doc.animation.duration, label: `${c.name} · ${Math.round((c.volume ?? 0.8) * 100)} %`, cls: 'audio', title: `${c.name} from ${c.start}s. Double-click to remove.`, del: () => run('remove_audio', { name: c.name }) }] });
+    }
+    for (const c of doc.animation.constraints || []) {
+      const what = c.type === 'look_at' ? `looks at ${Array.isArray(c.at) ? 'a point' : labelOf(c.at)}` : `${c.type === 'attach' ? 'on' : 'follows'} ${labelOf(c.parent)}`;
+      names.append(h('div', {}, icon(c.type === 'look_at' ? 'eye' : 'link'), labelOf(c.target), h('span.prop', {}, `· ${c.type}`)));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({ lane, bars: [{ t0: c.start ?? 0, t1: c.end ?? doc.animation.duration, label: what, cls: 'motion', title: `${labelOf(c.target)} ${what}. Double-click to remove its constraints.`, del: () => run('remove_constraints', { id: c.target }) }] });
+    }
     if (!tracks.length && !this.special.length) {
       body.append(h('div.tl-empty', {}, 'No animation yet. Select something, move the playhead, change it and press K (or turn on Auto-key). Or ask the AI: "animate the door opening over 2 seconds", "make a build sequence", "add a turntable".'));
     }
-    const label = (target) => (target === 'camera' ? 'Camera' : this.app.entity(target)?.name || target);
+    const label = (target) => (target === 'camera' ? 'Camera' : target === 'section' ? 'Section plane' : this.app.entity(target)?.name || target);
     for (const tr of tracks) {
       const sel = this.app.selection.includes(tr.target);
       names.append(h(`div${sel ? '.sel' : ''}`, { onclick: () => tr.target !== 'camera' && this.app.select([tr.target]) }, icon(tr.target === 'camera' ? 'video-camera' : 'cube'), label(tr.target), h('span.prop', {}, `· ${tr.property}`)));
@@ -207,6 +386,7 @@ export class Timeline {
     this.lanes.append(this.playhead);
     this.lanes.onpointerdown = (e) => {
       if (e.target.classList.contains('kf')) return;
+      if (e.shiftKey) return this.boxSelect(e);
       const r = this.lanes.getBoundingClientRect();
       const scrub = (ev) => this.seek(this.tAt(ev.clientX - r.left));
       scrub(e);
@@ -242,8 +422,9 @@ export class Timeline {
       lane.replaceChildren(
         h('div.bar', { style: { left: `${this.x(k0)}px`, width: `${Math.max(0, this.x(k1) - this.x(k0))}px` } }),
         ...tr.keys.map((k) => {
-          const sel = this.selKey?.track === tr && Math.abs(this.selKey.t - k.t) < 1e-3;
-          const d = h(`div.kf${sel ? '.sel' : ''}`, { style: { left: `${this.x(k.t)}px` }, title: `${tr.property} @ ${k.t}s · ${k.ease}\n${JSON.stringify(k.v)}` });
+          const sel = (this.selKey?.track === tr && Math.abs(this.selKey.t - k.t) < 1e-3) || this.selKeys.has(keyId(tr, k.t));
+          const d = h(`div.kf${sel ? '.sel' : ''}`, { style: { left: `${this.x(k.t)}px` }, title: `${tr.property} @ ${k.t}s · ${k.ease}${k.bezier ? ` (${k.bezier.join(', ')})` : ''}\n${JSON.stringify(k.v)}\nShift-click or shift-drag to select several; Ctrl+C / Ctrl+V / Delete` });
+          d.dataset.key = keyId(tr, k.t);
           d.onpointerdown = (e) => this.dragKey(e, tr, k, d);
           return d;
         }),
@@ -254,6 +435,13 @@ export class Timeline {
 
   dragKey(e, tr, k, el) {
     e.stopPropagation();
+    const id = keyId(tr, k.t);
+    if (e.shiftKey) {
+      this.selKeys.has(id) ? this.selKeys.delete(id) : this.selKeys.add(id);
+      return this.layoutNow();
+    }
+    if (this.selKeys.size > 1 && this.selKeys.has(id)) return this.dragMany(e, k.t);
+    this.selKeys = new Set([id]);
     this.selKey = { track: tr, t: k.t };
     const r = this.lanes.getBoundingClientRect();
     const t0 = k.t;

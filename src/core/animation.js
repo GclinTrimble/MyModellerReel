@@ -3,6 +3,7 @@
 // Properties: position | rotation | scale (number[3]), opacity (0..1), visible (bool), color ('#rrggbb'),
 // and for the camera: position | target (number[3]), fov (degrees).
 import { sunAt } from './sun.js';
+import { cubicBezier, applyConstraints, shotAt } from './sequencing.js';
 
 
 export const EASES = {
@@ -42,7 +43,7 @@ export function sample(track, t) {
   const a = k[i - 1];
   const b = k[i];
   const u = (t - a.t) / (b.t - a.t || 1);
-  return lerp(a.v, b.v, (EASES[b.ease] || EASES['ease-in-out'])(u));
+  return lerp(a.v, b.v, (b.bezier ? cubicBezier(b.bezier) : EASES[b.ease] || EASES['ease-in-out'])(u));
 }
 
 /** Everything animated at time t: { [target]: { [property]: value } }: keyframes, then procedural motions on top. */
@@ -53,6 +54,9 @@ export function evaluate(doc, t) {
     if (v !== undefined) (out[tr.target] ||= {})[tr.property] = v;
   }
   for (const m of doc.animation.motions || []) applyMotion(doc, m, t, out);
+  if (doc.animation.constraints?.length) applyConstraints(doc, t, out, (id, tt) => poseOf(doc, id, tt, Math.abs(tt - t) < 1e-9 ? out : null));
+  const shot = doc.animation.shots?.length && shotAt(doc, t); // camera cuts win over camera keys (#85)
+  if (shot) out.camera = { ...(out.camera || {}), ...shot.camera, shot: shot.name };
   if (doc.animation.sun) out.sun = sunAt(doc, t); // a sun study (#87)
   return out;
 }
@@ -146,6 +150,17 @@ export function applyMotion(doc, m, t, out) {
 }
 
 /** Shift every key (and motion) of a target by dt seconds. Keys never go below 0. */
+/** Where an entity is at time t: its keys (and, for the current time, motions and constraints so far) over its base. */
+function poseOf(doc, id, t, now) {
+  const e = doc.entities.find((x) => x.id === id);
+  if (!e) return null;
+  const p = { position: e.position, rotation: e.rotation, scale: e.scale };
+  if (now?.[id]) return { ...p, ...pick(now[id]) };
+  for (const tr of doc.animation.tracks) if (tr.target === id && tr.property in p) p[tr.property] = sample(tr, t);
+  return p;
+}
+const pick = (o) => Object.fromEntries(['position', 'rotation', 'scale'].filter((k) => o[k]).map((k) => [k, o[k]]));
+
 export function shiftTarget(doc, target, dt) {
   for (const tr of doc.animation.tracks)
     if (tr.target === target) for (const k of tr.keys) k.t = Math.max(0, Math.round((k.t + dt) * 1000) / 1000);
@@ -159,13 +174,15 @@ export function shiftTarget(doc, target, dt) {
 }
 
 /** ease null/undefined keeps the easing of a key already at t (so chained moves don't lose their curves). */
-export function setKey(doc, target, property, t, v, ease = null) {
+export function setKey(doc, target, property, t, v, ease = null, bezier = null) {
   t = Math.max(0, Math.round(t * 1000) / 1000);
   let tr = doc.animation.tracks.find((x) => x.target === target && x.property === property);
   if (!tr) doc.animation.tracks.push((tr = { target, property, keys: [] }));
-  ease ??= tr.keys.find((k) => Math.abs(k.t - t) <= 1e-3)?.ease ?? 'ease-in-out';
+  const old = tr.keys.find((k) => Math.abs(k.t - t) <= 1e-3);
+  ease ??= old?.ease ?? 'ease-in-out';
+  bezier ??= ease === old?.ease ? old?.bezier : null;
   tr.keys = tr.keys.filter((k) => Math.abs(k.t - t) > 1e-3);
-  tr.keys.push({ t, v: structuredClone(v), ease });
+  tr.keys.push({ t, v: structuredClone(v), ease, ...(bezier ? { bezier } : {}) });
   tr.keys.sort((a, b) => a.t - b.t);
   if (t > doc.animation.duration) doc.animation.duration = Math.ceil(t);
   return tr;

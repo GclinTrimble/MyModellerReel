@@ -1,6 +1,8 @@
 // Captions (#82): drawn with the 2D canvas API so the same code shows them over the viewport and burns them into
 // rendered video frames. Darkroom styles: title (cream on an ink band), caption (lower third with a mustard bar),
 // label (small light pill).
+import { dateText } from '../core/sequencing.js';
+
 const INK = 'rgba(30, 58, 76, 0.78)';
 const FERN = 'rgba(35, 59, 44, 0.88)';
 const CREAM = '#f3e9d7';
@@ -33,7 +35,7 @@ export function drawCaptions(g, captions, t, w, h) {
     g.globalAlpha = a;
     g.font = `${style === 'title' ? 700 : 600} ${size}px ${FONT}`;
     g.textBaseline = 'middle';
-    const lines = String(c.text).split('\n');
+    const lines = String(c.date ? dateText(c, t) : c.text).split('\n');
     const lh = size * 1.3;
     const tw = Math.max(...lines.map((l) => g.measureText(l).width));
     const pad = (style === 'label' ? 14 : 24) * u;

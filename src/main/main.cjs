@@ -135,14 +135,14 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image and IFC files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio and IFC files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 });
 // survey files, feature libraries and world files, as text
 ipcMain.handle('file:read-text', (_, p) => {
-  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld|xml|landxml|dxf|ifc|jxl|fxl|geojson|asc|prj)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only text, world and exchange files.`);
+  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld|xml|landxml|dxf|ifc|jxl|fxl|geojson|asc|prj|xer)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only text, world and exchange files.`);
   if (fs.statSync(p).size > (/\.(dxf|ifc|xml|landxml)$/i.test(p) ? 300e6 : 50e6)) throw new Error('That file is too big.');
   return fs.readFileSync(p, 'utf8');
 });

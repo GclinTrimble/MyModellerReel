@@ -47,6 +47,10 @@ Electron's binary download is an install script; if your npm blocks install scri
   keep their text up to date, construction guides, 3D text for signs and titles, line types and weights on screen
   (ByLayer), a clash check on the real shapes, filled section cuts exported to SVG or DXF, and drawing sheets (PDF or
   SVG) with views to scale, overall dimensions and a title block.
+- **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
+  editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
+  shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a
+  project schedule (CSV, MS Project XML, Primavera P6 XER) with the dates on screen.
 - **Rendering and presentation**: styles (hidden line, monochrome, sketchy), camera lenses, parallel projection and
   two-point perspective, post effects (ambient occlusion, bloom, depth of field, vignette), environment lighting
   (studio, sky, sunset, night, HDRI), point / spot / area lights for night scenes, image textures at real size and

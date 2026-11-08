@@ -406,3 +406,59 @@ test('looks: styles, lights, effects, parallel projection, a path-traced still, 
   await w.evaluate(() => window.mmr.app.timeline.seek(4));
   assert.ok(await w.evaluate(() => window.mmr.app.viewport.sun.intensity) < 0.5, 'late evening: a weak sun');
 });
+
+test('animation depth: dope sheet in the timeline, the curve editor, shots row, audio in a render', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'A' });
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'B', position: [3, 0, 0] });
+  await ok('animate', { target: 'A', property: 'position', from: [0, 0, 0], to: [0, 2, 0], start: 1, end: 2 });
+  await ok('animate', { target: 'B', property: 'position', from: [3, 0, 0], to: [3, 2, 0], start: 1, end: 2 });
+  await ok('add_shot', { name: 'Wide', start: 0, end: 4, position: [8, 5, 8], target: [0, 0, 0] });
+  await w.evaluate(() => window.mmr.app.timeline.open());
+  await w.locator('.span-bar.shot').first().waitFor();
+  const keys = w.locator('.tl-lanes .kf');
+  assert.equal(await keys.count(), 4);
+  // shift-click two keys at 2 s, then drag them together by about a second
+  await keys.nth(1).click({ modifiers: ['Shift'] });
+  await keys.nth(3).click({ modifiers: ['Shift'] });
+  assert.equal(await w.evaluate(() => window.mmr.app.timeline.selKeys.size), 2);
+  const box = await keys.nth(1).boundingBox();
+  const px = await w.evaluate(() => window.mmr.app.timeline.x(3) - window.mmr.app.timeline.x(2));
+  await w.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await w.mouse.down();
+  await w.mouse.move(box.x + box.width / 2 + px / 2, box.y + box.height / 2, { steps: 4 });
+  await w.mouse.move(box.x + box.width / 2 + px, box.y + box.height / 2, { steps: 4 });
+  await w.mouse.up();
+  const ends = await w.evaluate(() => window.mmr.doc.animation.tracks.map((t) => t.keys.at(-1).t));
+  assert.ok(ends.every((t) => Math.abs(t - 3) < 0.1), `moved together: ${ends}`);
+  // copy them and paste at 5 s
+  await w.keyboard.press('Control+c');
+  await w.evaluate(() => window.mmr.app.timeline.seek(5));
+  await w.keyboard.press('Control+v');
+  assert.ok(await w.evaluate(() => window.mmr.doc.animation.tracks.every((t) => t.keys.some((k) => Math.abs(k.t - 5) < 0.05))));
+  // the curve editor on one key
+  await w.evaluate(() => {
+    const tl = window.mmr.app.timeline;
+    const tr = window.mmr.doc.animation.tracks[0];
+    tl.selKey = { track: tr, t: tr.keys[1].t };
+    tl.curveDialog();
+  });
+  await w.locator('dialog[open] .curve-editor').waitFor();
+  await w.locator('dialog[open] button', { hasText: 'Overshoot' }).click();
+  await w.locator('dialog[open] button', { hasText: 'Apply' }).click();
+  await w.waitForFunction(() => window.mmr.doc.animation.tracks[0].keys[1].bezier?.[1] === 1.4);
+  // a WebM render with a generated tone mixed in
+  const wav = path.join(home, 'tone.wav');
+  const rate = 8000;
+  const n = rate;
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVEfmt ', 8); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34); buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round(Math.sin((i / rate) * 2 * Math.PI * 440) * 8000), 44 + i * 2);
+  fs.writeFileSync(wav, buf);
+  await ok('add_audio', { path: wav, start: 0.5 });
+  const out = path.join(home, 'with-audio.webm');
+  await ok('render_video', { path: out, width: 320, height: 180, fps: 10, to: 2 });
+  const bytes = fs.readFileSync(out);
+  assert.ok(bytes.includes(Buffer.from('A_OPUS')), 'an Opus audio track');
+});

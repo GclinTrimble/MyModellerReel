@@ -43,6 +43,7 @@ export function makeMaterial(m, opts = {}) {
     transparent: m.opacity < 1 || !!opts.xray,
     opacity: opts.xray ? Math.min(m.opacity, 0.45) : m.opacity,
     depthWrite: !(opts.xray || m.opacity < 1),
+    clipShadows: true, // a section plane cuts the shadows too
     polygonOffset: true,
     polygonOffsetFactor: opts.flat ? -2 : 1, // lone faces win over the face they were drawn on; edges win over faces
     polygonOffsetUnits: opts.flat ? -2 : 1,
@@ -486,8 +487,34 @@ export class Viewport {
     }
     const cam = pose?.camera;
     if (moveCamera && cam) this.setCamera({ position: cam.position, target: cam.target, fov: cam.fov });
+    this.animateSection(pose?.section);
     this.updateSun(pose?.sun || doc.settings.sun);
     this.dirty = true;
+  }
+
+  /** A section plane on the timeline (#81): move the clipping plane without rebuilding (caps wait for the stop). */
+  animateSection(sec) {
+    const fixed = this.store.doc.settings.section;
+    const want = sec?.point ? { normal: sec.normal || fixed?.normal || [0, 1, 0], point: sec.point } : fixed;
+    if (!want && !this.clipping.length) return;
+    if (!want) {
+      this.clipping.length = 0;
+      this.modelRoot.traverse((o) => o.material && (o.material.needsUpdate = true));
+      return;
+    }
+    const n = new THREE.Vector3(...want.normal).negate();
+    const p = new THREE.Vector3(...want.point);
+    if (!this.clipping.length) {
+      this.clipping.push(new THREE.Plane());
+      this.modelRoot.traverse((o) => {
+        if (!o.material) return;
+        o.material.clippingPlanes = this.clipping;
+        o.material.needsUpdate = true;
+      });
+    }
+    this.clipping[0].setFromNormalAndCoplanarPoint(n, p);
+    // the caps show the plane where it was built: hide them while it moves
+    for (const o of this.modelRoot.children) if (o.userData.caps) o.visible = !sec?.point;
   }
 
   highlight(ids) {
