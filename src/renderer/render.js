@@ -9,7 +9,7 @@ const QUALITY = { medium: QUALITY_MEDIUM, high: QUALITY_HIGH, 'very-high': QUALI
 const even = (x) => Math.max(2, Math.round(x / 2) * 2);
 
 /** Hide what must not be in a frame (grid, axes, previews, selection) and size the renderer; returns an undo. */
-function stage(vp, w, h, transparent) {
+export function stage(vp, w, h, transparent) {
   const r = vp.renderer;
   const saved = {
     ratio: r.getPixelRatio(),

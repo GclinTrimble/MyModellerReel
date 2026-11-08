@@ -3,6 +3,7 @@
 // After every change, rebuildDerived() regenerates (in dependency order) the entities whose inputs or parameters
 // changed. The mesh stays stored too, so files open in any glTF viewer and without the plugin that made them.
 import { Matrix4 } from 'three';
+import * as FT from './font.js';
 import * as G from './geometry.js';
 import * as D from './document.js';
 import * as C from './curves.js';
@@ -27,6 +28,7 @@ const positive = (o, ...ks) => ks.forEach((k) => {
 });
 const local = (fn, params, description) => ({ description, params, run: ({ params: p }) => ({ mesh: fn(p) }) });
 
+registerGenerator('text', local((p) => FT.textMesh(String(p.text ?? ''), { size: p.size ?? 0.5, depth: p.depth ?? 0.05, align: p.align || 'center', flat: !!p.flat, font: p.font }), { text: 'the words', size: 'capital height, m', depth: 'm', align: 'left | center | right', flat: 'lie on the ground', font: 'font name' }, 'Extruded 3D text'));
 registerGenerator('box', local((p) => (positive(p, 'width', 'height', 'depth'), G.box(p.width, p.height, p.depth)), { width: 'x size', height: 'y size', depth: 'z size' }, 'Box on its base'));
 registerGenerator('cylinder', local((p) => (positive(p, 'radius', 'height'), G.cylinder(p.radius, p.height, Math.max(3, Math.round(p.segments || 32)))), { radius: 'm', height: 'm', segments: 'sides' }, 'Upright cylinder'));
 registerGenerator('cone', local((p) => (positive(p, 'radius', 'height'), G.cone(p.radius, p.height, Math.max(3, Math.round(p.segments || 32)))), { radius: 'm', height: 'm', segments: 'sides' }, 'Upright cone'));

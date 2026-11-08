@@ -33,7 +33,9 @@ export const TOOLS = [
   { id: 'move', label: 'Move (Ctrl copies)', key: 'M', icon: 'arrows-out-cardinal', group: 'edit' },
   { id: 'rotate', label: 'Rotate', key: 'Q', icon: 'arrow-clockwise', group: 'edit' },
   { id: 'scale', label: 'Scale', key: 'S', icon: 'arrows-out', group: 'edit' },
-  { id: 'tape', label: 'Tape Measure', key: 'T', icon: 'ruler', group: 'construct' },
+  { id: 'tape', label: 'Tape Measure (Ctrl: guide line, Alt: guide point)', key: 'T', icon: 'ruler', group: 'construct' },
+  { id: 'dimension', label: 'Dimension (two points)', key: 'D', icon: 'arrows-horizontal', group: 'construct' },
+  { id: 'label', label: 'Label (click a shape; type a template)', key: 'K', icon: 'tag', group: 'construct' },
   { id: 'paint', label: 'Paint Bucket (Alt samples)', key: 'B', icon: 'paint-bucket', group: 'construct' },
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
@@ -717,7 +719,7 @@ class ScaleTool extends XformBase {
 }
 
 class TapeTool {
-  hint = 'Click two points to measure the distance between them.';
+  hint = 'Click two points to measure. Ctrl on the second click leaves a guide line through them; Alt-click drops a guide point.';
   constructor(t) {
     this.t = t;
   }
@@ -737,7 +739,14 @@ class TapeTool {
   }
   down(ev) {
     const inf = this.t.infer(ev, { from: this.p1 });
+    if (!this.p1 && ev.altKey) return void this.t.run('add_guide', { point: D.round3(inf.point.toArray()) });
     if (!this.p1) return void (this.p1 = inf.point);
+    if (ev.ctrlKey) {
+      const [a, b] = [this.p1, inf.point];
+      this.p1 = null;
+      this.t.clear();
+      return void this.t.run('add_guide', { point: D.round3(a.toArray()), to: D.round3(b.toArray()) });
+    }
     const d = this.p1.distanceTo(inf.point);
     const delta = inf.point.clone().sub(this.p1);
     this.p1 = null;
@@ -1005,6 +1014,70 @@ class SculptTool {
   }
 }
 
+/** A reference stuck to the shape under the cursor (so the dimension follows it), or a plain point. */
+function refAt(t, inf) {
+  const p = D.round3(inf.point.toArray());
+  return inf.hit?.entityId ? { id: inf.hit.entityId, point: p } : p;
+}
+
+/** Dimension tool (#50): two clicks; an axis lock (arrow keys) makes it horizontal or vertical. */
+class DimensionTool {
+  hint = 'Click two points to dimension them (it follows the shapes). Arrow keys lock an axis. Type an offset in m.';
+  vcbLabel = 'Offset';
+  constructor(t) {
+    this.t = t;
+    this.offset = 0.5;
+  }
+  busy() {
+    return !!this.a;
+  }
+  cancel() {
+    this.a = null;
+    this.t.clear();
+  }
+  move(ev) {
+    const inf = this.t.infer(ev, { from: this.a?.point });
+    if (!this.a) return;
+    this.t.vp.overlay.clear();
+    this.t.lines([this.a.point, inf.point], HIGHLIGHT);
+    this.t.status(`Dimension ${fmt(this.a.point.distanceTo(inf.point))}`);
+  }
+  async down(ev) {
+    const inf = this.t.infer(ev, { from: this.a?.point });
+    if (!this.a) return void (this.a = inf);
+    const a = this.a;
+    this.a = null;
+    this.t.clear();
+    await this.t.run('add_dimension', { from: refAt(this.t, a), to: refAt(this.t, inf), offset: this.offset, ...(inf.axis ? { axis: inf.axis } : {}) });
+  }
+  vcb(text) {
+    const x = parseLength(text);
+    if (Number.isFinite(x)) this.offset = x;
+    this.t.status(`Dimension offset ${fmt(this.offset)}`);
+  }
+}
+
+/** Label tool (#51): click a shape; the Measurements box sets the text template ({name} {area} {volume}…). */
+class LabelTool {
+  hint = 'Click a shape to label it. Type the text first: {name}, {area}, {footprint}, {volume}, {height}, {elevation}, {meta.key}.';
+  vcbLabel = 'Text';
+  constructor(t) {
+    this.t = t;
+    this.text = '{name}';
+  }
+  move(ev) {
+    this.t.infer(ev);
+  }
+  async down(ev) {
+    const inf = this.t.infer(ev);
+    await this.t.run('add_label', { at: refAt(this.t, inf), text: this.text });
+  }
+  vcb(text) {
+    this.text = text || '{name}';
+    this.t.status(`Label text: ${this.text}`);
+  }
+}
+
 /** Zoom window: drag a box, the view zooms into it. */
 class ZoomWindowTool {
   hint = 'Drag a box around what you want to see up close.';
@@ -1161,6 +1234,8 @@ const IMPL = {
   rotate: RotateTool,
   scale: ScaleTool,
   tape: TapeTool,
+  dimension: DimensionTool,
+  label: LabelTool,
   paint: PaintTool,
   eraser: EraserTool,
   section: SectionTool,

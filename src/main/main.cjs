@@ -53,7 +53,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
 
 let win;
 function createWindow(page) {

@@ -212,3 +212,30 @@ export function arcTangent(a, tangent, c, segments) {
   if (sweep < 0) sweep += 2 * Math.PI;
   return { points: arcAround(center, a, n, sweep, segments), center, radius: Math.abs(r), sweep };
 }
+
+/**
+ * A polyline cut into the dashes of a line type pattern (dash, gap, dash, gap… in metres), continuing the pattern
+ * round the corners. Returns [[a, b], …] segments; an empty pattern gives the legs themselves.
+ */
+export function dashify(pts, pattern) {
+  const legs = pts.slice(1).map((p, i) => [pts[i], p]);
+  if (!pattern?.length || pattern.every((x) => !(x > 0))) return legs;
+  const total = pattern.reduce((s, x) => s + x, 0);
+  const all = legs.reduce((s, [a, b]) => s + G.len(G.sub(b, a)), 0);
+  if (all / total > 20000) return legs; // too fine to see: draw it solid
+  const out = [];
+  let k = 0; // which pattern element
+  let left = pattern[0]; // what is left of it
+  for (const [a, b] of legs) {
+    const L = G.len(G.sub(b, a));
+    let t = 0;
+    while (t < L - 1e-9) {
+      const step = Math.min(left, L - t);
+      if (k % 2 === 0) out.push([G.add(a, G.scl(G.sub(b, a), t / L)), G.add(a, G.scl(G.sub(b, a), (t + step) / L))]);
+      t += step;
+      left -= step;
+      if (left <= 1e-9) (k = (k + 1) % pattern.length), (left = pattern[k]);
+    }
+  }
+  return out;
+}

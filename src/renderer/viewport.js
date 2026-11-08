@@ -1,10 +1,15 @@
 // The 3D viewport: turns the document into three.js objects, renders, picks, and shows animation poses.
 import * as THREE from 'three';
+import { stage } from './render.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
-import { samplePoints } from '../core/curves.js';
+import { samplePoints, dashify } from '../core/curves.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import * as SEC from '../core/section.js';
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry } from './underlays.js';
 import { invert as invertAffine } from '../core/underlay.js';
@@ -72,7 +77,20 @@ function drapedGeometry(geometry, e, u) {
   return g;
 }
 
-export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null } = {}) {
+/** A curve drawn with its line type (dashes) and weight (mm → px), ByLayer (#156). */
+function styledLine(doc, e, pts, clipping, fat = true) {
+  const color = L.colorOf(doc, e);
+  const st = L.lineStyle(doc, e);
+  if (!fat) st.weight = 0; // exports: plain lines (fat lines are meshes of quads)
+  if (!st.pattern.length && !(st.weight > 0.3)) return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color, clippingPlanes: clipping }));
+  const segs = dashify(pts, st.pattern);
+  const px = Math.max(1, st.weight * 4);
+  if (px <= 1.2 || !fat) return new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs.flat().map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color, clippingPlanes: clipping }));
+  const g = new LineSegmentsGeometry().setPositions(segs.flat(2));
+  return new LineSegments2(g, new LineMaterial({ color, linewidth: px, clippingPlanes: clipping }));
+}
+
+export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null, fat = false } = {}) {
   const root = new THREE.Group();
   root.name = 'Model';
   const objs = new Map();
@@ -110,10 +128,11 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     } else if (e.line) {
       const pts = e.line.points.map((id) => doc.entities.find((x) => x.id === id)).filter(Boolean).map((p) => new THREE.Vector3(...p.position));
       if (e.line.closed && pts.length > 2) pts.push(pts[0]);
-      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: L.colorOf(doc, e), clippingPlanes: clipping }));
+      o = styledLine(doc, e, pts.map((p) => p.toArray()), clipping, fat);
       o.userData.isCurve = true;
     } else if (e.curve) {
-      o = new THREE.Line(new THREE.BufferGeometry().setFromPoints(samplePoints(e.curve).map((p) => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: L.colorOf(doc, e), clippingPlanes: clipping }));
+      const sp = samplePoints(e.curve);
+      o = styledLine(doc, e, e.curve.closed && sp.length > 2 && e.curve.kind === 'polyline' && G.len(G.sub(sp[0], sp.at(-1))) > 1e-9 ? [...sp, sp[0]] : sp, clipping, fat);
       o.userData.isCurve = true;
     } else if (e.underlay && underlay) o = underlay(e);
     else o = new THREE.Group();
@@ -316,12 +335,13 @@ export class Viewport {
     this.modelRoot.clear();
     this.geoCache ||= { map: new WeakMap(), live: new Set() };
     this.geoCache.used = new Set();
-    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e) });
+    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e), fat: true });
     // free the GPU buffers of shapes that are gone or changed
     for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose();
     this.geoCache.live = this.geoCache.used;
     if (root.children.length) this.modelRoot.add(...root.children);
     this.objs = objs;
+    if (s.section && s.section_fill !== false) this.modelRoot.add(sectionCaps(doc, s.section));
     this.grid.visible = this.axes.visible = s.grid;
     this.renderer.shadowMap.enabled = s.shadows;
     this.sun.castShadow = s.shadows;
@@ -364,7 +384,7 @@ export class Viewport {
       o.scale.fromArray(p.scale || e.scale);
       const tagOn = doc.tags.find((t) => t.name === e.tag)?.visible !== false;
       o.visible = (p.visible ?? e.visible) && tagOn;
-      if (o.isMesh && !o.userData.underlay) {
+      if (o.isMesh && !o.userData.underlay && !o.userData.isCurve) {
         const op = p.opacity ?? e.material.opacity;
         o.material.opacity = doc.settings.xray ? Math.min(op, 0.45) : op;
         o.material.transparent = op < 1 || doc.settings.xray;
@@ -393,7 +413,7 @@ export class Viewport {
     for (const [id, o] of this.objs) {
       if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : L.colorOf(doc, doc.entities.find((e) => e.id === id)) || '#2f6f86');
       if (o.userData.underlay) o.material.color.set(lit.has(id) ? '#f3dfb0' : '#ffffff');
-      if (!o.isMesh || o.userData.underlay) continue;
+      if (!o.isMesh || o.userData.underlay || o.userData.isCurve) continue;
       const on = lit.has(id);
       const proposed = this.proposed.has(id);
       o.material.emissive.set(on ? '#2f6f86' : proposed ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.emissive || '#000000');
@@ -521,7 +541,7 @@ export class Viewport {
   pick(ev) {
     this.raycaster.setFromCamera(this.ndc(ev), this.camera);
     const meshes = [];
-    this.modelRoot.traverseVisible((o) => o.isMesh && !o.userData.underlay && o.material.visible !== false && meshes.push(o));
+    this.modelRoot.traverseVisible((o) => o.isMesh && !o.userData.underlay && !o.userData.isCurve && !o.userData.cap && o.material.visible !== false && meshes.push(o));
     const hits = this.raycaster.intersectObjects(meshes, false).filter((h) => !this.clipping?.some((p) => p.distanceToPoint(h.point) < 0));
     const h = hits[0];
     if (!h) return null;
@@ -614,6 +634,68 @@ export class Viewport {
     return shots;
   }
 
+  /**
+   * An orthographic picture of what is visible, for drawing sheets (#55): JPEG data URL, its pixel size, the metres
+   * it covers and the model's size in it. preset: top | bottom | front | back | left | right | iso.
+   */
+  async orthoShot(preset, { pxPerM = 160, maxPx = 2400 } = {}) {
+    const dirs = { top: [0, 1, 0], bottom: [0, -1, 0], front: [0, 0, 1], back: [0, 0, -1], left: [-1, 0, 0], right: [1, 0, 0], iso: [1, 0.8, 1] };
+    const d = new THREE.Vector3(...(dirs[preset] || dirs.iso)).normalize();
+    const box = new THREE.Box3();
+    this.modelRoot.updateMatrixWorld(true);
+    const doc = this.store.doc;
+    const note = (o) => D.getEntity(doc, o.userData.entityId)?.annotation;
+    // guides run 200 m each way: off the sheet; dimensions and labels do not size the views
+    const hidden = [];
+    this.modelRoot.traverseVisible((o) => note(o)?.type === 'guide' && hidden.push(o));
+    hidden.forEach((o) => (o.visible = false));
+    this.modelRoot.traverseVisible((o) => {
+      if (!o.geometry || o.userData.isEdges || o.userData.underlay || note(o)) return;
+      o.geometry.boundingBox || o.geometry.computeBoundingBox();
+      box.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld));
+    });
+    if (box.isEmpty()) {
+      hidden.forEach((o) => (o.visible = true));
+      throw new Error('Nothing visible to draw.');
+    }
+    const up = Math.abs(d.y) > 0.99 ? new THREE.Vector3(0, 0, d.y > 0 ? -1 : 1) : new THREE.Vector3(0, 1, 0);
+    const x = up.clone().cross(d).normalize();
+    const y = d.clone().cross(x);
+    const c = box.getCenter(new THREE.Vector3());
+    let [w, h, depth] = [0, 0, 0];
+    for (const cx of [box.min.x, box.max.x]) for (const cy of [box.min.y, box.max.y]) for (const cz of [box.min.z, box.max.z]) {
+      const v = new THREE.Vector3(cx, cy, cz).sub(c);
+      w = Math.max(w, Math.abs(v.dot(x)) * 2);
+      h = Math.max(h, Math.abs(v.dot(y)) * 2);
+      depth = Math.max(depth, Math.abs(v.dot(d)) * 2);
+    }
+    const m = 0.06 * Math.max(w, h, 0.1);
+    const [W0, H0] = [w + 2 * m, h + 2 * m];
+    const k = Math.min(pxPerM, maxPx / Math.max(W0, H0));
+    const [W, H] = [Math.max(16, Math.round(W0 * k)), Math.max(16, Math.round(H0 * k))];
+    const cam = new THREE.OrthographicCamera(-W0 / 2, W0 / 2, H0 / 2, -H0 / 2, 0.01, depth * 4 + 10);
+    cam.position.copy(c).addScaledVector(d, depth * 2 + 5);
+    cam.up.copy(y);
+    cam.lookAt(c);
+    cam.updateProjectionMatrix();
+    const persp = this.camera;
+    const undo = stage(this, W, H, false);
+    const ground = this.ground.visible;
+    this.ground.visible = false;
+    this.scene.background = new THREE.Color('#ffffff');
+    try {
+      this.camera = cam;
+      this.renderer.render(this.scene, cam);
+      return { image: this.canvas.toDataURL('image/jpeg', 0.9), px: [W, H], extent: [W0, H0], model: [w, h] };
+    } finally {
+      this.camera = persp;
+      hidden.forEach((o) => (o.visible = true));
+      this.ground.visible = ground;
+      undo();
+      this.render();
+    }
+  }
+
   async screenshot({ width = 1024 } = {}) {
     this.render();
     const src = this.canvas;
@@ -627,9 +709,38 @@ export class Viewport {
   }
 }
 
+/** Filled caps where the section plane cuts solids (#54), in a darker tone of each solid's colour, outlined. */
+function sectionCaps(doc, plane) {
+  const grp = new THREE.Group();
+  grp.userData.caps = true;
+  let cut;
+  try {
+    cut = SEC.sectionCut(doc, plane);
+  } catch {
+    return grp;
+  }
+  const { n, u, v } = cut.frame;
+  const at = (x, y) => new THREE.Vector3(...G.add(G.add(cut.point, G.scl(u, x)), G.scl(v, y))).addScaledVector(new THREE.Vector3(...n), -0.0005);
+  for (const c of cut.cuts) {
+    const pos = [];
+    for (const a of c.areas) {
+      const flat = [a.outer, ...a.holes].flat();
+      for (const t of THREE.ShapeUtils.triangulateShape(a.outer.map(([x, y]) => new THREE.Vector2(x, y)), a.holes.map((h) => h.map(([x, y]) => new THREE.Vector2(x, y))))) for (const k of t) pos.push(...at(...flat[k]).toArray());
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: SEC.shade(c.color, 0.62), side: THREE.DoubleSide }));
+    const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(c.loops.flatMap((l) => l.flatMap((p, i) => [new THREE.Vector3(...p), new THREE.Vector3(...l[(i + 1) % l.length])]))), new THREE.LineBasicMaterial({ color: 0x111111 }));
+    m.raycast = lines.raycast = () => {};
+    m.userData.cap = lines.userData.cap = true;
+    grp.add(m, lines);
+  }
+  return grp;
+}
+
 export function disposeTree(o, geometry = true) {
   o.traverse((x) => {
-    if (geometry || x.userData.isCurve || x.userData.underlay || x.userData.draped) x.geometry?.dispose();
+    if (geometry || x.userData.isCurve || x.userData.cap || x.userData.underlay || x.userData.draped) x.geometry?.dispose();
     if (x.material) [].concat(x.material).forEach((m) => m.dispose());
   });
 }

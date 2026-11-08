@@ -62,6 +62,24 @@ export function drawLabels(app) {
     const p = pts[Math.floor(pts.length / 2)];
     label([p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]], e.meta.elevation.toFixed(1), '#6b4e2e');
   }
+  // dimension and label texts (#50, #51): always drawn, on a white plate
+  for (const e of doc.entities) {
+    const a = e.annotation;
+    if (!a?.text_now || !a.at || !e.visible || tagOn.get(e.tag) === false) continue;
+    v.set(...a.at).project(vp.camera);
+    if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
+    const x = ((v.x + 1) / 2) * r.width;
+    const y = ((1 - v.y) / 2) * r.height;
+    g.font = '600 12px "Open Sans", system-ui, sans-serif';
+    const lines = a.text_now.split('\n');
+    const w = Math.max(...lines.map((t) => g.measureText(t).width));
+    const x0 = a.type === 'label' ? x + 4 : x - w / 2;
+    g.fillStyle = 'rgba(255,255,255,0.9)';
+    g.fillRect(x0 - 3, y - 9, w + 6, 16 * lines.length + 2);
+    g.fillStyle = app.viewport.selection?.includes?.(e.id) ? '#c8553d' : '#1d262c';
+    lines.forEach((t, i) => g.fillText(t, x0, y + i * 16));
+    g.font = '600 11px "Open Sans", system-ui, sans-serif';
+  }
   // alignment stations: 0+000, 0+020, …
   for (const e of doc.entities) {
     if (!e.alignment || !e.curve || !e.visible) continue;

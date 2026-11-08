@@ -396,6 +396,75 @@ const PAGES = {
     await none();
     await shot('Site › Import terrain: an ASCII grid DEM, coloured by elevation');
   },
+  async 'dimension-and-label'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('create_text', { text: 'RIVERSIDE', size: 0.7, depth: 0.15, position: [0, 0, 7.4], color: '#c8553d', name: 'Sign' });
+    await camera([14, 9, 19], [0, 1.2, 2]);
+    await none();
+    await shot('Tools › 3D text: a sign, extruded letters');
+    await run('add_dimension', { id: 'Ground slab', axis: 'x', offset: 0.9 });
+    await run('add_dimension', { id: 'Ground slab', axis: 'z', offset: 0.9 });
+    await run('add_dimension', { id: 'East wall', axis: 'y', offset: 0.6, normal: [0, 0, 1] });
+    await none();
+    await shot('Dimension the selected shape: width, depth, height');
+    await run('set_params', { id: 'Ground slab', params: { width: 13 } });
+    await none();
+    await shot('Make the slab 13 m wide: its dimension follows');
+    await run('add_label', { id: 'Front door', text: '{name}\n{height}', offset: [0.8, 1.2, 0.6] });
+    await run('add_label', { at: { id: 'Ground slab', corner: [0.97, 1, 0.97] }, text: '{name}: {footprint}', offset: [0.8, 1.4, 0.4] });
+    await none();
+    await shot('Label tool (K): {name}, {area}, {height}… kept up to date');
+    await run('add_guide', { point: [-8, 0, 9.2], to: [8, 0, 9.2] });
+    await run('create_curve', { points: [[-8, 0, 10.2], [8, 0, 10.2]], name: 'Boundary' });
+    await run('set_properties', { ids: ['Boundary'], line_type: 'center', line_weight: 0.6 });
+    await camera([15, 10, 22], [0, 1, 3]);
+    await none();
+    await shot('Tape + Ctrl: a guide line. A centre line type on the boundary');
+  },
+  async 'drawing-sheets-and-sections'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('add_dimension', { id: 'Ground slab', axis: 'x', offset: 0.9 });
+    await camera([13, 9, 17], [0, 1.2, 1]);
+    await none();
+    await js("window.mmr.app.ui.commandDialog('export_drawing', { views: ['top', 'front', 'right', 'iso'], sheet: 'A3', title: 'Riverside pavilion', project: 'Riverside' }); return 1;");
+    await shot('');
+    await clean();
+    const tmp = path.join(os.tmpdir(), 'mmr-docs-sheet.pdf').replace(/\\/g, '/');
+    const r = await run('export_drawing', { path: tmp, views: ['top', 'front', 'right', 'iso'], sheet: 'A3', title: 'Riverside pavilion', project: 'Riverside', preview: true });
+    await js(`window.mmr.app.ui.svgPreview('Sheet saved: mmr-docs-sheet.pdf · ${r.scale}', ${JSON.stringify(r.preview)}); return 1;`);
+    await shot('');
+    await clean();
+    await run('section', { normal: [0, 1, 0], point: [0, 1.2, 0] });
+    await camera([9, 13, 12], [0, 0.5, 0]);
+    await none();
+    await shot('Section Plane (X): where it cuts, the walls are filled');
+    const tsv = path.join(os.tmpdir(), 'mmr-docs-plan.svg').replace(/\\/g, '/');
+    const s = await run('export_section', { path: tsv, scale: 50, title: 'Plan at 1.2 m', preview: true });
+    await js(`window.mmr.app.ui.svgPreview('Section saved: mmr-docs-plan.svg', ${JSON.stringify(s.preview)}); return 1;`);
+    await shot('');
+    await clean();
+    await run('section', { enabled: false });
+  },
+  async 'check-for-clashes'() {
+    await fresh();
+    await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });
+    await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 3], name: 'Beam B2', color: '#9aa3ab' });
+    await run('create_box', { width: 0.3, height: 3, depth: 0.3, position: [-3.5, 0, 0], name: 'Column C1', color: '#b9b2a3' });
+    await run('create_box', { width: 0.3, height: 3, depth: 0.3, position: [3.5, 0, 3], name: 'Column C2', color: '#b9b2a3' });
+    await run('create_cylinder', { radius: 0.15, height: 6, position: [1, 3.25, -1.5], rotation: [90, 0, 0], name: 'Duct D1', color: '#c8553d' });
+    await run('create_cylinder', { radius: 0.1, height: 6, position: [-1.5, 2.2, -1.5], rotation: [90, 0, 0], name: 'Pipe P1', color: '#2f6f86' });
+    await camera([8, 7, 10], [0, 2.5, 1.5]);
+    await none();
+    await shot('Beams, columns, a duct and a pipe');
+    const r = await run('check_clashes', { select: true });
+    await js(`window.mmr.app.ui.clashDialog(${JSON.stringify(r)}); return 1;`);
+    await shot('');
+    await clean();
+    await run('zoom_extents', { ids: r.clashes[0].ids });
+    await shot(`Show: ${r.clashes[0].names.join(' × ')}, ${(r.clashes[0].depth * 100).toFixed(0)} cm deep`);
+  },
 };
 
 const ids = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(PAGES);

@@ -43,6 +43,10 @@ Electron's binary download is an install script; if your npm blocks install scri
   coordinates. Extract a PDF's vector linework by layer, colour and window; draft on it (offset, trim, extend, fillet,
   chamfer, join, break); then take it to 3D: heights from spot-level text, breaklines for the surface, buildings from
   footprints, kerbs swept along lines. A layer panel with colours, locks, the current layer and saved states.
+- **Annotate and document**: dimensions (Dimension tool, D) and labels (Label tool, K) that follow the geometry and
+  keep their text up to date, construction guides, 3D text for signs and titles, line types and weights on screen
+  (ByLayer), a clash check on the real shapes, filled section cuts exported to SVG or DXF, and drawing sheets (PDF or
+  SVG) with views to scale, overall dimensions and a title block.
 - **Help by intent**: Help › How do I… (F1): a page per goal ("Put a PDF site plan in place", "Work out cut and fill
   for a pad"…) with step pictures, GIFs and videos, "Do it" buttons, a copilot prompt and the commands. Also in
   [docs/how-to](docs/how-to/README.md) and as MCP resources.

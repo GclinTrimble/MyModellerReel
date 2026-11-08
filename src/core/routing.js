@@ -10,7 +10,8 @@ export const TOOLSETS = {
   query: { categories: ['scene'], names: ['set_metadata'] },
   view: { categories: ['view'], names: ['screenshot'] },
   files: { categories: ['file'], names: ['report_quantities'] },
-  insight: { categories: [], names: ['report_quantities', 'review_model', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
+  insight: { categories: [], names: ['report_quantities', 'review_model', 'check_clashes', 'section_cut', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
+  annotate: { categories: ['annotate'], names: ['get_scene', 'get_entity', 'select_where', 'measure', 'create_text', 'section', 'export_section', 'export_drawing'] },
   ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
   drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
 };
@@ -80,6 +81,19 @@ const SYNONYMS = {
   video: ['export', 'render'],
   save: ['file'],
   load: ['open', 'import'],
+  dimension: ['add_dimension', 'annotate'],
+  dimensions: ['add_dimension', 'annotate'],
+  label: ['add_label', 'annotate'],
+  text: ['create_text', 'label'],
+  sign: ['create_text'],
+  guide: ['add_guide'],
+  clash: ['check_clashes'],
+  clashes: ['check_clashes'],
+  overlap: ['check_clashes'],
+  drawing: ['export_drawing', 'section'],
+  sheet: ['export_drawing'],
+  plan: ['export_drawing', 'section'],
+  dashed: ['line_type', 'properties'],
 };
 
 const STOP = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'it', 'is', 'with', 'for', 'by', 'me', 'my', 'please', 'make', 'this', 'that', 'them']);

@@ -3,6 +3,15 @@
 // `byLayer: true` take its colour. Feature layers carry an attribute schema that set_metadata checks.
 import * as D from './document.js';
 
+/** Built-in line types: repeating dash, gap… lengths in metres (#156). */
+export const LINE_TYPES = { continuous: [], dashed: [0.5, 0.25], dotted: [0.05, 0.15], center: [1, 0.2, 0.2, 0.2], hidden: [0.25, 0.15], dashdot: [0.5, 0.15, 0.05, 0.15] };
+/** A curve's line type pattern and weight (mm), resolved ByLayer. */
+export function lineStyle(doc, e) {
+  const t = layerOf(doc, e.tag);
+  const name = (e.line_type || t?.line_type || 'continuous').toLowerCase();
+  const pattern = doc.settings.line_types?.[name] || LINE_TYPES[name] || (/dash/.test(name) ? LINE_TYPES.dashed : /dot/.test(name) ? LINE_TYPES.dotted : /cent/.test(name) ? LINE_TYPES.center : []);
+  return { name, pattern, weight: e.line_weight || t?.line_weight || 0 };
+}
 export const FIELDS = ['color', 'locked', 'line_type', 'line_weight', 'description', 'schema'];
 
 /** A glob ("C-ROAD/*", "*kerb*") or exact name to a predicate, case-insensitive. */

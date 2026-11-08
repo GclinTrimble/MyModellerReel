@@ -352,3 +352,29 @@ test('terrain depth: sculpt with the brush tool, a profile chart, contours with 
   await w.click('[data-tab="entity"]');
   assert.equal(await w.locator('.legend-row').count(), 4);
 });
+
+test('annotate and document: the Dimension tool, text, section caps and a PDF sheet', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 4, height: 2, depth: 2, name: 'Block' });
+  await ok('create_text', { text: 'MMR', size: 0.5, depth: 0.1, position: [0, 0, 2] });
+  await ok('set_camera', { position: [0, 3, 9], target: [0, 1, 0] });
+  const [a, b] = await w.evaluate(() => [[-2, 1, 1], [2, 1, 1]].map((p) => {
+    const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p));
+    return [s.x, s.y];
+  }));
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  await w.keyboard.press('d');
+  await w.mouse.click(...a);
+  await w.mouse.click(...b);
+  await w.waitForFunction(() => window.mmr.doc.entities.some((e) => e.annotation?.type === 'dimension'));
+  const dim = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.annotation).annotation);
+  assert.ok(Math.abs(dim.value - 4) < 0.05, `dimension ${dim.value}`);
+  await w.keyboard.press('Escape');
+  await ok('section', { normal: [0, 1, 0], point: [0, 1, 0] });
+  assert.ok(await w.evaluate(() => window.mmr.app.viewport.modelRoot.children.some((o) => o.userData.caps && o.children.length)));
+  await ok('section', { enabled: false });
+  const pdf = path.join(home, 'sheet.pdf');
+  const r = await ok('export_drawing', { path: pdf, views: ['top', 'front'], sheet: 'A4' });
+  assert.equal(r.views.length, 2);
+  assert.equal(fs.readFileSync(pdf).subarray(0, 5).toString(), '%PDF-');
+});

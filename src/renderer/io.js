@@ -32,6 +32,8 @@ const FILTERS = {
   landxml: [{ name: 'LandXML 1.2', extensions: ['xml'] }],
   ifc: [{ name: 'IFC', extensions: ['ifc'] }],
   dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
+  section: [{ name: 'SVG drawing', extensions: ['svg'] }, { name: 'DXF (R12)', extensions: ['dxf'] }],
+  sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
 };
@@ -250,6 +252,13 @@ export class IO {
   /** Write a text file (reports). The main process only allows known extensions. */
   async writeText(path, text) {
     await native().invoke('file:write', path, text);
+    this.app.ui.toast(`Wrote ${base(path)}`);
+    return path;
+  }
+
+  /** Write a binary file (PDF sheets). */
+  async writeBinary(path, bytes) {
+    await native().invoke('file:write', path, bytes);
     this.app.ui.toast(`Wrote ${base(path)}`);
     return path;
   }

@@ -16,6 +16,7 @@ import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
 import { IO } from './io.js';
 import { drawLabels } from './labels.js';
+import { registerFont } from '../core/font.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -29,6 +30,14 @@ native.onAccount((s) => {
   app.account = s;
   if (app.ui.tab === 'settings') app.ui.renderDock();
 });
+
+// 3D text (#31): Liberation Sans from pdf.js's standard fonts, loaded before any document builds its text
+for (const [name, file] of [['sans', 'LiberationSans-Regular.ttf'], ['sans-bold', 'LiberationSans-Bold.ttf']])
+  try {
+    registerFont(name, await (await fetch(new URL(`../../node_modules/pdfjs-dist/standard_fonts/${file}`, import.meta.url))).arrayBuffer());
+  } catch (e) {
+    console.error(`font ${file}:`, e);
+  }
 
 let restored = null;
 try {

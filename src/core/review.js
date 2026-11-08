@@ -2,6 +2,8 @@
 // broken parametric shapes, found from geometry. review_model adds a vision model's critique of four views on top.
 import * as D from './document.js';
 import { raycast } from './query.js';
+import * as G from './geometry.js';
+import { booleanMeshes } from './csg.js';
 
 const r2 = (x) => Math.round(x * 100) / 100;
 const MAX = 400; // shortcut: pairwise checks are O(n²); larger models get checked on their first MAX shapes
@@ -72,4 +74,36 @@ export function reviewStats(doc) {
     size: ok ? all.max.map((x, k) => r2(x - all.min[k])) : [0, 0, 0],
     animated: doc.animation.tracks.length + (doc.animation.motions?.length || 0) > 0,
   };
+}
+
+/**
+ * Clash check (#56): pairs of solids from different groups that overlap by more than tolerance (m), measured on the
+ * real shapes (a boolean intersection), not just their boxes. ids: only clashes involving these.
+ * Returns [{ ids, names, volume, depth, center }], biggest first.
+ */
+export function clashes(doc, { ids = null, tolerance = 0.001, max = 200 } = {}) {
+  const list = shapes(doc).filter(({ e }) => e.mesh.f.length);
+  const want = ids && new Set(ids);
+  const out = [];
+  for (let i = 0; i < list.length; i++)
+    for (let j = i + 1; j < list.length; j++) {
+      const [A, B] = [list[i], list[j]];
+      if (want && !want.has(A.e.id) && !want.has(B.e.id)) continue;
+      if (rootOf(doc, A.e) === rootOf(doc, B.e)) continue;
+      const ov = [0, 1, 2].map((k) => Math.min(A.b.max[k], B.b.max[k]) - Math.max(A.b.min[k], B.b.min[k]));
+      if (!ov.every((x) => x > tolerance)) continue;
+      let m;
+      try {
+        m = booleanMeshes('intersect', D.worldMesh(doc, A.e), [D.worldMesh(doc, B.e)]);
+      } catch {
+        continue; // the boxes overlap, the shapes do not
+      }
+      const b = G.bbox(m);
+      const depth = Math.min(...[0, 1, 2].map((k) => b.max[k] - b.min[k]));
+      const volume = Math.abs(G.volume(m));
+      if (depth <= tolerance) continue; // touching, not clashing
+      out.push({ ids: [A.e.id, B.e.id], names: [A.e.name, B.e.name], volume: Math.round(volume * 1e6) / 1e6, depth: Math.round(depth * 1e4) / 1e4, center: D.round3([0, 1, 2].map((k) => (b.min[k] + b.max[k]) / 2)) });
+      if (out.length >= max) return out.sort((a, c) => c.volume - a.volume);
+    }
+  return out.sort((a, c) => c.volume - a.volume);
 }

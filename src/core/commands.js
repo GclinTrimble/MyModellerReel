@@ -9,6 +9,10 @@ import * as R from './derived.js';
 import { booleanMeshes } from './csg.js';
 import { quantities, toCsv } from './quantities.js';
 import { reviewChecks, reviewStats } from './review.js';
+import * as RV from './review.js';
+import * as AN from './annotate.js';
+import * as SEC from './section.js';
+import * as SHT from './sheet.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
@@ -142,7 +146,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -616,7 +620,7 @@ function registerCore(reg, ctx) {
     return { updated: ents.map((e) => e.id) };
   }, true);
 
-  def('edit', 'set_properties', 'Rename, tag, hide/show or lock entities.', obj({ ids, name: str('new name'), tag: str('tag name (created if new)'), visible: bool('show/hide'), locked: bool('lock') }), (a) => {
+  def('edit', 'set_properties', 'Rename, tag, hide/show or lock entities; line type and weight of curves.', obj({ ids, name: str('new name'), tag: str('tag name (created if new)'), visible: bool('show/hide'), locked: bool('lock'), line_type: str('curves: continuous | dashed | dotted | center | hidden | a define_line_type name | bylayer'), line_weight: num('curves: mm (0: ByLayer)') }), (a) => {
     const doc = ctx.doc;
     const ents = targets(ctx, a);
     for (const e of ents) {
@@ -628,6 +632,8 @@ function registerCore(reg, ctx) {
       }
       if (a.visible !== undefined) e.visible = a.visible;
       if (a.locked !== undefined) e.locked = a.locked;
+      if (a.line_type !== undefined) a.line_type && a.line_type.toLowerCase() !== 'bylayer' ? (e.line_type = a.line_type.toLowerCase()) : delete e.line_type;
+      if (a.line_weight !== undefined) a.line_weight > 0 ? (e.line_weight = a.line_weight) : delete e.line_weight;
     }
     return ents.map((e) => summary(doc, e));
   }, true);
@@ -2155,6 +2161,150 @@ function registerCore(reg, ctx) {
     return { name, steps: steps.length, script, ...(plugin ? { plugin } : {}) };
   });
 
+
+  // ---------------------------------------------------------------- annotate and document (Phase 11)
+  const REF = { description: 'a point [x, y, z], an entity id / name (its middle), { id, point: [x, y, z] } (a point stuck to it), { id, vertex: k } or { id, corner: "min" | "max" | [sx, sy, sz] } (0 min, 1 max of its box)' };
+  const annot = (doc, props, layer, color) => {
+    L.ensureLayer(doc, layer);
+    const e = D.addEntity(doc, { type: 'curve', curve: { kind: 'polyline', points: [[0, 0, 0], [0, 0, 0]], closed: false }, tag: layer, material: { color }, ...props });
+    AN.syncAnnotations(doc);
+    if (!e.curve.points.length) throw new Error('Nothing to annotate.');
+    return e;
+  };
+  const annotSummary = (doc, e) => ({ ...summary(doc, e), text: e.annotation.text_now, ...(e.annotation.value !== undefined ? { value: e.annotation.value } : {}) });
+
+  def('create', 'create_text', '3D text: signs, logos, titles, labels on a model. Letters extruded depth m; size is the height of a capital letter. Standing (facing +z) or flat on the ground (flat: true). Live: change the text later with set_params.', obj({ text: str('the words; "\\n" for a new line'), size: num('capital height, m (default 0.5)'), depth: num('m (default 0.05)'), align: str('left | center | right', ['left', 'center', 'right']), flat: bool('lie on the ground, reading from the south'), font: str('font name (default sans)'), ...common }, ['text']), (a) => {
+    sizeErr(a.size ?? 0.5, a.depth ?? 0.05);
+    return place(ctx, null, a, { name: String(a.text).split('\n')[0].slice(0, 30) || 'Text' }, ['text', { text: String(a.text), size: a.size ?? 0.5, depth: a.depth ?? 0.05, align: a.align || 'center', flat: !!a.flat, ...(a.font ? { font: a.font } : {}) }]);
+  }, true);
+
+  def('annotate', 'add_dimension', 'A dimension that stays in step with what it measures. linear: between from and to, along axis x | y | z (or aligned, the true distance, without one); radial / diameter: center and a point on the circle; angular: vertex, from and to. Shortcut: id + axis dimensions the size of a shape. offset: m from the geometry (negative: the other side); normal: the side to put it.', obj({ kind: str('linear (default) | radial | diameter | angular', ['linear', 'radial', 'diameter', 'angular']), from: REF, to: REF, center: REF, vertex: REF, id: str('a shape to dimension (with axis)'), axis: str('x | y | z (default: aligned)', ['x', 'y', 'z']), offset: num('m (default 0.5)'), normal: v3('direction to offset towards'), text: str('replace the text; "<>" is the measured value'), name: common.name }), (a) => {
+    const doc = ctx.doc;
+    const kind = a.kind || 'linear';
+    let refs;
+    if (a.id && !a.from) {
+      const ax = a.axis || 'x';
+      const k = { x: 0, y: 1, z: 2 }[ax];
+      const lo = [0, 0, 1];
+      const hi = [0, 0, 1];
+      hi[k] = 1;
+      if (ax === 'z') (lo[0] = hi[0] = 1), (lo[2] = 0);
+      refs = [AN.makeRef(doc, { id: a.id, corner: lo }), AN.makeRef(doc, { id: a.id, corner: hi })];
+    } else if (kind === 'radial' || kind === 'diameter') {
+      if (!a.center || !(a.to || a.from)) throw new Error(`A ${kind} dimension needs center and to (a point on the circle).`);
+      refs = [AN.makeRef(doc, a.center), AN.makeRef(doc, a.to || a.from)];
+    } else if (kind === 'angular') {
+      if (!a.vertex || !a.from || !a.to) throw new Error('An angular dimension needs vertex, from and to.');
+      refs = [AN.makeRef(doc, a.vertex), AN.makeRef(doc, a.from), AN.makeRef(doc, a.to)];
+    } else {
+      if (!a.from || !a.to) throw new Error('A linear dimension needs from and to (or id and axis).');
+      refs = [AN.makeRef(doc, a.from), AN.makeRef(doc, a.to)];
+    }
+    const e = annot(doc, { name: a.name || D.uniqueName(doc, 'Dimension'), annotation: { type: 'dimension', kind, refs, ...(a.axis && kind === 'linear' ? { axis: a.axis } : {}), ...(a.offset !== undefined ? { offset: a.offset } : {}), ...(a.normal ? { normal: a.normal } : {}), ...(a.text ? { text_override: a.text } : {}) } }, AN.DIMS, '#1d262c');
+    ctx.selection.set([e.id]);
+    return annotSummary(doc, e);
+  }, true);
+
+  def('annotate', 'add_label', 'A text label with a leader line pointing at something. text is a template: {name}, {area}, {footprint}, {volume}, {length}, {height}, {elevation}, {tag}, {meta.key}, kept up to date. Default "{name}".', obj({ at: REF, id: str('the entity it points at (its middle) when at is not given'), text: str('template, default "{name}"'), offset: v3('from the point to the text, m (default [0.6, 0.9, 0])'), name: common.name }), (a) => {
+    const doc = ctx.doc;
+    const ref = AN.makeRef(doc, a.at ?? a.id ?? targets(ctx, {})[0]?.id);
+    const e = annot(doc, { name: a.name || D.uniqueName(doc, 'Label'), annotation: { type: 'label', refs: [ref], text: a.text || '{name}', ...(a.offset ? { offset: a.offset } : {}) } }, AN.DIMS, '#1d262c');
+    ctx.selection.set([e.id]);
+    return annotSummary(doc, e);
+  }, true);
+
+  def('annotate', 'edit_annotation', 'Change a dimension or label: its text (template), offset or side.', obj({ id, text: str('label template, or the dimension text ("<>" is the value; "" for the measured value)'), offset: { description: 'dimension: m; label: [x, y, z]' }, normal: v3('dimension side') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const e = D.resolve(doc, a.id)[0];
+    if (!e.annotation) throw new Error(`${e.name} is not a dimension or label.`);
+    const n = e.annotation;
+    if (a.text !== undefined) n.type === 'label' ? (n.text = a.text) : a.text ? (n.text_override = a.text) : delete n.text_override;
+    if (a.offset !== undefined) n.offset = a.offset;
+    if (a.normal) n.normal = a.normal;
+    AN.syncAnnotations(doc);
+    return annotSummary(doc, e);
+  }, true);
+
+  def('annotate', 'list_annotations', 'Dimensions, labels and guides with their current values and texts.', obj({}), () => ctx.doc.entities.filter((e) => e.annotation).map((e) => ({ id: e.id, name: e.name, type: e.annotation.type, kind: e.annotation.kind, text: e.annotation.text_now, value: e.annotation.value, attached: e.annotation.refs.filter((r) => !Array.isArray(r)).map((r) => D.getEntity(ctx.doc, r.id)?.name).filter(Boolean) })));
+
+  def('annotate', 'add_guide', 'A construction guide: an endless dashed line through point along direction (or through point and to), or a guide point (a cross) with point alone. On the Guides layer: hide it or clear_guides.', obj({ point: REF, to: REF, direction: v3('line direction'), name: common.name }, ['point']), (a) => {
+    const doc = ctx.doc;
+    const refs = [AN.makeRef(doc, a.point), ...(a.to ? [AN.makeRef(doc, a.to)] : [])];
+    const t = L.ensureLayer(doc, AN.GUIDES);
+    t.line_type ||= 'dashed';
+    const e = annot(doc, { name: a.name || D.uniqueName(doc, 'Guide'), byLayer: true, annotation: { type: 'guide', refs, ...(a.direction ? { direction: a.direction } : {}) } }, AN.GUIDES, '#4b7bb5');
+    t.color ||= '#4b7bb5';
+    return summary(doc, e);
+  }, true);
+
+  def('annotate', 'clear_guides', 'Delete every guide line and point.', obj({}), () => {
+    const doc = ctx.doc;
+    const g = doc.entities.filter((e) => e.annotation?.type === 'guide');
+    for (const e of g) D.removeEntity(doc, e);
+    return { removed: g.length };
+  }, true);
+
+  def('annotate', 'define_line_type', 'A line type for layers and curves: a repeating pattern of dash and gap lengths in metres ([1, 0.25, 0.25, 0.25] is a centre line). Built in: continuous, dashed, dotted, center, hidden.', obj({ name: str('line type name'), pattern: { type: 'array', items: { type: 'number' }, description: 'dash, gap, dash, gap… (m)' } }, ['name', 'pattern']), (a) => {
+    if (!(a.pattern.length >= 2) || a.pattern.some((x) => !(x > 0))) throw new Error('A pattern is dash and gap lengths, all above 0.');
+    ctx.doc.settings.line_types = { ...(ctx.doc.settings.line_types || {}), [a.name.toLowerCase()]: a.pattern };
+    return { line_types: { ...L.LINE_TYPES, ...ctx.doc.settings.line_types } };
+  }, true);
+
+  def('annotate', 'check_clashes', 'Clash check: pairs of solids from different groups that really overlap (more than tolerance m deep), with the overlap volume and where it is. select: select the clashing shapes.', obj({ ids: { type: 'array', items: { type: 'string' }, description: 'only clashes involving these (default: everything visible)' }, tolerance: num('m (default 0.001)'), select: bool('select what clashes') }), (a) => {
+    const doc = ctx.doc;
+    const ids = a.ids?.length ? a.ids.flatMap((x) => D.resolve(doc, x)).flatMap((e) => [e.id, ...D.descendants(doc, e.id).map((d) => d.id)]) : null;
+    const list = RV.clashes(doc, { ids, tolerance: a.tolerance ?? 0.001 });
+    if (a.select) ctx.selection.set([...new Set(list.flatMap((c) => c.ids))]);
+    return { count: list.length, clashes: list };
+  });
+
+  const sectionPlane = (a) => {
+    const s = a.normal ? { normal: a.normal, point: a.point || [0, 0, 0] } : ctx.doc.settings.section;
+    if (!s) throw new Error('No section plane: give normal and point, or turn on a section first (section).');
+    return s;
+  };
+  def('annotate', 'section_cut', 'What a section plane cuts: per shape, the cut outline (loops, world) and its area. Default: the current section plane.', obj({ normal: v3('the side that is cut away'), point: v3('a point on the plane') }), (a) => {
+    const cut = SEC.sectionCut(ctx.doc, sectionPlane(a));
+    const ar = (r) => Math.abs(r.reduce((s, p, i) => s + p[0] * r[(i + 1) % r.length][1] - r[(i + 1) % r.length][0] * p[1], 0) / 2);
+    return { plane: { normal: cut.frame.n, point: cut.point }, cuts: cut.cuts.map((c) => ({ id: c.id, name: c.name, loops: c.loops.length, area: Math.round(c.areas.reduce((s, x) => s + ar(x.outer) - x.holes.reduce((h, y) => h + ar(y), 0), 0) * 1e4) / 1e4 })) };
+  });
+
+  def('file', 'export_section', 'Export a section: the cut of the current section plane (or one given) as SVG (filled, to scale) or DXF (closed polylines on each shape\'s layer).', obj({ path: str('absolute .svg or .dxf path'), normal: v3('the side that is cut away'), point: v3('a point on the plane'), scale: num('SVG: 1:scale (default 50)'), title: str('SVG caption'), preview: bool('also return the SVG') }), async (a) => {
+    a = { ...a, path: a.path || (await ctx.io?.pick?.('section', true, 'Section.svg')) };
+    if (!a.path) return { cancelled: true };
+    const cut = SEC.sectionCut(ctx.doc, sectionPlane(a));
+    if (!cut.cuts.length) throw new Error('The section plane cuts nothing.');
+    const ext = a.path.split('.').pop().toLowerCase();
+    let data;
+    if (ext === 'svg') data = SEC.sectionSvg(cut, { scale: a.scale || 50, title: a.title || '' });
+    else if (ext === 'dxf') {
+      // the loops as closed curves in a scratch document, written by the DXF writer in drawing (plan) coordinates
+      const tmp = D.newDoc();
+      tmp.geo = ctx.doc.geo;
+      tmp.tags = ctx.doc.tags;
+      for (const c of cut.cuts) for (const l of c.loops) D.addEntity(tmp, { type: 'curve', name: c.name, tag: c.tag, curve: { kind: 'polyline', points: l, closed: true }, material: { color: c.color } });
+      data = F.getFormat('dxf').write(tmp, { ents: tmp.entities, opts: { coordinates: 'local' } });
+    } else throw new Error('export_section writes .svg or .dxf.');
+    if (!ctx.io?.writeText) throw new Error('No file access in this context.');
+    await ctx.io.writeText(a.path, data);
+    return { path: a.path, shapes: cut.cuts.length, loops: cut.cuts.reduce((s, c) => s + c.loops.length, 0), ...(a.preview && ext === 'svg' ? { preview: data } : {}) };
+  });
+
+  def('file', 'export_drawing', 'A drawing sheet: orthographic views (top, front, back, left, right; iso not to scale) at a common scale with overall dimensions and a title block, as PDF or SVG. Hidden layers stay hidden.', obj({ path: str('absolute .pdf or .svg path'), views: { type: 'array', items: { type: 'string', enum: ['top', 'front', 'back', 'left', 'right', 'iso'] }, description: 'default top, front, right, iso' }, sheet: str('A4 | A3 | A2 | A1 | Letter | Tabloid (default A3)', Object.keys(SHT.SHEETS)), scale: num('1:scale (default: the largest that fits)'), title: str('drawing title'), project: str(''), author: str(''), number: str('sheet number'), preview: bool('also return the sheet as SVG') }), async (a) => {
+    if (!ctx.view?.orthoShot) throw new Error('No viewport in this context.');
+    a = { ...a, path: a.path || (await ctx.io?.pick?.('sheet', true, `${ctx.doc.name || 'Drawing'}.pdf`)) };
+    if (!a.path) return { cancelled: true };
+    const ext = a.path.split('.').pop().toLowerCase();
+    if (!['pdf', 'svg'].includes(ext)) throw new Error('export_drawing writes .pdf or .svg.');
+    const doc = ctx.doc;
+    const views = [];
+    for (const v of a.views?.length ? a.views : ['top', 'front', 'right', 'iso']) views.push({ name: v[0].toUpperCase() + v.slice(1), ortho: v !== 'iso', ...(await ctx.view.orthoShot(v, { pxPerM: 160 })) });
+    const L2 = SHT.layoutSheet(views, { sheet: a.sheet || 'A3', scale: a.scale, title: a.title || doc.name || 'Untitled', project: a.project || '', author: a.author || '', number: a.number || '1', date: new Date().toLocaleDateString('sv'), units: (m) => Units.formatLength(m, { unit: doc.settings.display_units || 'auto', precision: doc.settings.precision ?? undefined }) });
+    if (ext === 'svg') await ctx.io.writeText(a.path, SHT.sheetSvg(L2));
+    else await ctx.io.writeBinary(a.path, SHT.sheetPdf(L2));
+    return { path: a.path, sheet: a.sheet || 'A3', scale: `1:${L2.scale}`, views: views.map((v) => v.name), ...(a.preview ? { preview: SHT.sheetSvg(L2) } : {}) };
+  });
+
   // ---------------------------------------------------------------- insight: quantities, review, skills
   def('scene', 'report_quantities', 'Quantities: count, surface area (m²), volume (m³), length (m: curves and sweeps) and cost (metadata cost) per material, tag, metadata key, name or kind. "How many m³ of concrete?" format csv or a path writes a file.', obj({ group_by: { description: 'material (default) | tag | name | type | none | a metadata key (e.g. phase, or meta.phase)' }, ids: { ...ids, description: 'only these (default: the whole model)' }, include_hidden: bool('count hidden things too'), format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv or .json path to write') }), async (a) => {
     const report = quantities(ctx.doc, { by: a.group_by || 'material', ids: a.ids, hidden: !!a.include_hidden });
@@ -2221,9 +2371,9 @@ function registerCore(reg, ctx) {
     ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
     return ctx.view?.getCamera();
   });
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);

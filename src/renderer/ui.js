@@ -266,6 +266,16 @@ export class UI {
       drapeImage: { label: 'Drape an image on a surface…', icon: 'image', run: form('drape_image') },
       textToPoints: { label: 'Spot heights to points…', icon: 'map-pin', run: form('text_to_points', () => ({ id: sel()[0] })) },
       labelContours: { label: 'Contour heights from labels…', icon: 'tag', run: form('label_contours') },
+      text3d: { label: '3D text…', icon: 'text-t', run: form('create_text', { text: 'Text', size: 0.5, depth: 0.05 }) },
+      dimensionShape: { label: 'Dimension the selected shape', icon: 'arrows-horizontal', run: () => (sel().length ? Promise.all(['x', 'y', 'z'].map((axis) => app.reg.run('add_dimension', { id: sel()[0], axis, offset: 0.4 }))).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select a shape first.')) },
+      labelSel: { label: 'Label the selection…', icon: 'tag', run: form('add_label', () => ({ id: sel()[0], text: '{name}' })) },
+      listAnnotations: { label: 'Dimensions and labels…', icon: 'list-bullets', run: () => app.reg.run('list_annotations', {}).then((r) => this.infoDialog('Dimensions and labels', r.length ? r.map((x) => `${x.name}: ${x.text || x.type}${x.attached.length ? ` (on ${x.attached.join(', ')})` : ''}`).join('\n') : 'None yet: Tools › Dimension (D) or Label (K).')) },
+      clearGuides: { label: 'Delete all guides', icon: 'eraser', run: run('clear_guides', {}) },
+      lineTypes: { label: 'New line type…', icon: 'line-segments', run: form('define_line_type', { name: 'fence', pattern: [1, 0.3, 0.1, 0.3] }) },
+      clashes: { label: 'Clash check', icon: 'warning-diamond', run: () => app.reg.run('check_clashes', { select: true }).then((r) => this.clashDialog(r)).catch((e) => this.toast(e.message, 'danger')) },
+      sectionFill: { label: 'Section fill', icon: 'paint-bucket', checked: () => app.store.doc.settings.section_fill !== false, run: () => app.reg.run('set_style', { section_fill: app.store.doc.settings.section_fill === false }) },
+      exportSection: { label: 'Export section (SVG, DXF)…', icon: 'export', run: () => app.reg.run('export_section', { preview: true }).then((r) => r?.preview && this.svgPreview(`Section saved: ${r.path.split(/[\\/]/).pop()}`, r.preview)).catch((e) => this.toast(e.message, 'danger')) },
+      exportDrawing: { label: 'Export drawing sheet (PDF, SVG)…', icon: 'file-pdf', run: () => app.reg.run('export_drawing', { preview: true, title: app.store.doc.name || 'Untitled' }).then((r) => r?.preview && this.svgPreview(`Sheet saved: ${r.path.split(/[\\/]/).pop()} · ${r.scale}`, r.preview)).catch((e) => this.toast(e.message, 'danger')) },
       exportGeojson: { label: 'Export GeoJSON…', icon: 'export', run: run('export', { format: 'geojson' }) },
       exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
@@ -301,11 +311,11 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportSection', 'exportDrawing', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'unsection', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', '-', 'timeline', 'theme'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
@@ -699,6 +709,16 @@ export class UI {
   }
 
   /** Cross-sections (#122): one at a time, Previous / Next. */
+  /** A picture of an exported sheet or section, so you see what you saved. */
+  svgPreview(title, svg) {
+    this.modal(title, h('img.svg-preview', { src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, alt: title }));
+  }
+  clashDialog(r) {
+    const app = this.app;
+    if (!r.count) return this.toast('No clashes.');
+    const rows = r.clashes.map((c) => h('div.legend-row', {}, h('span', {}, `${c.names[0]} × ${c.names[1]}: ${(c.volume * 1000).toFixed(1)} L, ${(c.depth * 100).toFixed(1)} cm deep`), h('button.btn.sm', { onclick: () => app.reg.run('select', { ids: c.ids }).then(() => app.reg.run('zoom_extents', { ids: c.ids }).catch(() => {})) }, 'Show')));
+    this.modal(`${r.count} clash${r.count > 1 ? 'es' : ''}`, h('div', {}, ...rows));
+  }
   sectionsDialog(r, i = 0) {
     const x = r.sections[i];
     const prof = { length: x.points.at(-1).offset - x.points[0].offset, surfaces: r.surfaces, samples: x.points.map((q) => ({ ...q, chainage: q.offset - x.points[0].offset })) };
