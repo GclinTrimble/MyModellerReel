@@ -321,6 +321,28 @@ export class UI {
         const path = await app.io.pick('schedule', false);
         if (path) app.reg.run('import_schedule', { path }).then((r) => this.infoDialog('Schedule imported', `${r.tasks} tasks, ${r.matched} matched to the model, ${r.seconds_per_day} s per day.${r.unmatched.length ? `\nNot matched: ${r.unmatched.join(', ')}` : ''}`)).catch((e) => this.toast(e.message, 'danger'));
       } },
+      filletEdges: { label: 'Fillet edges…', icon: 'circle-half', run: form('fillet_edges', () => ({ id: sel()[0], edges: 'all', radius: 0.05 })) },
+      chamferEdges: { label: 'Chamfer edges…', icon: 'triangle', run: form('chamfer_edges', () => ({ id: sel()[0], edges: 'all', distance: 0.05 })) },
+      loft: { label: 'Loft through the selected curves', icon: 'vignette', run: () => (sel().length > 1 ? app.reg.run('loft', { profiles: sel() }).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select two or more curves, in order.')) },
+      shell: { label: 'Shell (hollow)…', icon: 'cube-transparent', run: form('shell', () => ({ id: sel()[0], thickness: 0.05, open: 'top' })) },
+      thicken: { label: 'Thicken…', icon: 'stack-plus', run: form('thicken', () => ({ id: sel()[0], thickness: 0.1 })) },
+      extrudeFaces: { label: 'Extrude faces…', icon: 'arrow-fat-line-up', run: form('extrude_faces', () => ({ id: sel()[0], faces: ['top'], distance: 0.2 })) },
+      subdivide: { label: 'Subdivide (smooth)', icon: 'circles-three', run: () => (sel().length ? app.reg.run('subdivide', { id: sel()[0], levels: 2 }).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select a shape.')) },
+      deform: { label: 'Deform (taper, twist, bend)…', icon: 'wave-sine', run: form('deform', () => ({ id: sel()[0], type: 'twist', amount: 90, axis: 'y' })) },
+      simplify: { label: 'Simplify mesh…', icon: 'triangle-dashed', run: form('simplify_mesh', { ratio: 0.5 }) },
+      splitSolid: { label: 'Split solid along a plane…', icon: 'scissors', run: form('split_solid', () => ({ id: sel()[0], normal: [0, 1, 0] })) },
+      intersect: { label: 'Intersect faces', icon: 'intersect', run: needTwo(() => app.reg.run('intersect_faces', { ids: sel() }).catch((e) => this.toast(e.message, 'danger'))) },
+      weld: { label: 'Weld edges', icon: 'link-simple', run: run('weld_edges', {}) },
+      symmetry: { label: 'Symmetry (mirror edits across x)', icon: 'flip-horizontal', checked: () => !!app.store.doc.settings.symmetry, run: () => app.reg.run('set_symmetry', { axis: app.store.doc.settings.symmetry ? 'off' : 'x' }) },
+      axes: { label: 'Drawing axes and grid…', icon: 'compass-tool', run: form('set_axes', () => ({ ...(app.store.doc.settings.axes || { angle: 0, grid: 1, snap: true }) })) },
+      import2d: { label: 'Import a 2D drawing (SVG, DXF)…', icon: 'file-svg', run: async () => {
+        const path = await app.io.pick('drawing2d', false);
+        if (path) app.reg.run('import_2d', { path, faces: true }).then((r) => this.toast(`${r.curves ?? ''} lines${r.faces ? `, ${r.faces} faces` : ''}`)).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      curvesToFaces: { label: 'Closed curves to faces', icon: 'polygon', run: run('curves_to_faces', {}) },
+      arrayGrid: { label: 'Grid array…', icon: 'grid-four', run: form('array_grid', { nx: 3, ny: 1, nz: 2 }) },
+      arrayPath: { label: 'Array along a curve…', icon: 'path', run: form('array_path', () => ({ path: sel().map((x) => app.entity(x)).find((e) => e?.curve)?.name || '', count: 10 })) },
+      saveSelection: { label: 'Save the selection as a set…', icon: 'selection-plus', run: () => (sel().length ? this.commandDialog('save_selection', { name: `Set ${Object.keys(app.store.doc.selection_sets || {}).length + 1}` }) : this.toast('Select something first.')) },
       exportGeojson: { label: 'Export GeoJSON…', icon: 'export', run: run('export', { format: 'geojson' }) },
       exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
@@ -360,7 +382,7 @@ export class UI {
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
@@ -547,6 +569,11 @@ export class UI {
       rows.length ? h('div.tree', {}, rows) : h('p.muted', {}, 'Nothing here yet. Draw with the tools on the left, or ask the AI to build something.'),
       h('div.row', {}, h('div.overline.grow', {}, 'Layers'), h('button.icon-btn.sm', { title: 'New layer', 'aria-label': 'New layer', onclick: () => this.actions.newLayer.run() }, icon('plus'))),
       h('div.tree', {}, this.layerRows(doc, run)),
+      h('label.row.small', {}, h('input', { type: 'checkbox', checked: doc.settings.color_by === 'layer', onchange: (ev) => run('set_style', { color_by: ev.target.checked ? 'layer' : 'material' }) }), 'Colour by layer'),
+      h('div.row', {}, h('div.overline.grow', {}, 'Selection sets'), h('button.icon-btn.sm', { title: 'Save the selection as a set', 'aria-label': 'Save the selection as a set', onclick: () => this.actions.saveSelection.run() }, icon('plus'))),
+      Object.keys(doc.selection_sets || {}).length
+        ? h('div.chips', {}, ...Object.entries(doc.selection_sets).map(([name, ids]) => h('span.chip', {}, h('button.chip-main', { title: `Select ${ids.length}`, onclick: () => run('select_set', { name }) }, `${name} · ${ids.length}`), h('button.chip-x', { title: 'Forget this set', 'aria-label': `Forget ${name}`, onclick: () => run('delete_selection_set', { name }) }, icon('x')))))
+        : h('p.muted.small', {}, 'Select things and press + to name the selection.'),
     );
   }
 
@@ -555,13 +582,16 @@ export class UI {
     const cur = doc.settings.current_layer || 'Untagged';
     const counts = new Map();
     for (const e of doc.entities) if (e.type !== 'group') counts.set(e.tag, (counts.get(e.tag) || 0) + 1);
+    let folder = null;
     return [...doc.tags]
-      .sort((a, b) => (a.name === 'Untagged' ? -1 : b.name === 'Untagged' ? 1 : a.name.localeCompare(b.name)))
-      .map((t) => {
-        const depth = t.name.split('/').length - 1;
+      .sort((a, b) => (a.name === 'Untagged' ? -1 : b.name === 'Untagged' ? 1 : (a.folder || '').localeCompare(b.folder || '') || a.name.localeCompare(b.name)))
+      .flatMap((t) => {
+        const head = (t.folder || null) !== folder && t.folder ? h('div.tree-row.layer-folder', {}, icon('folder-simple'), h('span.name', {}, t.folder)) : null;
+        folder = t.folder || null;
+        const depth = t.name.split('/').length - 1 + (t.folder ? 1 : 0);
         const leaf = t.name.split('/').pop();
         const isCur = t.name === cur;
-        return h(
+        const row = h(
           'div.tree-row.layer-row',
           { style: { paddingLeft: `${4 + depth * 14}px` }, title: t.description || t.name },
           h('input.layer-swatch', { type: 'color', value: t.color || '#d9d4c7', 'aria-label': `Colour of layer ${t.name}`, onchange: (ev) => run('set_layer', { name: t.name, color: ev.target.value }) }),
@@ -572,6 +602,7 @@ export class UI {
           h('button.icon-btn.sm', { title: t.locked ? 'Unlock layer' : 'Lock layer', 'aria-label': t.locked ? `Unlock ${t.name}` : `Lock ${t.name}`, onclick: () => run('set_layer', { name: t.name, locked: !t.locked }) }, icon(t.locked ? 'lock-simple' : 'lock-simple-open')),
           h('button.icon-btn.sm', { title: t.visible ? 'Hide layer' : 'Show layer', 'aria-label': t.visible ? `Hide ${t.name}` : `Show ${t.name}`, onclick: () => run('set_layer', { name: t.name, visible: !t.visible }) }, icon(t.visible ? 'eye' : 'eye-slash')),
         );
+        return head ? [head, row] : [row];
       });
   }
 
@@ -1040,9 +1071,25 @@ export class UI {
       return i;
     };
     const recipes = Object.entries(doc.recipes || {});
+    // the component library (#45): click to place at the view's centre, or drag into the view
+    const assets = h('div.assets', {}, h('p.muted.small', {}, 'Loading…'));
+    app.io.listLibrary().then((list) => {
+      assets.replaceChildren(
+        ...(list.length ? list : []).map((f) => {
+          const img = h('img', { alt: '' });
+          app.io.libraryThumb(f.name).then((src) => (img.src = src)).catch(() => {});
+          const place = (position) => run('insert_asset', { name: f.name, position });
+          return h('button.asset', { title: `${f.name}: click to place, or drag into the view`, draggable: true, ondragstart: (e) => e.dataTransfer.setData('text/x-mmr-asset', f.name), onclick: () => place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100))) }, img, h('span', {}, f.name.replace(/\.\w+$/, '')));
+        }),
+        ...(list.length ? [] : [h('p.muted.small', {}, 'Put GLB or glTF files in the library folder.')]),
+      );
+    });
     return h(
       'div.panel',
       {},
+      h('h3', {}, 'Components'),
+      assets,
+      h('div.row', {}, h('button.btn.sm', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder'), h('button.btn.sm', { onclick: () => ((app.io.thumbs = null), this.renderDock()) }, icon('arrows-clockwise'), 'Refresh')),
       h('h3', {}, 'Profiles'),
       h('p.muted.small', {}, path ? `Click a profile to sweep it along "${path.name}".` : 'Select a curve (Curve tool, U) and click a profile to sweep it along. Parameters can be changed later in the Entity panel.'),
       h(

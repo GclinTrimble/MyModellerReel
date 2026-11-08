@@ -12,7 +12,7 @@ export function lineStyle(doc, e) {
   const pattern = doc.settings.line_types?.[name] || LINE_TYPES[name] || (/dash/.test(name) ? LINE_TYPES.dashed : /dot/.test(name) ? LINE_TYPES.dotted : /cent/.test(name) ? LINE_TYPES.center : []);
   return { name, pattern, weight: e.line_weight || t?.line_weight || 0 };
 }
-export const FIELDS = ['color', 'locked', 'line_type', 'line_weight', 'description', 'schema'];
+export const FIELDS = ['color', 'locked', 'line_type', 'line_weight', 'description', 'schema', 'folder'];
 
 /** A glob ("C-ROAD/*", "*kerb*") or exact name to a predicate, case-insensitive. */
 export function matcher(pattern) {
@@ -36,7 +36,7 @@ export function find(doc, pattern) {
 }
 
 export const isLocked = (doc, e) => !!(e.locked || layerOf(doc, e.tag)?.locked);
-export const colorOf = (doc, e) => (e.byLayer && layerOf(doc, e.tag)?.color) || e.material.color;
+export const colorOf = (doc, e) => ((e.byLayer || doc.settings?.color_by === 'layer') && layerOf(doc, e.tag)?.color) || e.material.color;
 
 /** Layer table with counts and plan extents (world boxes), for people and AIs. */
 export function listLayers(doc) {

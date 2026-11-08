@@ -111,7 +111,22 @@ ipcMain.handle('settings:set', (_, patch) => {
   return publicSettings();
 });
 ipcMain.handle('window:title', (_, t) => win.setTitle(t));
-ipcMain.handle('shell:open-path', (_, p) => shell.openPath(p === 'plugins' ? USER_PLUGINS : USER));
+ipcMain.handle('shell:open-path', (_, p) => shell.openPath(p === 'plugins' ? USER_PLUGINS : p === 'library' ? LIBRARY : USER));
+// the component library (#45): GLB / glTF files in a folder; the starter models are copied in once
+const LIBRARY = path.join(USER, 'library');
+fs.mkdirSync(LIBRARY, { recursive: true });
+try {
+  const bundled = path.join(ROOT, 'resources', 'library');
+  if (fs.existsSync(bundled)) for (const f of fs.readdirSync(bundled)) if (!fs.existsSync(path.join(LIBRARY, f)) && !fs.existsSync(path.join(LIBRARY, `.${f}.removed`))) fs.copyFileSync(path.join(bundled, f), path.join(LIBRARY, f));
+} catch (e) {
+  console.error('library:', e);
+}
+ipcMain.handle('library:list', () => fs.readdirSync(LIBRARY).filter((f) => /\.(glb|gltf)$/i.test(f)).map((f) => ({ name: f, size: fs.statSync(path.join(LIBRARY, f)).size })));
+ipcMain.handle('library:path', (_, name) => {
+  const p = path.join(LIBRARY, path.basename(String(name)));
+  if (!/\.(glb|gltf)$/i.test(p) || !fs.existsSync(p)) throw new Error(`No "${name}" in the component library.`);
+  return p;
+});
 const startupState = () => ({ supported: app.isPackaged, enabled: app.getLoginItemSettings().openAtLogin });
 ipcMain.handle('startup:get', () => startupState());
 ipcMain.handle('startup:set', (_, on) => {
@@ -142,7 +157,7 @@ ipcMain.handle('file:read-binary', (_, p) => {
 });
 // survey files, feature libraries and world files, as text
 ipcMain.handle('file:read-text', (_, p) => {
-  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld|xml|landxml|dxf|ifc|jxl|fxl|geojson|asc|prj|xer)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only text, world and exchange files.`);
+  if (!/\.(csv|txt|xyz|pnezd|penzd|json|pgw|pngw|jgw|jpgw|tfw|tifw|gfw|bpw|wld|xml|landxml|dxf|ifc|jxl|fxl|geojson|asc|prj|xer|svg)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only text, world and exchange files.`);
   if (fs.statSync(p).size > (/\.(dxf|ifc|xml|landxml)$/i.test(p) ? 300e6 : 50e6)) throw new Error('That file is too big.');
   return fs.readFileSync(p, 'utf8');
 });

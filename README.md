@@ -47,6 +47,11 @@ Electron's binary download is an install script; if your npm blocks install scri
   keep their text up to date, construction guides, 3D text for signs and titles, line types and weights on screen
   (ByLayer), a clash check on the real shapes, filled section cuts exported to SVG or DXF, and drawing sheets (PDF or
   SVG) with views to scale, overall dimensions and a title block.
+- **Modelling power tools**: fillet and chamfer edges, shell, loft, thicken, extrude faces, subdivision smoothing,
+  live deformers (taper, twist, bend, lattice), split / intersect / divide / weld, decimation, symmetry while
+  editing, 3-point rectangles, turned drawing axes with grid snap, SVG / DXF floor plans to faces, grid and path
+  arrays, a component library (starter trees, people, cars, benches, street lights; drop in your own GLBs),
+  selection sets, layer folders and colour by layer.
 - **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
   editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
   shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a

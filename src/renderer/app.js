@@ -9,7 +9,7 @@ import { booleanMeshes } from '../core/csg.js';
 import { skillPrompt } from '../core/skills.js';
 import { protocolOf, visionRequest, parseReply, REVIEW_SYSTEM } from '../core/agent.js';
 import { Viewport, skyTexture } from './viewport.js';
-import { Tools, TOOLS, setDisplay } from './tools.js';
+import { Tools, TOOLS, setDisplay, setAxes } from './tools.js';
 import { Help } from './help.js';
 import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
@@ -207,6 +207,7 @@ let saveTimer;
 let lastDoc = store.doc;
 store.on((doc) => {
   setDisplay({ unit: doc.settings.display_units, precision: doc.settings.precision });
+  setAxes(doc.settings.axes);
   if (doc !== lastDoc) {
     // undo / redo / open replaced the document: drop stale references
     app.selection = app.selection.filter((id) => getEntity(doc, id));
@@ -348,3 +349,14 @@ app.viewport.listeners.add(() => drawLabels(app));
 if (!app.info.test && !restored?.doc?.entities?.length) app.ui.startScreen();
 // Keep the camera in the document so saves and the AI know the current view.
 app.viewport.controls.addEventListener('end', () => (store.doc.camera = app.viewport.getCamera()));
+
+// components dragged from the Library panel land where they are dropped (#45)
+canvas.addEventListener('dragover', (e) => e.dataTransfer.types.includes('text/x-mmr-asset') && e.preventDefault());
+canvas.addEventListener('drop', (e) => {
+  const name = e.dataTransfer.getData('text/x-mmr-asset');
+  if (!name) return;
+  e.preventDefault();
+  const hit = app.viewport.pick(e);
+  const p = hit ? hit.point : app.viewport.ray(e).intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+  app.reg.run('insert_asset', { name, ...(p ? { position: p.toArray().map((x) => Math.round(x * 100) / 100) } : {}) }).catch((err) => app.ui.toast(err.message, 'danger'));
+});

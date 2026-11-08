@@ -7,9 +7,25 @@ import { AXIS_COLORS, meshGeometry } from './viewport.js';
 import { arcThrough } from '../core/curves.js';
 import * as L from '../core/layers.js';
 import { formatLength } from '../core/units.js';
+import * as MD from '../core/modeling.js';
 
 const V = (...a) => new THREE.Vector3(...a);
-const AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
+let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
+let GRID = null; // { origin, step } when ground clicks snap to the drawing grid (#32)
+/** The drawing axes (#32): turned about up by angle degrees, from origin; grid step and snap. */
+export function setAxes(ax) {
+  const a = ((ax?.angle || 0) * Math.PI) / 180;
+  AXES = { x: V(Math.cos(a), 0, -Math.sin(a)), y: V(0, 1, 0), z: V(Math.sin(a), 0, Math.cos(a)) };
+  GRID = ax?.snap && ax.grid > 0 ? { origin: V(...(ax.origin || [0, 0, 0])), step: ax.grid } : null;
+}
+function snapToGrid(p) {
+  if (!GRID) return p;
+  const d = p.clone().sub(GRID.origin);
+  const s = GRID.step;
+  const x = Math.round(d.dot(AXES.x) / s) * s;
+  const z = Math.round(d.dot(AXES.z) / s) * s;
+  return GRID.origin.clone().addScaledVector(AXES.x, x).addScaledVector(AXES.z, z).setY(p.y);
+}
 const AXIS_NAME = { x: 'red', y: 'blue', z: 'green' };
 const SNAP_PX = 12;
 const ACCENT = 0x2f6f86;
@@ -19,6 +35,7 @@ export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
   { id: 'line', label: 'Line', key: 'L', icon: 'pencil-line', group: 'draw' },
   { id: 'rectangle', label: 'Rectangle', key: 'R', icon: 'rectangle', group: 'draw' },
+  { id: 'rect3', label: 'Rotated rectangle (3 points)', key: 'F', icon: 'rectangle-dashed', group: 'draw' },
   { id: 'circle', label: 'Circle', key: 'C', icon: 'circle', group: 'draw' },
   { id: 'polygon', label: 'Polygon', key: 'G', icon: 'hexagon', group: 'draw' },
   { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
@@ -57,7 +74,7 @@ export const setDisplay = (d) => (display = d);
 export const fmt = (m) => formatLength(m, display);
 
 function basis(n) {
-  if (Math.abs(n.y) > 0.99) return { u: V(1, 0, 0), v: V(0, 0, 1).multiplyScalar(Math.sign(n.y) || 1) };
+  if (Math.abs(n.y) > 0.99) return { u: AXES.x.clone(), v: AXES.z.clone().multiplyScalar(Math.sign(n.y) || 1) };
   const u = V(0, 1, 0).cross(n).normalize();
   return { u, v: n.clone().cross(u).normalize() };
 }
@@ -167,13 +184,13 @@ export class Tools {
       }
     if (plane) {
       const p = ray.intersectPlane(plane, new THREE.Vector3());
-      if (p) return done({ point: p, kind: 'On plane', hit });
+      if (p) return done({ point: Math.abs(plane.normal.y) > 0.99 ? snapToGrid(p) : p, kind: GRID && Math.abs(plane.normal.y) > 0.99 ? 'On grid' : 'On plane', hit });
     }
     if (hit) return done({ point: hit.point.clone(), kind: 'On face', hit });
     const u = vp.pickUnderlay();
     if (u) return done({ point: u.point, kind: 'On drawing', hit: null });
     const p = ray.intersectPlane(fallback || new THREE.Plane(V(0, 1, 0), 0), new THREE.Vector3());
-    return done({ point: p || from?.clone() || V(), kind: fallback ? 'Level' : 'On ground', hit: null });
+    return done({ point: p ? snapToGrid(p) : from?.clone() || V(), kind: fallback ? 'Level' : GRID ? 'On grid' : 'On ground', hit: null });
   }
 
   showSnap(r) {
@@ -418,6 +435,43 @@ class RectangleTool extends DrawBase {
     const [w, d] = text.split(/[,;]/).map(parseLength);
     if (!this.p0 || !(w > 0)) return;
     return this.commit(this.corners(Math.sign(this.a || 1) * w, Math.sign(this.b || 1) * (d > 0 ? d : w)), 'Rectangle');
+  }
+}
+
+/** Rotated rectangle (#29): a corner, a point along the first side, then the width. */
+class Rect3Tool {
+  hint = 'Click a corner, a point along the first side, then drag out the width.';
+  constructor(t) {
+    this.t = t;
+    this.pts = [];
+  }
+  busy() {
+    return this.pts.length > 0;
+  }
+  cancel() {
+    this.pts = [];
+    this.t.clear();
+  }
+  move(ev) {
+    const inf = this.t.infer(ev, { from: this.pts.at(-1) });
+    if (!this.pts.length) return;
+    this.t.vp.overlay.clear();
+    if (this.pts.length === 1) return this.t.lines([this.pts[0], inf.point], ACCENT);
+    try {
+      const c = MD.rectangle3(this.pts[0].toArray(), this.pts[1].toArray(), inf.point.toArray()).map((p) => V(...p));
+      this.t.lines(c, ACCENT, true);
+      this.t.status(`${fmt(c[0].distanceTo(c[1]))} × ${fmt(c[1].distanceTo(c[2]))}`);
+    } catch {
+      /* no width yet */
+    }
+  }
+  async down(ev) {
+    const inf = this.t.infer(ev, { from: this.pts.at(-1) });
+    this.pts.push(inf.point.clone());
+    if (this.pts.length < 3) return;
+    const [a, b, c] = this.pts.map((p) => D.round3(p.toArray()));
+    this.cancel();
+    await this.t.run('create_rectangle', { points: [a, b, c] });
   }
 }
 
@@ -1234,6 +1288,7 @@ const IMPL = {
   rotate: RotateTool,
   scale: ScaleTool,
   tape: TapeTool,
+  rect3: Rect3Tool,
   dimension: DimensionTool,
   label: LabelTool,
   paint: PaintTool,

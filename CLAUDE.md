@@ -29,7 +29,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `surfaces.js` (contours, surface analysis, profiles, pads, smoothing, sculpting, DEM grids), `trimble.js` (JobXML and
   FXL), `gis.js` (GeoJSON, Shapefile and DBF), `annotate.js` (dimensions, labels and guides: curves recomputed from references by `syncAnnotations`), `font.js`
   (TrueType reader and 3D text; fonts registered as bytes), `section.js` (slicing meshes by a plane, nested rings, section
-  SVG), `sheet.js` (drawing sheet layout, SVG and a small PDF writer), `sequencing.js` (easing curves, clips, constraints, shots, schedules, key editing), `physics.js` (cannon-es
+  SVG), `sheet.js` (drawing sheet layout, SVG and a small PDF writer), `modeling.js` (loft, shell, thicken, extrude faces, Catmull-Clark, deformers, decimation, fillet /
+  chamfer cutters, mesh intersections), `svg.js` (SVG linework for import_2d), `sequencing.js` (easing curves, clips, constraints, shots, schedules, key editing), `physics.js` (cannon-es
   rigid bodies baked to keys), `sun.js` (solar position, sun studies), `look.js` (texture projection, light / effect / environment
   defaults), `imagegen.js` (ComfyUI and OpenAI-compatible image requests), `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
   pages' catalogue; the pages are `docs/how-to/*.md`).
@@ -38,6 +39,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
   one undo step and one journal entry with it, and it is rolled back whole even inside an AI turn.
 - Keep command bodies in `commands.js` short: put the maths in a pure module with its own test.
+- `src/main/preload.cjs` lists every IPC channel the page may use: a new `ipcMain.handle` channel needs its name added
+  there, or the page gets "Unknown channel".
+- `resources/library/` starter components (GLB), copied once into the user's library folder.
 - `src/main/main.cjs` window, settings (`%APPDATA%\MyModellerReel\settings.json`), file IPC with extension allow-lists,
   AI provider proxy (keys never reach the page), HTTP API on 127.0.0.1:7717 (token in `api.json`), renderer errors
   to `renderer.log`.

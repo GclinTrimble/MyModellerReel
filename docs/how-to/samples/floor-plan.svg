@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="12m" height="9m" viewBox="0 0 12000 9000">
+  <g id="Walls">
+    <rect x="0" y="0" width="12000" height="200"/>
+    <rect x="0" y="8800" width="12000" height="200"/>
+    <rect x="0" y="200" width="200" height="8600"/>
+    <rect x="11800" y="200" width="200" height="8600"/>
+    <rect x="6000" y="200" width="150" height="5000"/>
+    <rect x="200" y="5000" width="4800" height="150"/>
+  </g>
+  <g id="Columns">
+    <circle cx="9000" cy="6500" r="200"/>
+  </g>
+</svg>

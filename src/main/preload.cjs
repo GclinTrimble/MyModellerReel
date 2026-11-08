@@ -5,6 +5,7 @@ const CHANNELS = new Set([
   'app:info', 'app:close-confirmed', 'settings:get', 'settings:set', 'window:title', 'shell:open-path', 'shell:open-url',
   'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:read-binary', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat', 'ai:abort', 'update:check', 'update:install', 'help:read',
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
+  'ai:image', 'library:list', 'library:path',
 ]);
 
 contextBridge.exposeInMainWorld('native', {

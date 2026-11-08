@@ -37,6 +37,7 @@ const FILTERS = {
   hdri: [{ name: 'HDR panoramas', extensions: ['hdr', 'exr'] }],
   audio: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
   schedule: [{ name: 'Schedules', extensions: ['csv', 'xml', 'xer', 'txt'] }],
+  drawing2d: [{ name: '2D drawings', extensions: ['svg', 'dxf'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
@@ -258,6 +259,39 @@ export class IO {
     await native().invoke('file:write', path, text);
     this.app.ui.toast(`Wrote ${base(path)}`);
     return path;
+  }
+
+  /** The component library (#45): files, a file's path, and a thumbnail (rendered once, kept for the session). */
+  listLibrary() {
+    return native().invoke('library:list');
+  }
+  libraryPath(name) {
+    return native().invoke('library:path', name);
+  }
+  async libraryThumb(name) {
+    this.thumbs ||= new Map();
+    if (this.thumbs.has(name)) return this.thumbs.get(name);
+    const job = (async () => {
+      const gltf = await this.load(await this.libraryPath(name));
+      const scene = new THREE.Scene();
+      const sun = new THREE.DirectionalLight(0xffffff, 2);
+      sun.position.set(3, 5, 4);
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f6c, 2.2), sun);
+      scene.add(gltf.scene);
+      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const c = box.getCenter(new THREE.Vector3());
+      const r = Math.max(0.1, box.getSize(new THREE.Vector3()).length() / 2);
+      const cam = new THREE.PerspectiveCamera(35, 1, r / 100, r * 100);
+      cam.position.copy(c).add(new THREE.Vector3(1, 0.7, 1.2).normalize().multiplyScalar(r * 3.2));
+      cam.lookAt(c);
+      const R = (this.thumbRenderer ||= new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }));
+      R.setSize(128, 128, false);
+      R.outputColorSpace = THREE.SRGBColorSpace;
+      R.render(scene, cam);
+      return R.domElement.toDataURL('image/png');
+    })();
+    this.thumbs.set(name, job);
+    return job;
   }
 
   /** A picture from the image model in AI settings (main process: keys stay there). → { b64 } PNG. */

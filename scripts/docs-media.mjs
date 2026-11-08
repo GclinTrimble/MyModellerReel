@@ -615,6 +615,92 @@ const PAGES = {
     await shot('The walls going up on 15 March: the date and the tasks under way, top left');
     await run('render_video', { path: path.join(dir, 'build-a-4d-schedule.mp4'), width: 960, height: 540, fps: 24 });
   },
+  async 'product-modelling'() {
+    await fresh();
+    await run('create_box', { width: 0.3, height: 0.3, depth: 0.3, name: 'Case', color: '#2f6f86' });
+    await run('fillet_edges', { id: 'Case', edges: 'all', radius: 0.03, segments: 8 });
+    await camera([0.55, 0.45, 0.7], [0, 0.12, 0]);
+    await none();
+    await shot('Fillet edges: a 0.3 m cube with 3 cm rounded edges');
+    await run('create_box', { width: 0.3, height: 0.12, depth: 0.2, name: 'Tray', color: '#e8bc5e', position: [0.45, 0, 0] });
+    await run('shell', { id: 'Tray', thickness: 0.006, open: 'top' });
+    await camera([0.7, 0.5, 0.75], [0.25, 0.08, 0]);
+    await none();
+    await shot('Shell: a tray hollowed to 6 mm, open at the top');
+    const ring = (r, y) => Array.from({ length: 32 }, (_, k) => [r * Math.cos((k / 32) * 2 * Math.PI) - 0.45, y, r * Math.sin((k / 32) * 2 * Math.PI)]);
+    await run('create_curve', { points: ring(0.05, 0), closed: true, name: 'Base ring' });
+    await run('create_curve', { points: ring(0.09, 0.15), closed: true, name: 'Belly ring' });
+    await run('create_curve', { points: ring(0.03, 0.32), closed: true, name: 'Neck ring' });
+    await run('create_curve', { points: ring(0.045, 0.36), closed: true, name: 'Lip ring' });
+    await run('loft', { profiles: ['Base ring', 'Belly ring', 'Neck ring', 'Lip ring'], color: '#c8553d', name: 'Vase' });
+    await run('set_properties', { ids: ['Base ring', 'Belly ring', 'Neck ring', 'Lip ring'], visible: false });
+    await camera([0.6, 0.5, 1.1], [0, 0.15, 0]);
+    await none();
+    await shot('Loft through four rings: a vase');
+    await run('create_box', { width: 0.12, height: 0.6, depth: 0.12, name: 'Tower', color: '#9aa3ab', position: [0.9, 0, 0] });
+    await run('deform', { id: 'Tower', type: 'twist', amount: 120, segments: 24 });
+    await run('create_box', { width: 0.16, height: 0.16, depth: 0.16, name: 'Blob', color: '#5e7f4a', position: [-0.9, 0, 0] });
+    await run('subdivide', { id: 'Blob', levels: 3 });
+    await camera([0.2, 0.9, 2.2], [0, 0.2, 0]);
+    await none();
+    await shot('Deform (a live twist) and Subdivide (a cube smoothed into a pebble)');
+  },
+  async 'floor-plan-to-3d'() {
+    await fresh();
+    const r = await run('import_2d', { path: `${SAMPLES}/floor-plan.svg`, faces: true });
+    await camera([6, 16, 13], [6, 0, 4.5]);
+    await none();
+    await shot(`Import 2D: a 12 × 9 m plan, ${r.faces} closed outlines made faces`);
+    const faces = (await run('get_scene')).entities.filter((e) => e.type === 'mesh').map((e) => e.id);
+    for (const id of faces) await run('push_pull', { id, face: 'top', distance: 2.7 });
+    await camera([18, 11, 17], [6, 1, 4.5]);
+    await none();
+    await shot('Push/Pull the faces 2.7 m: walls and a column');
+    await run('set_axes', { origin: [14, 0, 0], angle: 25, grid: 0.5, snap: true });
+    await run('create_rectangle', { points: [[14, 0, 0], [20.3, 0, -2.94], [15.27, 0, 2.72]], name: 'Wing' });
+    await run('push_pull', { id: 'Wing', face: 'top', distance: 3.2 });
+    await camera([24, 14, 19], [12, 1, 3]);
+    await none();
+    await shot('Turned drawing axes and grid (25°): a 3-point rectangle for a rotated wing');
+    await run('create_cylinder', { radius: 0.2, height: 3, name: 'Column', position: [3, 0, 11.5], color: '#b9b2a3' });
+    await run('array_grid', { ids: ['Column'], nx: 5, nz: 2, spacing: [3, 0, 3] });
+    await run('create_curve', { points: [[-2, 0, 16], [8, 0, 18], [18, 0, 15]], kind: 'spline', name: 'Path', color: '#8a8f94' });
+    await run('create_cone', { radius: 0.7, height: 3, name: 'Tree', position: [0, 0, 16], color: '#3f6b45' });
+    await run('array_path', { ids: ['Tree'], path: 'Path', count: 7 });
+    await run('set_axes', { reset: true });
+    await camera([26, 16, 30], [9, 0, 10]);
+    await none();
+    await shot('Grid array of columns; trees along a curve');
+  },
+  async 'component-library-and-sets'() {
+    await fresh();
+    await run('create_box', { width: 12, height: 0.15, depth: 9, name: 'Plaza', color: '#c9c2b4', tag: 'L-PAVING' });
+    for (const [name, position] of [['Tree.glb', [-4, 0.15, -2.5]], ['Conifer.glb', [4.5, 0.15, -3]], ['Bench.glb', [0, 0.15, -1]], ['Bench.glb', [2.5, 0.15, 1.8]], ['Person.glb', [1, 0.15, 1]], ['Street light.glb', [-5, 0.15, 3.5]], ['Car.glb', [0, 0, 6.5]]]) await run('insert_asset', { name, position });
+    await camera([13, 9, 15], [0, 1, 1]);
+    await panel('library');
+    await none();
+    await shot('Library › Components: click or drag a model into the view');
+    const benches = (await run('get_scene')).entities.filter((e) => e.name === 'Bench').map((e) => e.id);
+    await run('save_selection', { name: 'Benches', ids: benches });
+    await run('save_selection', { name: 'Hardscape', ids: ['Plaza', ...benches] });
+    await run('select_set', { name: 'Benches' });
+    await panel('outliner');
+    await js("document.querySelector('.chips')?.scrollIntoView(); return 1;");
+    await shot('Selection sets: one click selects the benches again');
+    await run('set_layer', { name: 'L-PAVING', folder: 'Landscape', color: '#b9a98c' });
+    await run('create_layer', { name: 'L-PLANTING', folder: 'Landscape', color: '#7fae4a' }).catch(() => run('set_layer', { name: 'L-PLANTING', folder: 'Landscape', color: '#7fae4a' }));
+    await run('create_layer', { name: 'L-FURNITURE', folder: 'Landscape', color: '#c8553d' }).catch(() => {});
+    await run('create_layer', { name: 'V-VEHICLES', folder: 'Vehicles', color: '#2f6f86' }).catch(() => {});
+    const under = (names) => js(`const d = window.mmr.doc; const top = d.entities.filter((e) => ${JSON.stringify(names)}.includes(e.name) && !e.parent).map((e) => e.id); const out = []; const walk = (id) => { out.push(id); d.entities.filter((e) => e.parent === id).forEach((e) => walk(e.id)); }; top.forEach(walk); return out;`);
+    await run('move_to_layer', { ids: await under(['Tree', 'Conifer']), layer: 'L-PLANTING' });
+    await run('move_to_layer', { ids: await under(['Bench']), layer: 'L-FURNITURE' });
+    await run('move_to_layer', { ids: await under(['Car']), layer: 'V-VEHICLES' });
+    await run('set_style', { color_by: 'layer' });
+    await none();
+    await js("[...document.querySelectorAll('.overline')].find((x) => x.textContent === 'Layers').scrollIntoView(); return 1;");
+    await shot('Layer folders, and colour by layer');
+    await run('set_style', { color_by: 'material' });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

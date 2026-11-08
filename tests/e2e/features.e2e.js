@@ -462,3 +462,31 @@ test('animation depth: dope sheet in the timeline, the curve editor, shots row, 
   const bytes = fs.readFileSync(out);
   assert.ok(bytes.includes(Buffer.from('A_OPUS')), 'an Opus audio track');
 });
+
+test('power tools: the 3-point rectangle tool, the component library, the image-model channel', async () => {
+  await ok('new_model');
+  await ok('set_camera', { position: [0, 12, 0.01], target: [0, 0, 0] });
+  const pts = await w.evaluate(() => [[0, 0, 0], [3, 0, -1], [1, 0, 2]].map((p) => {
+    const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p));
+    return [s.x, s.y];
+  }));
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  await w.keyboard.press('f');
+  for (const p of pts) await w.mouse.click(...p);
+  await w.waitForFunction(() => window.mmr.doc.entities.some((e) => e.name === 'Rectangle'));
+  const area = await w.evaluate(() => {
+    const e = window.mmr.doc.entities.find((x) => x.name === 'Rectangle');
+    const [a, b, , d] = e.mesh.f[0].map((i) => e.mesh.v[i]);
+    const u = [b[0] - a[0], b[2] - a[2]];
+    const v = [d[0] - a[0], d[2] - a[2]];
+    return Math.abs(u[0] * v[1] - u[1] * v[0]);
+  });
+  assert.ok(area > 6 && area < 8, `rotated rectangle area ${area}`);
+  await w.keyboard.press('Escape');
+  const list = await ok('list_assets');
+  assert.ok(list.some((f) => f.name === 'Tree.glb'), 'the starter models are in the library');
+  const t = await ok('insert_asset', { name: 'Tree.glb', position: [5, 0, 5] });
+  assert.deepEqual(t.position, [5, 0, 5]);
+  const r = await run('ai_render', { prompt: 'test' });
+  assert.ok(!r.ok && !/Unknown channel/.test(r.error), `reaches the main process: ${r.error}`);
+});

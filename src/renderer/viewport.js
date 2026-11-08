@@ -115,7 +115,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     if (e.mesh) {
       const g = geo(e.mesh);
       const drape = e.drape && underlay ? doc.entities.find((x) => x.id === e.drape.underlay && x.underlay) : null;
-      o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape }));
+      o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer || doc.settings.color_by === 'layer' ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape }));
       if (drape) (o.material.map = underlay(drape).material.map), (o.material.color.set('#ffffff')), (o.userData.draped = true);
       else if (!styled) applyMaps(o, e.material, dirty);
       const sm = styled && styleMaterial(styled, { clipping });
@@ -421,6 +421,12 @@ export class Viewport {
     this.objs = objs;
     if (s.section && s.section_fill !== false) this.modelRoot.add(sectionCaps(doc, s.section));
     this.grid.visible = this.axes.visible = s.grid;
+    // the drawing grid follows the drawing axes (#32): turned, moved, cells of the grid step
+    const ax = s.axes;
+    this.grid.rotation.y = ((ax?.angle || 0) * Math.PI) / 180;
+    this.grid.position.set(ax?.origin?.[0] || 0, -0.002, ax?.origin?.[2] || 0);
+    const step = ax?.grid > 0 ? ax.grid : 1;
+    this.grid.scale.set(step, 1, step);
     this.renderer.shadowMap.enabled = s.shadows;
     this.sun.castShadow = s.shadows;
     this.ground.visible = s.shadows;

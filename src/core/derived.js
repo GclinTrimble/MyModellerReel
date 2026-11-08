@@ -4,6 +4,7 @@
 // changed. The mesh stays stored too, so files open in any glTF viewer and without the plugin that made them.
 import { Matrix4 } from 'three';
 import * as FT from './font.js';
+import * as MD from './modeling.js';
 import * as G from './geometry.js';
 import * as D from './document.js';
 import * as C from './curves.js';
@@ -228,3 +229,18 @@ export function rebuildDerived(doc) {
 
 /** Freeze a derived entity into a plain shape. */
 export const bake = (e) => delete e.derived;
+
+/** A deformed copy of another shape (#23): taper, twist, bend or lattice; the source stays as it is (hidden). */
+registerGenerator('deform', {
+  description: 'Another shape tapered, twisted, bent or put through a lattice, live',
+  world: true,
+  params: { type: 'taper | twist | bend | lattice', amount: 'taper 0–1, twist / bend degrees', axis: 'x | y | z', segments: 'points along it', corners: 'lattice: 8 offsets' },
+  run: ({ params: p, inputs, doc }) => {
+    const src = inputs[0];
+    if (!src?.mesh) throw new Error('A deformer needs a shape as its input.');
+    const w = D.worldMesh(doc, src);
+    const b = G.bbox(w);
+    const size = Math.max(...b.max.map((x, k) => x - b.min[k])) || 1;
+    return G.recenter(MD.deform(MD.refine(w, size / Math.max(2, Math.min(64, p.segments || 16))), p));
+  },
+});

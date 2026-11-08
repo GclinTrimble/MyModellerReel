@@ -18,6 +18,8 @@ import * as LK from './look.js';
 import * as IG from './imagegen.js';
 import * as SQ from './sequencing.js';
 import * as PH from './physics.js';
+import * as MD from './modeling.js';
+import * as SVG from './svg.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
@@ -651,7 +653,7 @@ function registerCore(reg, ctx) {
   }, true);
 
   // ---------------------------------------------------------------- layers (#138)
-  const LAYER = { color: common.color, locked: bool('lock: its entities cannot be picked or edited by hand'), line_type: str('continuous | dashed | dotted | center | hidden | a custom name'), line_weight: num('mm'), description: str('what goes on it'), schema: obj({}, []) };
+  const LAYER = { color: common.color, locked: bool('lock: its entities cannot be picked or edited by hand'), line_type: str('continuous | dashed | dotted | center | hidden | a custom name'), line_weight: num('mm'), description: str('what goes on it'), folder: str('a folder to group the layer under in the list ("" for none)'), schema: obj({}, []) };
   LAYER.schema.description = 'feature layer attributes: { field: { type: "string"|"number"|"boolean", default, options: [...] } }';
   def('layers', 'create_layer', 'Create a layer (tags are layers). "/" makes groups: "C-ROAD/Kerbs". current: true draws new geometry on it.', obj({ name: str('layer name'), ...LAYER, visible: bool('default true'), current: bool('make it the current layer') }, ['name']), (a) => {
     const doc = ctx.doc;
@@ -2642,6 +2644,303 @@ function registerCore(reg, ctx) {
     return { tasks: report.length, matched: report.filter((r) => r.builds.length).length, unmatched: report.filter((r) => !r.builds.length).map((r) => r.task), seconds_per_day: spd, duration: doc.animation.duration, schedule: report };
   }, true);
 
+
+  // ---------------------------------------------------------------- modelling power tools (Phase 14)
+  const shapeOf = (ref) => {
+    const [e] = D.resolve(ctx.doc, ref);
+    if (!e.mesh) throw new Error(`${e.name} is not a shape.`);
+    return e;
+  };
+  const faceList = (e, faces) => (faces === undefined ? [] : [].concat(faces).map((f) => pickFace(ctx.doc, e, f)));
+  const setMesh = (e, mesh, polygons = true) => {
+    R.bake(e);
+    e.mesh = polygons ? Topo.repairMesh(mesh, { closeHoles: false }).mesh : mesh;
+    return summary(ctx.doc, e);
+  };
+  const EDGES = { description: 'which edges: all (every sharp convex edge), vertical, horizontal, top, bottom, or [[a, b], …] vertex pairs from list_elements' };
+
+  for (const mode of ['fillet', 'chamfer'])
+    def('edit', `${mode}_edges`, mode === 'fillet' ? 'Round the edges of a shape (radius, segments): the most used finish in product design. Works on sharp convex edges between flat faces.' : 'Bevel the edges of a shape by a distance along both faces.', obj({ id, edges: EDGES, [mode === 'fillet' ? 'radius' : 'distance']: num('m'), segments: num('fillet: steps round the curve (default 8)') }, ['id']), (a) => {
+      const e = shapeOf(a.id);
+      const r = mode === 'fillet' ? a.radius : a.distance;
+      if (!(r > 0)) throw new Error(`${mode === 'fillet' ? 'radius' : 'distance'} must be above 0.`);
+      R.bake(e);
+      const cutters = MD.pickEdges(e.mesh, a.edges ?? 'all').map((ed) => MD.edgeCutter(e.mesh, ed, { radius: r, mode, segments: a.segments || 8 })).filter(Boolean);
+      if (!cutters.length) throw new Error('No sharp convex edges there to work on.');
+      const out = setMesh(e, booleanMeshes('subtract', e.mesh, cutters));
+      return { ...out, edges: cutters.length };
+    }, true);
+
+  def('create', 'loft', 'A solid (or surface) through two or more profiles in order: a vase from circles, a duct from a square to a circle, a transition. Profiles: curve ids or point lists; closed rings get end caps.', obj({ profiles: { type: 'array', items: { description: 'curve id / name, or [[x, y, z], …]' }, description: 'in order, two or more' }, caps: bool('close the ends (default true)'), points: num('points round each ring (default: the most of any profile)'), open: bool('the profiles are open lines: a surface'), name: common.name, color: common.color }, ['profiles']), (a) => {
+    const doc = ctx.doc;
+    const rings = a.profiles.map((p) => (Array.isArray(p) ? p : (() => {
+      const [c] = D.resolve(doc, p);
+      if (!c.curve) throw new Error(`${c.name} is not a curve.`);
+      return D.curvePoints(doc, c);
+    })()));
+    const closedRing = (r) => !a.open;
+    const pts = rings.map((r) => (closedRing(r) && r.length > 2 && G.len(G.sub(r[0], r.at(-1))) < 1e-6 ? r.slice(0, -1) : r));
+    const { mesh, origin } = G.recenter(MD.loft(pts, { closed: !a.open, caps: a.caps !== false, points: a.points }));
+    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Loft'), mesh, position: D.round3(origin), material: a.color ? { color: a.color } : {} });
+    ctx.selection.set([e.id]);
+    return summary(doc, e);
+  }, true);
+
+  def('edit', 'shell', 'Hollow a solid to a wall thickness; open: faces to remove (top for an open box, a tank without a lid).', obj({ id, thickness: num('wall, m'), open: { description: 'face index or name, or a list (default: none, a closed hollow)' } }, ['id', 'thickness']), (a) => {
+    const e = shapeOf(a.id);
+    R.bake(e);
+    return setMesh(e, MD.shell(e.mesh, a.thickness / (e.scale[0] || 1), faceList(e, a.open)));
+  }, true);
+
+  def('edit', 'thicken', 'Give a lone face or a surface a thickness: outwards along its normals, or half each way (both).', obj({ id, thickness: num('m'), both: bool('half each side') }, ['id', 'thickness']), (a) => {
+    const e = shapeOf(a.id);
+    R.bake(e);
+    return setMesh(e, MD.thicken(e.mesh, a.thickness / (e.scale[0] || 1), { both: !!a.both }));
+  }, true);
+
+  def('edit', 'inset_face', 'Inset a face: a smaller copy inside its outline (the same as offset_face with a positive distance), ready to push or pull.', obj({ id, face: { description: 'face index or name (default top)' }, distance: num('m inwards') }, ['id', 'distance']), async (a) => reg.run('offset_face', { id: a.id, face: a.face ?? 'top', distance: Math.abs(a.distance) }), true);
+
+  def('edit', 'extrude_faces', 'Extrude faces along their normals: together as one region (shared walls) or each on its own (individual): quick detailing, studs, panels.', obj({ id, faces: { description: 'face indices or names' }, distance: num('m (negative: inwards)'), individual: bool('each face on its own') }, ['id', 'faces', 'distance']), (a) => {
+    const e = shapeOf(a.id);
+    R.bake(e);
+    return setMesh(e, MD.extrudeFaces(e.mesh, faceList(e, a.faces), a.distance / (e.scale[0] || 1), { individual: !!a.individual }), false);
+  }, true);
+
+  def('edit', 'divide_edge', 'Split an edge into equal parts (new points in both faces along it), to move or draw from them.', obj({ id, edge: { description: '[a, b] vertex indices (list_elements)' }, segments: num('default 2') }, ['id', 'edge']), (a) => {
+    const e = shapeOf(a.id);
+    R.bake(e);
+    return setMesh(e, MD.divideEdge(e.mesh, a.edge[0], a.edge[1], a.segments || 2), false);
+  }, true);
+
+  def('edit', 'weld_edges', 'Weld a shape\'s loose seams: points closer than tolerance become one, so edges join up.', obj({ ids, tolerance: num('m (default 0.0001)') }), (a) => {
+    const out = [];
+    for (const e of targets(ctx, a).filter((x) => x.mesh)) {
+      R.bake(e);
+      const before = e.mesh.v.length;
+      e.mesh = Topo.repairMesh(e.mesh, { tol: a.tolerance ?? 1e-4, merge: false, closeHoles: false }).mesh;
+      out.push({ name: e.name, welded: before - e.mesh.v.length });
+    }
+    return out;
+  }, true);
+
+  def('edit', 'split_solid', 'Cut a solid in two along a plane (point and normal): two shapes, each closed.', obj({ id, point: v3('a point on the plane'), normal: v3('the plane normal (default [0, 1, 0])') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const e = shapeOf(a.id);
+    R.bake(e);
+    const w = D.worldMesh(doc, e);
+    const b = G.bbox(w);
+    const size = Math.max(...b.max.map((x, k) => x - b.min[k])) * 4 + 1;
+    const n = G.norm(a.normal || [0, 1, 0]);
+    const p = a.point || b.min.map((x, k) => (x + b.max[k]) / 2);
+    // a big box on the normal's side of the plane
+    const half = G.box(size, size, size);
+    const up = [0, 1, 0];
+    const axis = G.cross(up, n);
+    const ang = Math.acos(Math.max(-1, Math.min(1, G.dot(up, n))));
+    const rot = new Matrix4().makeRotationAxis(new Vector3(...(G.len(axis) > 1e-9 ? G.norm(axis) : [1, 0, 0])), ang).setPosition(new Vector3(...p));
+    const cutter = { v: half.v.map((q) => new Vector3(...q).applyMatrix4(rot).toArray()), f: half.f };
+    const keep = booleanMeshes('subtract', w, [cutter]);
+    const other = booleanMeshes('intersect', w, [cutter]);
+    const toLocal = (m) => {
+      const inv = D.worldMatrix(doc, e).invert();
+      return Topo.repairMesh({ v: m.v.map((q) => new Vector3(...q).applyMatrix4(inv).toArray()), f: m.f }, { closeHoles: false }).mesh;
+    };
+    e.mesh = toLocal(keep);
+    const copy = D.duplicateEntity(doc, e);
+    copy.name = `${e.name} (cut)`;
+    copy.mesh = toLocal(other);
+    return { kept: summary(doc, e), cut: summary(doc, copy) };
+  }, true);
+
+  def('edit', 'intersect_faces', 'Intersect shapes: curves where their faces cross (like SketchUp\'s Intersect Faces), to push, pull or split from.', obj({ ids: { type: 'array', items: { type: 'string' }, description: 'two or more shapes' } }, ['ids']), (a) => {
+    const doc = ctx.doc;
+    const ents = D.resolve(doc, a.ids).filter((e) => e.mesh);
+    if (ents.length < 2) throw new Error('Give two or more shapes.');
+    const made = [];
+    for (let i = 0; i < ents.length; i++)
+      for (let j = i + 1; j < ents.length; j++)
+        for (const line of MD.meshIntersections(D.worldMesh(doc, ents[i]), D.worldMesh(doc, ents[j]))) {
+          const closed = line.length > 3 && G.len(G.sub(line[0], line.at(-1))) < 1e-4;
+          const { mesh, origin } = G.recenter({ v: closed ? line.slice(0, -1) : line, f: [] });
+          made.push(D.addEntity(doc, { type: 'curve', name: D.uniqueName(doc, 'Intersection'), curve: { kind: 'polyline', points: mesh.v, closed }, position: D.round3(origin), material: { color: '#c8553d' } }));
+        }
+    if (!made.length) throw new Error('Those shapes do not cross.');
+    ctx.selection.set(made.map((e) => e.id));
+    return { curves: made.length, ids: made.map((e) => e.id) };
+  }, true);
+
+  def('edit', 'subdivide', 'Subdivision smoothing (Catmull-Clark, levels 1–3): organic, rounded shapes from a low-poly cage.', obj({ id, levels: num('1–3 (default 2)') }, ['id']), (a) => {
+    const e = shapeOf(a.id);
+    R.bake(e);
+    return setMesh(e, MD.catmullClark(e.mesh, a.levels || 2), false);
+  }, true);
+
+  def('edit', 'deform', 'Deform a shape without losing it: taper (amount: how much the far end shrinks, 0.5 = half), twist and bend (degrees end to end) or lattice (8 corner offsets), along x, y or z. Live: change it with set_params; the original is kept hidden.', obj({ id, type: str('taper | twist | bend | lattice', ['taper', 'twist', 'bend', 'lattice']), amount: num('taper 0–1; twist / bend degrees'), axis: str('x | y | z (default y)', ['x', 'y', 'z']), segments: num('points along it (default 16)'), corners: { type: 'array', items: v3('offset'), description: 'lattice: 8 [dx, dy, dz]' }, name: common.name }, ['id', 'type']), (a) => {
+    const doc = ctx.doc;
+    const src = shapeOf(a.id);
+    const params = { type: a.type, amount: a.amount ?? (a.type === 'taper' ? 0.5 : 45), axis: a.axis || 'y', segments: a.segments || 16, ...(a.corners ? { corners: a.corners } : {}) };
+    const e = D.addEntity(doc, { name: a.name || `${src.name} (${a.type})`, mesh: { v: [], f: [] }, derived: { generator: 'deform', inputs: [src.id], params }, material: { ...src.material }, tag: src.tag });
+    R.regenerate(doc, e);
+    src.visible = false;
+    ctx.selection.set([e.id]);
+    return summary(doc, e);
+  }, true);
+
+  def('edit', 'simplify_mesh', 'Fewer faces for lighter files: ratio of the triangles to keep (0.25 = a quarter). Shapes only change by about the size of the merge.', obj({ ids, ratio: num('0–1 (default 0.5)') }), (a) => {
+    const out = [];
+    for (const e of targets(ctx, a).filter((x) => x.mesh)) {
+      R.bake(e);
+      const before = [...G.triangles(e.mesh)].length;
+      e.mesh = MD.simplify(e.mesh, a.ratio ?? 0.5);
+      out.push({ name: e.name, triangles: [before, e.mesh.f.length] });
+    }
+    return out;
+  }, true);
+
+  def('edit', 'set_symmetry', 'Symmetry while editing: push_pull and move_elements also do the mirror-image change across the shape\'s own middle (axis x, y or z). "off" stops it.', obj({ axis: str('x | y | z | off', ['x', 'y', 'z', 'off']) }, ['axis']), (a) => {
+    ctx.doc.settings.symmetry = a.axis === 'off' ? null : a.axis;
+    return { symmetry: ctx.doc.settings.symmetry };
+  }, true);
+
+  def('create', 'create_rectangle', 'A rectangle on any angle from three points: a corner, a point along the first side, and a point that sets the width (a flat face, ready to push or pull).', obj({ points: { type: 'array', items: v3('point'), description: '[corner, along the first side, across]' }, name: common.name, color: common.color }, ['points']), async (a) => {
+    if (a.points?.length !== 3) throw new Error('points: three points.');
+    return reg.run('create_face', { points: MD.rectangle3(...a.points), name: a.name || 'Rectangle', ...(a.color ? { color: a.color } : {}) });
+  }, true);
+
+  def('view', 'set_axes', 'Drawing axes: turn them (angle, degrees about up) and move their origin to draw on a rotated building grid; grid step (m) with snap makes clicks on the ground land on the grid.', obj({ origin: v3('axes origin'), angle: num('degrees about up, from the world x axis'), grid: num('grid step, m (0: the default grid)'), snap: bool('snap ground clicks to the grid'), reset: bool('back to the world axes') }), (a) => {
+    const s = ctx.doc.settings;
+    if (a.reset) return delete s.axes, { axes: null };
+    s.axes = { origin: a.origin || s.axes?.origin || [0, 0, 0], angle: a.angle ?? s.axes?.angle ?? 0, grid: a.grid ?? s.axes?.grid ?? 0, snap: a.snap ?? s.axes?.snap ?? false };
+    return { axes: s.axes };
+  }, true);
+
+  def('file', 'import_2d', 'A 2D drawing onto the ground for modelling: SVG (paths, shapes; units from its width, or scale m per unit) or DXF (its linework). faces: closed outlines become faces ready to push or pull (a floor plan to walls).', obj({ path: str('absolute .svg or .dxf path'), text: str('the SVG text instead of a path'), scale: num('m per drawing unit (default: from the SVG, else 0.001: mm)'), faces: bool('closed outlines become faces (default false)'), layer: str('layer for the lines (default "2D")') }), async (a) => {
+    const doc = ctx.doc;
+    if (a.path && /\.dxf$/i.test(a.path)) {
+      const before = new Set(doc.entities.map((e) => e.id));
+      const r = await reg.run('import', { path: a.path });
+      const fresh = doc.entities.filter((e) => !before.has(e.id) && e.curve).map((e) => e.id);
+      if (a.faces && fresh.length) await reg.run('curves_to_faces', { ids: fresh }).catch(() => {});
+      return r;
+    }
+    const text = a.text ?? (await ctx.io?.readText?.(a.path));
+    if (!text) throw new Error('Give path (an .svg or .dxf) or text.');
+    const lines = SVG.svgPolylines(text);
+    const k = a.scale || SVG.svgUnit(text) || 0.001;
+    // y down in SVG: the drawing's top is north (−z)
+    const all = lines.flatMap((l) => l.pts);
+    const minX = Math.min(...all.map((p) => p[0]));
+    const minY = Math.min(...all.map((p) => p[1]));
+    const layer = a.layer || '2D';
+    L.ensureLayer(doc, layer);
+    const made = [];
+    for (const l of lines) {
+      const pts = l.pts.map(([x, y]) => [(x - minX) * k, 0, (y - minY) * k]);
+      if (pts.length < 2) continue;
+      const { mesh, origin } = G.recenter({ v: pts.map(D.round3), f: [] });
+      made.push(D.addEntity(doc, { type: 'curve', name: D.uniqueName(doc, l.layer || 'Line'), curve: { kind: 'polyline', points: mesh.v, closed: l.closed }, position: D.round3(origin), tag: layer, material: { color: '#1d262c' } }));
+    }
+    let faces = [];
+    if (a.faces) faces = (await reg.run('curves_to_faces', { ids: made.filter((e) => e.curve.closed).map((e) => e.id) })).faces;
+    return { curves: made.length, faces: faces.length, scale: k, size: [(Math.max(...all.map((p) => p[0])) - minX) * k, (Math.max(...all.map((p) => p[1])) - minY) * k].map((x) => Math.round(x * 1000) / 1000) };
+  }, true);
+
+  def('create', 'curves_to_faces', 'Closed flat curves (a floor plan\'s rooms, outlines) become faces you can push or pull.', obj({ ids, layer: str('every closed curve on this layer') }), async (a) => {
+    const doc = ctx.doc;
+    const curves = (a.layer ? doc.entities.filter((e) => e.curve && e.tag === a.layer) : targets(ctx, a)).filter((e) => e.curve?.closed || (e.curve && G.len(G.sub(e.curve.points[0], e.curve.points.at(-1))) < 1e-6));
+    const faces = [];
+    for (const c of curves) {
+      let pts = D.curvePoints(doc, c, 4);
+      if (G.len(G.sub(pts[0], pts.at(-1))) < 1e-6) pts = pts.slice(0, -1);
+      if (pts.length < 3) continue;
+      faces.push((await reg.run('create_face', { points: pts.map(D.round3), name: `${c.name} face`, tag: c.tag })).id);
+    }
+    if (!faces.length) throw new Error('No closed curves there.');
+    return { faces };
+  }, true);
+
+  def('edit', 'array_grid', 'Copies in a grid: nx × ny × nz of each shape, spacing [dx, dy, dz] m apart (columns on a grid, a façade of windows, seats).', obj({ ids, nx: num('along x (default 1)'), ny: num('up (default 1)'), nz: num('along z (default 1)'), spacing: v3('m between copies (default: the shape size + 0.5)') }), (a) => {
+    const doc = ctx.doc;
+    const made = [];
+    for (const e of targets(ctx, a)) {
+      const b = D.worldBox(doc, e);
+      const sp = a.spacing || b.max.map((x, k) => x - b.min[k] + 0.5);
+      const [nx, ny, nz] = [a.nx || 1, a.ny || 1, a.nz || 1].map((n) => Math.max(1, Math.round(n)));
+      if (nx * ny * nz > 2000) throw new Error('At most 2000 copies.');
+      for (let i = 0; i < nx; i++)
+        for (let j = 0; j < ny; j++)
+          for (let k = 0; k < nz; k++) {
+            if (!i && !j && !k) continue;
+            const c = D.duplicateEntity(doc, e);
+            c.position = D.round3(G.add(e.position, [i * sp[0], j * sp[1], k * sp[2]]));
+            c.name = `${e.name} ${i + 1}.${j + 1}.${k + 1}`;
+            made.push(c.id);
+          }
+    }
+    return { copies: made.length, ids: made };
+  }, true);
+
+  def('edit', 'array_path', 'Copies along a curve: count of each shape spread evenly from start to end, turned to follow it (align) — street lights, fence posts, trees along a road.', obj({ ids, path: str('curve id / name'), count: num('copies (default 10)'), align: bool('turn each to the curve (default true)') }, ['path']), (a) => {
+    const doc = ctx.doc;
+    const [c] = D.resolve(doc, a.path);
+    if (!c.curve) throw new Error(`${c.name} is not a curve.`);
+    const places = MD.pathPlacements(D.curvePoints(doc, c), Math.max(1, Math.round(a.count || 10)), { closed: c.curve.closed });
+    const made = [];
+    for (const e of targets(ctx, { ...a, ids: a.ids?.length ? a.ids : ctx.selection.get().filter((id) => id !== c.id) })) {
+      places.forEach((pl, i) => {
+        const copy = i === 0 ? e : D.duplicateEntity(doc, e);
+        copy.position = pl.position;
+        if (a.align !== false) copy.rotation = [e.rotation[0], pl.heading, e.rotation[2]];
+        if (i) copy.name = `${e.name} ${i + 1}`;
+        made.push(copy.id);
+      });
+    }
+    return { placed: made.length, ids: made };
+  }, true);
+
+  def('create', 'insert_asset', 'Put a model from the component library (the library folder: GLB / glTF files) into the scene at a point.', obj({ name: str('file name in the library (list_assets)'), position: v3('where (default: the origin)'), scale: num('uniform scale (default 1)') }, ['name']), async (a) => {
+    if (!ctx.io?.libraryPath) throw new Error('The component library needs the desktop app.');
+    const path = await ctx.io.libraryPath(a.name);
+    const before = new Set(ctx.doc.entities.map((x) => x.id));
+    const r = await reg.run('import', { path });
+    const e = ctx.doc.entities.find((x) => !before.has(x.id) && !x.parent);
+    if (e) {
+      if (a.position) e.position = D.round3(a.position);
+      if (a.scale) e.scale = [a.scale, a.scale, a.scale];
+      e.name = a.name.replace(/\.\w+$/, '');
+      ctx.selection.set([e.id]);
+    }
+    return e ? summary(ctx.doc, e) : r;
+  }, true);
+
+  def('scene', 'list_assets', 'The component library: GLB / glTF files in the library folder (put your own there).', obj({}), async () => {
+    if (!ctx.io?.listLibrary) throw new Error('The component library needs the desktop app.');
+    return ctx.io.listLibrary();
+  });
+
+  def('edit', 'save_selection', 'Save the current selection (or ids) as a named selection set, to select it again in one go.', obj({ name: str('set name'), ids }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const ids = targets(ctx, a).map((e) => e.id);
+    doc.selection_sets = { ...(doc.selection_sets || {}), [a.name]: ids };
+    return { name: a.name, count: ids.length, sets: Object.keys(doc.selection_sets) };
+  }, true);
+
+  def('scene', 'select_set', 'Select a saved selection set.', obj({ name: str('set name') }, ['name']), (a) => {
+    const sets = ctx.doc.selection_sets || {};
+    const key = Object.keys(sets).find((k) => k.toLowerCase() === a.name.toLowerCase());
+    if (!key) throw new Error(`No selection set "${a.name}". Sets: ${Object.keys(sets).join(', ') || 'none (save_selection makes one)'}.`);
+    const ids = sets[key].filter((id) => D.getEntity(ctx.doc, id));
+    ctx.selection.set(ids);
+    return { name: key, selected: ids.length };
+  });
+
+  def('edit', 'delete_selection_set', 'Forget a selection set (the shapes stay).', obj({ name: str('set name') }, ['name']), (a) => {
+    const sets = { ...(ctx.doc.selection_sets || {}) };
+    delete sets[a.name];
+    ctx.doc.selection_sets = sets;
+    return { sets: Object.keys(sets) };
+  }, true);
+
   // ---------------------------------------------------------------- insight: quantities, review, skills
   def('scene', 'report_quantities', 'Quantities: count, surface area (m²), volume (m³), length (m: curves and sweeps) and cost (metadata cost) per material, tag, metadata key, name or kind. "How many m³ of concrete?" format csv or a path writes a file.', obj({ group_by: { description: 'material (default) | tag | name | type | none | a metadata key (e.g. phase, or meta.phase)' }, ids: { ...ids, description: 'only these (default: the whole model)' }, include_hidden: bool('count hidden things too'), format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv or .json path to write') }), async (a) => {
     const report = quantities(ctx.doc, { by: a.group_by || 'material', ids: a.ids, hidden: !!a.include_hidden });
@@ -2710,9 +3009,9 @@ function registerCore(reg, ctx) {
     ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
     return ctx.view?.getCamera();
   });
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);
@@ -3107,6 +3406,57 @@ function registerCore(reg, ctx) {
   }, true);
   reg.commands.get('import').compound = true;
   reg.commands.get('generate_texture').compound = true;
+  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset']) reg.commands.get(n).compound = true;
+  // symmetry while editing (#27): the mirror-image push_pull / move_elements across the shape's middle
+  const mirrorOf = (e, axis) => {
+    const k = { x: 0, y: 1, z: 2 }[axis];
+    const b = G.bbox(e.mesh);
+    const mid = (b.min[k] + b.max[k]) / 2;
+    return { k, flip: (p) => p.map((x, j) => (j === k ? 2 * mid - x : x)) };
+  };
+  const pp = reg.commands.get('push_pull');
+  const ppRun = pp.run;
+  pp.run = async (a) => {
+    const axis = ctx.doc.settings.symmetry;
+    if (!axis) return ppRun(a);
+    const [e] = D.resolve(ctx.doc, a.id ?? ctx.selection.get()[0]);
+    let twin = -1;
+    if (e?.mesh) {
+      const fi = pickFace(ctx.doc, e, a.face ?? 'top');
+      const { k, flip } = mirrorOf(e, axis);
+      const c = flip(G.faceCenter(e.mesh, fi));
+      const n = G.faceNormal(e.mesh, fi).map((x, j) => (j === k ? -x : x));
+      twin = e.mesh.f.findIndex((_, g) => g !== fi && G.len(G.sub(G.faceCenter(e.mesh, g), c)) < 1e-4 && G.dot(G.faceNormal(e.mesh, g), n) > 0.999);
+    }
+    const r = await ppRun(a);
+    if (twin >= 0) await ppRun({ ...a, id: e.id, face: twin });
+    return twin >= 0 ? { ...r, mirrored: true } : r;
+  };
+  const me = reg.commands.get('move_elements');
+  const meRun = me.run;
+  me.run = async (a) => {
+    const axis = ctx.doc.settings.symmetry;
+    if (!axis || !a.by) return meRun(a);
+    const e = D.resolve(ctx.doc, a.id)[0];
+    if (!e?.mesh) return meRun(a);
+    const ids = a.vertices || (a.face !== undefined ? e.mesh.f[pickFace(ctx.doc, e, a.face)] : null);
+    if (!ids) return meRun(a);
+    const { k, flip } = mirrorOf(e, axis);
+    const twins = [];
+    const onPlane = [];
+    for (const i of ids) {
+      const m = flip(e.mesh.v[i]);
+      if (G.len(G.sub(m, e.mesh.v[i])) < 1e-6) onPlane.push(i);
+      else {
+        const j = e.mesh.v.findIndex((p) => G.len(G.sub(p, m)) < 1e-4);
+        if (j >= 0 && !ids.includes(j)) twins.push(j);
+      }
+    }
+    const by = a.by.map((x, j) => (j === k && onPlane.length === ids.length ? 0 : x)); // the middle stays on the mirror
+    const r = await meRun({ ...a, by });
+    if (twins.length) await meRun({ id: e.id, vertices: twins, by: by.map((x, j) => (j === k ? -x : x)) });
+    return { ...r, mirrored: twins.length };
+  };
 
   // ---------------------------------------------------------------- model info, purge (#48), clipboard (#39)
   def('scene', 'model_info', 'Statistics of the model: entities by type, faces and vertices, layers, components and instances, materials, curves, survey points, underlays and the size of their files, bounds, base point, journal length.', obj({}), () => {

@@ -322,6 +322,11 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .profile:not(:disabled):hover { border-color: var(--my-accent); background: var(--my-accent-tint); }
 .profile:disabled { opacity: 0.55; }
 .profile .thumb { color: var(--mmr-fern); line-height: 0; }
+.assets { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: var(--my-space-2); margin-bottom: var(--my-space-2); }
+.asset { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); background: var(--my-surface); cursor: grab; font-size: var(--my-text-xs); color: var(--my-text); }
+.asset:hover { border-color: var(--my-accent); }
+.asset img { width: 72px; height: 72px; object-fit: contain; }
+.asset span { max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .macro-pill {
   display: flex; align-items: center; gap: var(--my-space-1); border: 0; border-radius: var(--my-radius-pill);
   padding: 0 var(--my-space-2); background: var(--axis-x); color: #fff; font-size: var(--my-text-xs); font-weight: var(--my-weight-semibold);
@@ -424,3 +429,10 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .legend-row { display: flex; align-items: center; gap: var(--my-space-2); }
 .legend-row i { width: 14px; height: 10px; border-radius: 2px; border: 1px solid var(--my-border); flex: none; }
 .svg-preview { display: block; width: min(62vw, 860px); max-width: 100%; height: auto; max-height: 70vh; object-fit: contain; background: #fff; border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); }
+/* selection sets and layer folders (#47) */
+.chips { display: flex; flex-wrap: wrap; gap: var(--my-space-1); margin-bottom: var(--my-space-2); }
+.chips .chip { display: inline-flex; align-items: center; padding: 0; border-radius: 999px; cursor: default; }
+.chips .chip-main { border: 0; background: none; padding: 2px var(--my-space-2); font: inherit; font-size: var(--my-text-xs); color: var(--my-text); cursor: pointer; }
+.chips .chip-x { border: 0; background: none; padding: 2px 6px 2px 0; color: var(--my-text-muted); cursor: pointer; line-height: 1; }
+.chips .chip-x:hover { color: var(--my-danger, #c8553d); }
+.layer-folder { font-weight: 600; color: var(--my-text-muted); gap: var(--my-space-1); }
