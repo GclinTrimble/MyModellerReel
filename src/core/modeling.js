@@ -276,10 +276,11 @@ function ccOnce({ v, f }) {
 // ---------------------------------------------------------------- deformers (#23)
 
 /** Triangles split evenly until every edge is shorter than maxEdge (so a deformer has points to move). */
-export function refine(mesh, maxEdge, maxTriangles = 200000) {
+export function refine(mesh, maxEdge, maxTriangles = 60000) {
   let m = triangulated(mesh);
   for (let it = 0; it < 8; it++) {
-    const longest = Math.max(...m.f.flatMap((t) => t.map((a, k) => len(sub(m.v[a], m.v[t[(k + 1) % 3]])))));
+    let longest = 0; // a loop, not Math.max(...): big meshes overflow the stack with a spread
+    for (const t of m.f) for (let k = 0; k < 3; k++) longest = Math.max(longest, len(sub(m.v[t[k]], m.v[t[(k + 1) % 3]])));
     if (longest <= maxEdge || m.f.length * 4 > maxTriangles) break;
     const v = m.v.map((p) => [...p]);
     const mid = new Map();

@@ -2829,8 +2829,8 @@ function registerCore(reg, ctx) {
     const k = a.scale || SVG.svgUnit(text) || 0.001;
     // y down in SVG: the drawing's top is north (−z)
     const all = lines.flatMap((l) => l.pts);
-    const minX = Math.min(...all.map((p) => p[0]));
-    const minY = Math.min(...all.map((p) => p[1]));
+    let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of all) (minX = Math.min(minX, x)), (minY = Math.min(minY, y)), (maxX = Math.max(maxX, x)), (maxY = Math.max(maxY, y));
     const layer = a.layer || '2D';
     L.ensureLayer(doc, layer);
     const made = [];
@@ -2842,7 +2842,7 @@ function registerCore(reg, ctx) {
     }
     let faces = [];
     if (a.faces) faces = (await reg.run('curves_to_faces', { ids: made.filter((e) => e.curve.closed).map((e) => e.id) })).faces;
-    return { curves: made.length, faces: faces.length, scale: k, size: [(Math.max(...all.map((p) => p[0])) - minX) * k, (Math.max(...all.map((p) => p[1])) - minY) * k].map((x) => Math.round(x * 1000) / 1000) };
+    return { curves: made.length, faces: faces.length, scale: k, size: [(maxX - minX) * k, (maxY - minY) * k].map((x) => Math.round(x * 1000) / 1000) };
   }, true);
 
   def('create', 'curves_to_faces', 'Closed flat curves (a floor plan\'s rooms, outlines) become faces you can push or pull.', obj({ ids, layer: str('every closed curve on this layer') }), async (a) => {

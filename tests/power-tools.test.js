@@ -129,3 +129,12 @@ test('selection sets, layer folders, colour by layer', async () => {
   await reg.run('delete_selection_set', { name: 'Structure' });
   await assert.rejects(reg.run('select_set', { name: 'Structure' }), /No selection set/);
 });
+
+test('a deformer on a filleted, shelled shape: no stack overflow, a capped triangle count', async () => {
+  const { reg } = makeCtx();
+  await reg.run('create_box', { width: 1, height: 1, depth: 1, name: 'B' });
+  await reg.run('fillet_edges', { id: 'B', edges: 'vertical', radius: 0.1 });
+  await reg.run('shell', { id: 'B', thickness: 0.02, open: 'top' });
+  const r = await reg.run('deform', { id: 'B', type: 'twist', amount: 45 });
+  assert.ok(r.faces > 1000 && r.faces <= 60000 * 4, `${r.faces} triangles`);
+});

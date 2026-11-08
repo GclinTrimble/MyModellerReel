@@ -105,10 +105,9 @@ export function sectionSvg(cut, { scale = 50, title = '' } = {}) {
   const k = 1000 / scale; // mm on paper per metre
   const all = cut.cuts.flatMap((c) => c.areas.flatMap((a) => [a.outer, ...a.holes]).flat());
   if (!all.length) throw new Error('The section plane cuts nothing.');
-  const minX = Math.min(...all.map((p) => p[0]));
-  const maxX = Math.max(...all.map((p) => p[0]));
-  const minY = Math.min(...all.map((p) => p[1]));
-  const maxY = Math.max(...all.map((p) => p[1]));
+  // loops, not Math.min(...): a big cut has more points than a spread allows
+  let [minX, maxX, minY, maxY] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const [x, y] of all) (minX = Math.min(minX, x)), (maxX = Math.max(maxX, x)), (minY = Math.min(minY, y)), (maxY = Math.max(maxY, y));
   const m = 10;
   const W = (maxX - minX) * k + 2 * m;
   const H = (maxY - minY) * k + 2 * m + (title ? 8 : 0);
