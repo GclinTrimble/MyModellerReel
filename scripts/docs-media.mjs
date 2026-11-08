@@ -930,6 +930,51 @@ const PAGES = {
     await clean();
     await run('set_style', { grid: true });
   },
+  async 'work-faster'() {
+    await fresh();
+    await run('create_box', { width: 4, height: 3, depth: 4, name: 'Pavilion', color: '#e9e4d8' });
+    await run('create_box', { width: 2, height: 5, depth: 2, position: [4, 0, -1], name: 'Tower', color: '#b9b2a3' });
+    for (const [n, e, z] of [['101', -6, 0], ['102', -6, 6], ['103', -1, 7], ['104', 1, 3], ['105', -3, 2]]) await run('add_point', { name: n, e, n: z + 2, z: 0.2 * e });
+    await camera([10, 9, 14], [-1, 1, 1]);
+    await none();
+    const click = (sel, k = 0, type = 'click') => js(`const b = document.querySelectorAll('${sel}')[${k}]; b.dispatchEvent(new MouseEvent('${type}', { bubbles: true, clientX: b.getBoundingClientRect().left + 4, clientY: b.getBoundingClientRect().top + 4 })); return 1;`);
+    await click('.toolbar .slot', 2, 'contextmenu');
+    await shot('A shorter toolbar: variants share a button; right-click (or click again) to choose');
+    await clean();
+    await click('#viewbar .drop', 0);
+    await shot('The view bar: standard views, navigation, zoom extents, panes, display and snaps');
+    await clean();
+    await click('#viewbar .drop', 3);
+    await shot('Display: switch edges, x-ray, style… on and off; the list stays open');
+    await clean();
+    await click('#viewbar .drop', 4);
+    await shot('Snaps: choose what the drawing tools snap to');
+    await clean();
+    const [x, y] = await js("const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(0, 1.5, 2)); return [Math.round(s.x), Math.round(s.y)];");
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x, y }, { type: 'mouseDown', x, y, button: 'right', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'right', clickCount: 1 }, { type: 'wait', ms: 300 }] });
+    await shot('Right-click a shape: group, component, hide, isolate, export it, its properties');
+    await clean();
+    await run('select', { ids: ['101', '102', '103', '104', '105'] });
+    const [px, py] = await js("const p = window.mmr.doc.entities.find((e) => e.name === '103'); const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p.position)); return [Math.round(s.x), Math.round(s.y)];");
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x: px, y: py }, { type: 'mouseDown', x: px, y: py, button: 'right', clickCount: 1 }, { type: 'mouseUp', x: px, y: py, button: 'right', clickCount: 1 }, { type: 'wait', ms: 300 }] });
+    await shot('Right-click selected survey points: create a surface from them');
+    await clean();
+    await run('section', { normal: [0, 0, -1], point: [0, 0, 0.5], name: 'Front cut' });
+    await run('section', { normal: [-1, 0, 0], point: [4, 0, 0], name: 'Tower cut' });
+    await run('set_section_plane', { name: 'Front cut', active: true });
+    await none();
+    await js('window.mmr.app.ui.sectionPlanesDialog(); return 1;');
+    await shot('View › Section planes: which one cuts, flip, move, delete');
+    await clean();
+    await run('section', { enabled: false });
+    await run('select', { ids: ['Tower'] });
+    await js('window.mmr.app.ui.exportDialog(); return 1;');
+    await shot('File › Export: choose what, then the format');
+    await clean();
+    await panel('settings');
+    await js("document.querySelector('.ai-finder')?.scrollIntoView(); return 1;");
+    await shot('Settings › AI: the models on this PC, found for you; connect one in a click');
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

@@ -619,3 +619,71 @@ test('roads: corridor with ditch and layers, road views, a click in the profile,
   assert.ok(Math.abs(cut.volume_m3 - v.totals.cut) < v.totals.cut * 0.05, `solid ${cut.volume_m3} vs table ${v.totals.cut}`);
   await ok('set_layout', { count: 1 });
 });
+
+test('usability: open lines, window vs crossing, right-click menu, export dialog, scale handles, eraser on a dimension', async () => {
+  await ok('new_model');
+  await ok('set_camera', { position: [0, 30, 0.01], target: [0, 0, 0], projection: 'parallel' });
+  const scr = (p) => w.evaluate((q) => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q)); return [s.x, s.y]; }, p);
+  // the Line tool keeps an open line on Enter
+  await w.evaluate(() => window.mmr.app.tools.set('line'));
+  for (const p of [[-6, 0, -6], [-2, 0, -6], [-2, 0, -2]]) {
+    const [x, y] = await scr(p);
+    await w.mouse.move(x, y);
+    await w.mouse.click(x, y);
+  }
+  await w.keyboard.press('Enter');
+  await w.waitForTimeout(300);
+  const line = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name.startsWith('Line')));
+  assert.ok(line?.curve, 'an open polyline was kept');
+  assert.equal(line.curve.points.length, 3);
+  // window (left to right) takes only what is fully inside; crossing (right to left) what it touches
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  await ok('create_box', { width: 2, height: 1, depth: 2, position: [3, 0, 3], name: 'A' });
+  await ok('create_box', { width: 2, height: 1, depth: 2, position: [7, 0, 3], name: 'B' });
+  await ok('select', { mode: 'none' });
+  const drag = async (a, b) => {
+    const [x0, y0] = await scr(a);
+    const [x1, y1] = await scr(b);
+    await w.mouse.move(x0, y0);
+    await w.mouse.down();
+    await w.mouse.move((x0 + x1) / 2, (y0 + y1) / 2);
+    await w.mouse.move(x1, y1);
+    await w.mouse.up();
+    return w.evaluate(() => window.mmr.app.selection.map((id) => window.mmr.doc.entities.find((e) => e.id === id).name).sort());
+  };
+  assert.deepEqual(await drag([1, 0, 1], [7, 0, 5]), ['A'], 'window: B sticks out');
+  assert.deepEqual(await drag([7, 0, 5], [1, 0, 1]), ['A', 'B'], 'crossing: B is touched');
+  // right-click on A: its menu
+  const [ax, ay] = await scr([3, 1, 3]);
+  await w.mouse.click(ax, ay, { button: 'right' });
+  await w.waitForTimeout(200);
+  const menu = await w.locator('#menu-pop').innerText();
+  assert.match(menu, /Make group/);
+  assert.match(menu, /Export the selection/);
+  await w.keyboard.press('Escape');
+  await w.evaluate(() => window.mmr.app.ui.closeMenu());
+  // one Export dialog: what, then the format
+  await w.evaluate(() => { window.mmr.app.ui.exportDialog(); });
+  assert.equal(await w.locator('.export-choice').count(), 6);
+  await w.evaluate(() => document.getElementById('modal').close());
+  // scale: a click shows the handles; a typed factor scales
+  await w.evaluate(() => window.mmr.app.tools.set('scale'));
+  await w.mouse.click(ax, ay);
+  await w.waitForTimeout(200);
+  assert.equal(await w.evaluate(() => window.mmr.doc.settings.gizmo), 'scale');
+  await w.evaluate(() => window.mmr.app.tools.vcb('2'));
+  await w.waitForTimeout(200);
+  const size = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'A').scale?.[0] ?? 1);
+  assert.ok(Math.abs(size - 2) < 1e-6, `scaled ×2: ${size}`);
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  assert.equal(await w.evaluate(() => window.mmr.doc.settings.gizmo), null, 'the handles go with the tool');
+  // the eraser takes a dimension by its text
+  const d = await ok('add_dimension', { from: [-6, 0, 4], to: [-2, 0, 4] });
+  await w.evaluate(() => window.mmr.app.tools.set('eraser'));
+  const at = await w.evaluate((id) => window.mmr.doc.entities.find((e) => e.id === id).annotation.at, d.id);
+  const [dx, dy] = await scr(at);
+  await w.mouse.click(dx, dy);
+  await w.waitForTimeout(200);
+  assert.equal(await w.evaluate((id) => !!window.mmr.doc.entities.find((e) => e.id === id), d.id), false, 'the dimension is gone');
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+});

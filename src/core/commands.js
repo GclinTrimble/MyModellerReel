@@ -3222,6 +3222,28 @@ function registerCore(reg, ctx) {
     return { shortcuts: s };
   });
   def('scene', 'list_shortcuts', 'Your keyboard shortcuts (on top of the built-in ones).', obj({}), () => ctx.io?.settings?.().shortcuts || {});
+  // AI setup that connects by itself (#198)
+  def('ai', 'detect_local_models', 'Find the AI models on this PC: servers answering on their usual ports (Ollama, LM Studio, llama.cpp / LocalAI, vLLM, Jan, GPT4All) with their models, models downloaded from Hugging Face (they need one of those servers to run), and whether Claude Desktop is installed (for the MCP link).', obj({}), async () => {
+    if (!ctx.io?.detectModels) throw new Error('Needs the desktop app.');
+    const r = await ctx.io.detectModels();
+    const tools = /mistral|qwen|llama3|llama-3|hermes|command-r|granite|gpt-oss|deepseek/i;
+    for (const s of r.servers) s.suggested = s.models.find((m) => tools.test(m)) || s.models[0] || null;
+    r.installed ||= [];
+    r.advice = r.servers.length
+      ? `Found ${r.servers.map((s) => `${s.name} (${s.models.length} model${s.models.length === 1 ? '' : 's'})`).join(', ')}. use_ai_model connects one.`
+      : r.installed.length
+        ? r.installed.map((x) => `${x.name} is installed${x.models.length ? ` with ${x.models.join(', ')}` : ''} but not running. ${x.start}`).join(' ')
+        : r.huggingface.length
+        ? 'Models are downloaded from Hugging Face, but no server is running them: install Ollama (ollama.com) or LM Studio, load the model, then detect again.'
+        : 'No local AI found. Install Ollama (ollama.com) and run "ollama pull mistral", or use Claude or an OpenAI-compatible API key.';
+    return r;
+  });
+  def('ai', 'use_ai_model', 'Use a model for the copilot: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
+    if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
+    const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };
+    await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
+    return { provider: a.provider, ...part };
+  });
   def('scene', 'set_language', 'The language of the menus and panels: en (English) or fr (Français).', obj({ lang: str('en | fr', Object.keys(I18N.LANGUAGES)) }, ['lang']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     await ctx.io.setSettings({ language: a.lang });
@@ -3288,6 +3310,11 @@ function registerCore(reg, ctx) {
     return ctx.view.walkTo(a.position, a.look_at, a.eye ?? 1.6);
   });
 
+  def('view', 'set_snaps', 'Which snaps the drawing tools use (#180): endpoint, midpoint, face, axis (along x / y / z from the last point), grid, drawing (PDF lines, when snap_underlays is on), cloud (point cloud points). Each true or false; the rest stay as they are.', obj(Object.fromEntries(['endpoint', 'midpoint', 'face', 'axis', 'grid', 'drawing', 'cloud'].map((k) => [k, bool(`snap to ${k}`)]))), (a) => {
+    const s = ctx.doc.settings;
+    s.snaps = { ...(s.snaps || {}), ...a };
+    return { snaps: { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, ...s.snaps } };
+  }, true);
   def('view', 'set_gizmo', 'On-canvas handles on the selection: drag arrows (move), rings (rotate) or boxes (scale). off hides them.', obj({ mode: str('move | rotate | scale | off', ['move', 'rotate', 'scale', 'off']) }, ['mode']), (a) => {
     ctx.doc.settings.gizmo = a.mode === 'off' ? null : a.mode;
     return { gizmo: ctx.doc.settings.gizmo };
@@ -3477,9 +3504,50 @@ function registerCore(reg, ctx) {
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);
-  def('view', 'section', 'Cut the model with a section plane to see inside. Disable with enabled:false.', obj({ enabled: bool('default true'), normal: v3('the side that is cut away'), point: v3('a point on the plane') }), (a) => {
-    ctx.doc.settings.section = a.enabled === false ? null : { normal: a.normal || [0, -1, 0], point: a.point || [0, 1.2, 0] };
-    return { section: ctx.doc.settings.section };
+  // section planes (#187): several kept by name, one cutting at a time (settings.section is the active one)
+  const planes = () => (ctx.doc.settings.section_planes ||= []);
+  const activate = (name) => {
+    const s = ctx.doc.settings;
+    const p = name && planes().find((x) => x.name === name);
+    s.section_active = p ? p.name : null;
+    s.section = p ? { normal: p.normal, point: p.point } : null;
+  };
+  const planeOf = (name) => {
+    const p = planes().find((x) => x.name === name);
+    if (!p) throw new Error(`No section plane "${name}". Section planes: ${planes().map((x) => x.name).join(', ') || 'none (section adds one)'}.`);
+    return p;
+  };
+  const sectionList = () => ({ active: ctx.doc.settings.section_active || null, planes: planes().map((p) => ({ ...p, active: p.name === ctx.doc.settings.section_active })) });
+  def('view', 'section', 'Cut the model with a section plane to see inside: the plane is kept by name (list_section_planes) and becomes the one that cuts. Disable with enabled:false (the plane stays in the list).', obj({ enabled: bool('default true'), normal: v3('the side that is cut away'), point: v3('a point on the plane'), name: str('name it (default Section 1, 2…)') }), (a) => {
+    if (a.enabled === false) {
+      activate(null);
+      return { section: null, ...sectionList() };
+    }
+    const name = a.name || D.uniqueName({ entities: planes() }, 'Section');
+    const plane = { name, normal: a.normal || [0, -1, 0], point: a.point || [0, 1.2, 0] };
+    const i = planes().findIndex((x) => x.name === name);
+    if (i >= 0) planes()[i] = plane;
+    else planes().push(plane);
+    activate(name);
+    return { section: ctx.doc.settings.section, ...sectionList() };
+  }, true);
+  def('view', 'list_section_planes', 'The section planes kept in the model and which one cuts.', obj({}), () => sectionList());
+  def('view', 'set_section_plane', 'Change a section plane: turn it on (the one that cuts) or off, flip the side it cuts away, move it along its normal by offset m, put it through a point, or rename it.', obj({ name: str('section plane'), active: bool('cut with it (true) or with none (false)'), flip: bool('cut away the other side'), offset: num('m to move it along its normal (towards the side it cuts away)'), point: v3('a point on the plane'), rename: str('new name') }, ['name']), (a) => {
+    const p = planeOf(a.name);
+    if (a.flip) p.normal = p.normal.map((x) => -x || 0);
+    if (a.offset) p.point = p.point.map((x, k) => Math.round((x + p.normal[k] * a.offset) * 1e4) / 1e4);
+    if (a.point) p.point = a.point;
+    const wasActive = ctx.doc.settings.section_active === p.name;
+    if (a.rename) p.name = a.rename;
+    if (a.active === true || (a.active === undefined && wasActive)) activate(p.name);
+    else if (a.active === false && wasActive) activate(null);
+    return sectionList();
+  }, true);
+  def('view', 'delete_section_plane', 'Remove a section plane (and its cut, if it was cutting).', obj({ name: str('section plane') }, ['name']), (a) => {
+    const p = planeOf(a.name);
+    ctx.doc.settings.section_planes = planes().filter((x) => x !== p);
+    if (ctx.doc.settings.section_active === p.name) activate(null);
+    return sectionList();
   }, true);
   def('view', 'add_scene', 'Save the current camera as a named scene (a shot you can return to or animate between).', obj({ name: str('scene name') }), (a) => {
     const doc = ctx.doc;

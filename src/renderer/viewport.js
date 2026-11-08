@@ -582,7 +582,9 @@ export class Viewport {
       col.needsUpdate = true;
     }
     for (const [id, o] of this.objs) {
-      if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : L.colorOf(doc, doc.entities.find((e) => e.id === id)) || '#2f6f86');
+      const ent = doc.entities.find((e) => e.id === id);
+      if (!ent) continue; // just deleted: the rebuild that follows drops its object (#184: erasing lines and dimensions)
+      if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : L.colorOf(doc, ent) || '#2f6f86');
       if (o.userData.underlay) o.material.color.set(lit.has(id) ? '#f3dfb0' : '#ffffff');
       if (!o.isMesh || o.userData.underlay || o.userData.isCurve || !o.material.emissive) continue;
       const on = lit.has(id);
@@ -761,6 +763,20 @@ export class Viewport {
     this.raycaster.params.Line.threshold = 0.012 * this.camera.position.distanceTo(this.controls.target);
     const h = this.raycaster.intersectObjects(lines, false)[0];
     return h ? { entityId: h.object.userData.entityId, faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: h.object, curve: true } : null;
+  }
+
+  /** The dimension or label whose text is under the pointer (#184): texts are drawn in 2D, so they are found on screen. */
+  pickAnnotation(ev, radius = 28) {
+    let best = null;
+    for (const e of this.store.doc.entities) {
+      const a = e.annotation;
+      if (!a?.at || e.visible === false) continue;
+      const s = this.toScreen(new THREE.Vector3(...a.at));
+      if (s.behind) continue;
+      const d = Math.hypot(s.x - ev.clientX, s.y - ev.clientY);
+      if (d < radius && (!best || d < best.d)) best = { d, e };
+    }
+    return best && { entityId: best.e.id, faceIndex: -1, point: new THREE.Vector3(...best.e.annotation.at), normal: new THREE.Vector3(0, 1, 0), annotation: true };
   }
 
   /** pick() at a viewport point given as fractions (0..1 from the left and top). */

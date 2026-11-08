@@ -32,6 +32,13 @@ const SNAP_PX = 12;
 const ACCENT = 0x2f6f86;
 const HIGHLIGHT = 0xe8bc5e;
 
+/** Snap kinds (#180) and their defaults; doc.settings.snaps overrides them (set_snaps). */
+export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true };
+export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
+
+/** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
+export const TOOLBAR = ['select', '-', 'line', ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'curve'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend'], 'sculpt', '-', ['tape', 'dimension', 'label'], 'paint', 'eraser', 'section'];
+
 export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
   { id: 'line', label: 'Line', key: 'L', icon: 'pencil-line', group: 'draw' },
@@ -110,6 +117,7 @@ export class Tools {
     c.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') this.touches.add(e.pointerId);
       if (e.button === 0 && !elsewhere()) inPane(() => this.tool.down?.(e));
+      if (e.button === 0 && this.only) (this.only = null), this.status(this.tool.hint); // a one-shot snap is used up
     });
     c.addEventListener('pointermove', (e) => !elsewhere() && inPane(() => this.tool.move?.(e)));
     c.addEventListener('pointerup', (e) => {
@@ -120,6 +128,14 @@ export class Tools {
     c.addEventListener('pointercancel', (e) => this.touches.delete(e.pointerId));
     c.addEventListener('dblclick', (e) => inPane(() => this.tool.dbl?.(e)));
     c.addEventListener('pointerleave', () => (this.label.hidden = true));
+    // right-click without dragging (a right drag pans): the context menu (#193)
+    let rdown = null;
+    c.addEventListener('pointerdown', (e) => e.button === 2 && (rdown = { x: e.clientX, y: e.clientY }));
+    c.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (rdown && Math.hypot(e.clientX - rdown.x, e.clientY - rdown.y) > 5) return;
+      if (c.ownerDocument === document) inPane(() => this.app.ui.contextMenu(e));
+    });
   }
 
   guard(fn) {
@@ -189,16 +205,21 @@ export class Tools {
     const mx = ev.clientX;
     const my = ev.clientY;
     const done = (r) => this.showSnap(r) || r;
+    // which snaps are on (#180): the model's settings, or only one kind for the next click
+    const S = { ...SNAPS, ...(this.app.store.doc.settings.snaps || {}) };
+    const on = (k) => (this.only ? this.only === k : S[k] !== false);
+    const cat = (kind) => (/Mid|middle/.test(kind) ? 'midpoint' : kind === 'Point cloud' ? 'cloud' : 'endpoint');
     if (from && this.lock) return done({ point: closestOnLine(ray, from, AXES[this.lock]), kind: `On ${AXIS_NAME[this.lock]} axis`, axis: this.lock, hit });
     let best = null;
     let bestD = SNAP_PX;
     for (const s of [...extra.map((p) => ({ p, kind: 'Endpoint' })), ...vp.snapPoints()]) {
+      if (!on(cat(s.kind))) continue;
       const sp = vp.toScreen(s.p);
       const d = Math.hypot(sp.x - mx, sp.y - my);
       if (!sp.behind && d < bestD) (bestD = d), (best = s);
     }
     if (best) return done({ point: best.p.clone(), kind: best.kind, hit, snapped: true });
-    if (from)
+    if (from && on('axis'))
       for (const k of ['x', 'z', 'y']) {
         const p = closestOnLine(ray, from, AXES[k]);
         const sp = vp.toScreen(p);
@@ -206,13 +227,13 @@ export class Tools {
       }
     if (plane) {
       const p = ray.intersectPlane(plane, new THREE.Vector3());
-      if (p) return done({ point: Math.abs(plane.normal.y) > 0.99 ? snapToGrid(p) : p, kind: GRID && Math.abs(plane.normal.y) > 0.99 ? 'On grid' : 'On plane', hit });
+      if (p) return done({ point: Math.abs(plane.normal.y) > 0.99 && on('grid') ? snapToGrid(p) : p, kind: GRID && on('grid') && Math.abs(plane.normal.y) > 0.99 ? 'On grid' : 'On plane', hit });
     }
-    if (hit) return done({ point: hit.point.clone(), kind: 'On face', hit });
-    const u = vp.pickUnderlay();
+    if (hit && on('face')) return done({ point: hit.point.clone(), kind: 'On face', hit });
+    const u = on('drawing') && vp.pickUnderlay();
     if (u) return done({ point: u.point, kind: 'On drawing', hit: null });
     const p = ray.intersectPlane(fallback || new THREE.Plane(V(0, 1, 0), 0), new THREE.Vector3());
-    return done({ point: p ? snapToGrid(p) : from?.clone() || V(), kind: fallback ? 'Level' : GRID ? 'On grid' : 'On ground', hit: null });
+    return done({ point: p ? (on('grid') ? snapToGrid(p) : p) : from?.clone() || V(), kind: fallback ? 'Level' : GRID && on('grid') ? 'On grid' : 'On ground', hit: null });
   }
 
   showSnap(r) {
@@ -300,6 +321,10 @@ class SelectTool {
     const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
     Object.assign(this.t.box.style, { left: `${x0 - r.left}px`, top: `${y0 - r.top}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
     this.t.box.hidden = x1 - x0 < 4 && y1 - y0 < 4;
+    // left to right: a window (what is fully inside); right to left: a crossing (what it touches) (#191)
+    const crossing = ev.clientX < this.start.x;
+    this.t.box.dataset.mode = crossing ? 'crossing' : 'window';
+    if (!this.t.box.hidden) this.t.status(crossing ? 'Crossing: selects what the box touches.' : 'Window: selects what is fully inside the box.');
   }
   up(ev) {
     const app = this.t.app;
@@ -310,7 +335,7 @@ class SelectTool {
     let ids;
     if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) < 4) {
       const mesh = this.t.vp.pick(ev); // also aims the ray for the two below
-      const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve() || this.t.vp.pickUnderlay(); // a survey point wins over the surface under it; drawings come last
+      const hit = this.t.vp.pickAnnotation(ev) || this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve() || this.t.vp.pickUnderlay(); // a survey point wins over the surface under it; drawings come last
       ids = hit ? [app.pickTarget(hit.entityId)] : [];
     } else {
       const [x0, x1] = [s.x, ev.clientX].sort((a, b) => a - b);
@@ -319,8 +344,14 @@ class SelectTool {
         .filter((e) => e.parent === app.context && !L.isLocked(app.store.doc, e))
         .filter((e) => {
           const b = D.worldBox(app.store.doc, e);
-          const p = this.t.vp.toScreen(V(...b.min).add(V(...b.max)).multiplyScalar(0.5));
-          return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+          if (!b || !isFinite(b.min[0])) return false;
+          const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => this.t.vp.toScreen(V(k & 1 ? b.max[0] : b.min[0], k & 2 ? b.max[1] : b.min[1], k & 4 ? b.max[2] : b.min[2]))).filter((p) => !p.behind);
+          if (!corners.length) return false;
+          const inside = (p) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+          if (ev.clientX >= s.x) return corners.every(inside); // window
+          const [cx0, cx1] = [Math.min(...corners.map((p) => p.x)), Math.max(...corners.map((p) => p.x))];
+          const [cy0, cy1] = [Math.min(...corners.map((p) => p.y)), Math.max(...corners.map((p) => p.y))];
+          return cx0 <= x1 && cx1 >= x0 && cy0 <= y1 && cy1 >= y0; // crossing: the boxes overlap
         })
         .map((e) => e.id);
     }
@@ -382,15 +413,28 @@ class DrawBase {
 }
 
 class LineTool extends DrawBase {
-  hint = 'Click points. Close the loop on the first point to make a face. Type a length, Enter. Esc cancels.';
+  hint = 'Click points to draw a line; Enter, Esc or a double-click ends it. Close it on the first point to make a face. Type a length for the next segment.';
   vcbLabel = 'Length';
   pts = [];
   busy() {
     return this.pts.length > 0;
   }
+  /** Ending a line keeps it (#176): two or more points are an open polyline. */
   cancel() {
+    if (this.pts.length >= 2) this.t.guard(() => this.finish());
     this.pts = [];
     this.t.clear();
+  }
+  async finish() {
+    const pts = this.pts.filter((p, i, a) => !i || p.distanceTo(a[i - 1]) > 1e-6).map((p) => p.toArray());
+    this.pts = [];
+    this.t.clear();
+    if (pts.length < 2) return;
+    await this.t.run('create_curve', { points: pts, kind: 'polyline', name: 'Line' });
+    this.t.status(`Line of ${pts.length - 1} segment${pts.length > 2 ? 's' : ''} kept. ${this.hint}`);
+  }
+  dbl() {
+    return this.finish();
   }
   move(ev) {
     const last = this.pts.at(-1);
@@ -757,41 +801,35 @@ class RotateTool extends XformBase {
   }
 }
 
-class ScaleTool extends XformBase {
-  hint = 'Click what to scale, then move away from or towards its base. Type a factor (0.5, 2) or "1,2,1".';
+/**
+ * Scale (#185): click a shape and its scale handles appear: the centre box scales it evenly, an axis box along that
+ * axis (each drag is one undo step). Or type a factor (2, 0.5) or "1,2,1" and Enter. The handles go when you leave.
+ */
+class ScaleTool {
+  hint = 'Click what to scale: handles appear. Drag the centre box to scale evenly, an axis box along that axis, or type a factor (2, 0.5, "1,2,1") and Enter.';
   vcbLabel = 'Scale';
-  move(ev) {
-    if (!this.ids) return;
-    const p = this.t.vp.ray(ev).intersectPlane(this.plane, new THREE.Vector3());
-    if (!p) return;
-    this.f = Math.max(0.01, p.distanceTo(this.pivot) / this.r0);
-    const S = new THREE.Matrix4().makeScale(this.f, this.f, this.f);
-    this.previewWorld((m) => this.about(this.pivot, S).multiply(m));
-    this.t.status(`Scale ×${this.f.toFixed(3)}`);
+  constructor(t) {
+    this.t = t;
+    this.prev = t.app.store.doc.settings.gizmo || null;
   }
   async down(ev) {
-    if (!this.ids) {
-      if (!this.grab(this.t.targetsAt(ev))) return;
-      const doc = this.t.app.store.doc;
-      const b = D.unionBox(this.ids.map((id) => D.worldBox(doc, this.t.app.entity(id))));
-      this.pivot = V((b.min[0] + b.max[0]) / 2, b.min[1], (b.min[2] + b.max[2]) / 2);
-      this.plane = new THREE.Plane(V(0, 1, 0), -this.pivot.y);
-      const p = this.t.vp.ray(ev).intersectPlane(this.plane, new THREE.Vector3());
-      this.r0 = Math.max(0.05, p ? p.distanceTo(this.pivot) : 1);
-      this.f = 1;
-      return;
-    }
-    await this.commit(this.f);
-  }
-  async commit(factor) {
-    const ids = this.ids;
-    this.cancel();
-    await this.t.run('scale', { ids, factor, pivot: 'base' });
+    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+    if (!hit) return this.t.app.select([]);
+    const id = this.t.app.pickTarget(hit.entityId);
+    const e = this.t.app.entity(id);
+    if (e && L.isLocked(this.t.app.store.doc, e)) return this.t.app.ui.toast(`${e.name} is locked.`);
+    this.t.app.select([id]);
+    if (this.t.app.store.doc.settings.gizmo !== 'scale') await this.t.run('set_gizmo', { mode: 'scale' });
+    this.t.status(`${e?.name}: drag a handle, or type a factor and Enter.`, 'Scale');
   }
   vcb(text) {
-    if (!this.ids) return;
-    const f = text.split(/[,;]/).map(Number);
-    if (f.every((x) => x > 0)) return this.commit(f.length === 3 ? f : f[0]);
+    const ids = this.t.app.selection;
+    const f = text.split(/[,;s]+/).map(Number);
+    if (!ids.length || !f.every((x) => x > 0)) return;
+    return this.t.run('scale', { ids, factor: f.length === 3 ? f : f[0], pivot: 'base' });
+  }
+  leave() {
+    if (this.t.app.store.doc.settings.gizmo === 'scale' && this.prev !== 'scale') this.t.run('set_gizmo', { mode: this.prev || 'off' }).catch(() => {});
   }
 }
 
@@ -846,13 +884,13 @@ class PaintTool {
 }
 
 class EraserTool {
-  hint = 'Click a shape or group to delete it.';
+  hint = 'Click a shape, group, line, dimension or label to delete it.';
   constructor(t) {
     this.t = t;
   }
   async down(ev) {
     const mesh = this.t.vp.pick(ev);
-    const hit = this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve();
+    const hit = this.t.vp.pickAnnotation(ev) || this.t.vp.pickPoint() || mesh || this.t.vp.pickCurve();
     if (hit) await this.t.run('delete', { ids: [this.t.app.pickTarget(hit.entityId)] });
   }
 }
@@ -981,8 +1019,8 @@ class WalkTool {
 
 /** Survey point: click to add one (snapped), with the code typed in the Measurements box last. */
 class PointTool {
-  hint = 'Click to add a survey point (it snaps to faces, ends and surfaces). Type a code first (e.g. GND, KERB B) to code the next points.';
-  vcbLabel = 'Code';
+  hint = 'Click to add a survey point. Type in the value box: a code for the next points (GND, KERB B), "E, N, Z" to add one at those coordinates, or #name to rename the last one.';
+  vcbLabel = 'Code · E,N,Z · #name';
   constructor(t) {
     this.t = t;
     this.code = '';
@@ -993,10 +1031,26 @@ class PointTool {
   async down(ev) {
     const p = this.t.infer(ev).point;
     const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code: this.code });
-    this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${this.code ? ` · ${this.code}` : ''}`);
+    this.last = r.id;
+    this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${this.code ? ` · ${this.code}` : ''}. Type #name to rename it.`);
   }
-  vcb(text) {
-    this.code = text.trim();
+  /** The value box (#188): coordinates add a point there, #name renames the last point, anything else is the code. */
+  async vcb(text) {
+    const t = text.trim();
+    const nums = t.split(/[,;s]+/).map(Number);
+    if (nums.length >= 2 && nums.length <= 3 && nums.every(Number.isFinite)) {
+      const [e, n, z = 0] = nums;
+      const r = await this.t.run('add_point', { e, n, z, code: this.code });
+      this.last = r.id;
+      return this.t.status(`Point ${r.name} at E ${e} N ${n} Z ${z}.`);
+    }
+    const m = t.match(/^#s*(.+)$/);
+    if (m) {
+      if (!this.last) return this.t.status('Place a point first, then type #name to rename it.');
+      await this.t.run('set_properties', { ids: [this.last], name: m[1].trim() });
+      return this.t.status(`Renamed the point to ${m[1].trim()}.`);
+    }
+    this.code = t;
     this.t.status(`Code for the next points: ${this.code || '(none)'}`);
   }
 }

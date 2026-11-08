@@ -63,6 +63,9 @@ Electron's binary download is an install script; if your npm blocks install scri
   the road views (3D, plan, profile, cross-section) side by side; the cut through the ground shown without changing
   it, then written in when you decide; earthwork volumes with the balance, and the cut, fill and pavement as solids
   with their tonnages.
+- **Quicker to use**: a short toolbar with grouped tools, navigation and views in the view bar, right-click menus, snap
+  control, window and crossing selection, section planes you can manage, one Export dialog, and an AI setup that finds
+  the models on your PC.
 - **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
   editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
   shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a

@@ -5,7 +5,7 @@ import * as L from '../core/layers.js';
 export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
-import { TOOLS, fmt } from './tools.js';
+import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
@@ -164,6 +164,7 @@ export class UI {
       shadows: { label: 'Shadows', icon: 'sun', ...style('shadows') },
       grid: { label: 'Grid and axes', icon: 'grid-four', ...style('grid') },
       unsection: { label: 'Remove section cut', icon: 'knife', run: run('section', { enabled: false }) },
+      sectionPlanes: { label: 'Section planes…', icon: 'knife', run: () => this.sectionPlanesDialog() },
       theme: { label: 'Dark theme', icon: 'moon', checked: () => document.documentElement.classList.contains('dark'), run: () => app.toggleTheme() },
       timeline: { label: 'Timeline', icon: 'film-strip', key: 'Ctrl+T', checked: () => app.timeline.active, run: () => app.timeline.toggle() },
       play: { label: 'Play / pause', icon: 'play', key: 'Shift+Space', run: () => (app.timeline.playing ? app.timeline.pause() : app.timeline.play()) },
@@ -374,6 +375,10 @@ export class UI {
       newTab: { label: 'New document tab', icon: 'browsers', key: 'Ctrl+Shift+N', run: run('new_document', {}) },
       versions: { label: 'Versions…', icon: 'clock-counter-clockwise', run: () => this.versionsDialog() },
       webViewer: { label: 'Export a web viewer (HTML)…', icon: 'globe', run: run('export_web_viewer', {}) },
+      exportAll: { label: 'Export…', icon: 'export', key: 'Ctrl+E', run: () => this.exportDialog() },
+      exportSelection: { label: 'Export the selection…', icon: 'export', run: () => this.exportDialog('selection') },
+      isolate: { label: 'Isolate (hide everything else)', icon: 'eye', run: () => sel().length && app.reg.run('set_properties', { ids: app.store.doc.entities.filter((e) => !e.parent && !sel().includes(e.id) && e.visible !== false).map((e) => e.id), visible: false }) },
+      properties: { label: 'Properties', icon: 'info', run: () => this.show('entity') },
       exportUsdz: { label: 'Export USDZ (iPhone AR)…', icon: 'device-mobile', run: run('export', { format: 'usdz' }) },
       export3mf: { label: 'Export 3MF (3D printing)…', icon: 'printer', run: run('export', { format: '3mf' }) },
       compress: { label: 'Compress a GLB…', icon: 'file-zip', run: async () => {
@@ -424,10 +429,10 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportSection', 'exportDrawing', 'exportUsdz', 'export3mf', 'webViewer', 'compress', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', 'Views', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', 'Views', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'sectionPlanes', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
@@ -454,7 +459,9 @@ export class UI {
         const a = this.actions[id];
         if (!a) return h('div.overline', {}, t(id));
         const on = a.checked?.();
-        return h('button', { role: 'menuitem', onclick: () => (this.closeMenu(), a.run()) }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
+        // a toggle keeps the menu open (#194): switch several things on and off in one go
+        const click = a.checked ? async () => (await a.run(), (this.openName = null), this.openMenu(name, btn)) : () => (this.closeMenu(), a.run());
+        return h('button', { role: 'menuitem', 'aria-checked': a.checked ? String(!!on) : undefined, onclick: click }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
       }),
     );
     const r = btn.getBoundingClientRect();
@@ -467,44 +474,287 @@ export class UI {
     this.openName = null;
   }
 
+  /**
+   * The side toolbar (#175): one button per slot, variants of a tool behind it in a flyout (the corner mark, a
+   * right-click, or a second click opens it); the last one used shows. Navigation lives in the view bar (#174), the
+   * drawing tools (calibrate, control points) in the Drawings menu.
+   */
   buildToolbar() {
     const bar = this.$('toolbar');
-    let group = null;
-    for (const t of TOOLS) {
-      if (group && t.group !== group) bar.append(h('hr'));
-      group = t.group;
-      const b = iconBtn(t.icon, `${tr(t.label)}${t.key ? ` (${t.key})` : ''}`, () => this.app.tools.set(t.id), false);
-      b.dataset.tool = t.id;
+    const byId = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
+    this.slots = TOOLBAR.map((slot) => (slot === '-' ? slot : { ids: [].concat(slot), current: [].concat(slot)[0] }));
+    for (const s of this.slots) {
+      if (s === '-') {
+        bar.append(h('hr'));
+        continue;
+      }
+      const t = () => byId[s.current];
+      const tip = () => `${tr(t().label)}${t().key ? ` (${t().key})` : ''}${s.ids.length > 1 ? ' · more: right-click' : ''}`;
+      const b = h('button.icon-btn.slot', { 'aria-pressed': 'false', 'aria-haspopup': s.ids.length > 1 ? 'menu' : undefined }, icon(t().icon));
+      const flyout = () =>
+        this.popAt(b, s.ids.map((id) => ({ label: `${tr(byId[id].label)}`, icon: byId[id].icon, key: byId[id].key, checked: () => this.app.tools.id === id, run: () => this.app.tools.set(id) })), { side: 'right' });
+      b.onclick = (e) => {
+        if (s.ids.length > 1 && (this.app.tools.id === s.current || e.offsetX > b.clientWidth - 12)) return flyout();
+        this.app.tools.set(s.current);
+      };
+      b.oncontextmenu = (e) => (e.preventDefault(), s.ids.length > 1 && flyout());
+      if (s.ids.length > 1) b.append(h('span.slot-more', { 'aria-hidden': 'true' }));
+      b.dataset.tool = s.current;
+      s.el = b;
+      s.refresh = () => {
+        b.firstChild.className = `ph ph-${t().icon}`;
+        b.title = tip();
+        b.setAttribute('aria-label', tip());
+        b.dataset.tool = s.current;
+      };
+      s.refresh();
       bar.append(b);
     }
-    bar.append(h('hr'), iconBtn('corners-out', 'Zoom extents (Shift+Z)', () => this.actions.zoomExtents.run()));
     this.pluginBar = h('div', { style: { display: 'contents' } });
     bar.append(this.pluginBar);
+  }
+
+  /** A pop-up list under (or beside) a button: [{ label, icon, run, checked, key, keep }] and '-' / 'Heading'. */
+  popAt(anchor, items, { side = 'below', keep = false } = {}) {
+    const pop = this.$('menu-pop');
+    const render = () =>
+      pop.replaceChildren(
+        ...items.map((it) => {
+          if (it === '-') return h('hr');
+          if (typeof it === 'string') return h('div.overline', {}, t(it));
+          const on = it.checked?.();
+          return h(
+            'button',
+            { role: 'menuitem', 'aria-checked': it.checked ? String(!!on) : undefined, onclick: async () => (it.keep || keep ? (await it.run(), render()) : (this.closeMenu(), it.run())) },
+            on ? icon('check') : icon(it.icon || 'dot-outline'),
+            t(it.label),
+            it.key ? h('span.key', {}, it.key) : null,
+          );
+        }),
+      );
+    this.closeMenu();
+    render();
+    this.openName = '(pop)';
+    const r = anchor.getBoundingClientRect();
+    pop.hidden = false;
+    const w = pop.offsetWidth;
+    const left = side === 'right' ? r.right + 6 : Math.min(r.left, innerWidth - w - 8);
+    const top = Math.max(8, Math.min(side === 'right' ? r.top : r.bottom + 4, innerHeight - pop.offsetHeight - 8)); // stays on screen
+    Object.assign(pop.style, { left: `${left}px`, top: `${top}px` });
   }
   addPluginButton({ icon: ic = 'puzzle-piece', label, run }) {
     if (!this.pluginBar.children.length) this.pluginBar.append(h('hr'));
     this.pluginBar.append(iconBtn(ic, label, run));
   }
   onTool(id) {
-    for (const b of this.$('toolbar').querySelectorAll('[data-tool]')) b.setAttribute('aria-pressed', String(b.dataset.tool === id));
+    for (const s of this.slots || []) {
+      if (s === '-') continue;
+      if (s.ids.includes(id)) (s.current = id), s.refresh();
+      s.el.setAttribute('aria-pressed', String(s.ids.includes(id)));
+    }
+    this.renderViewbar?.();
     this.$('vcb').value = '';
   }
 
+  /**
+   * The floating view bar (#174, #194): standard views and navigation tools as two drop-downs, zoom extents, the
+   * number of views, a display panel whose toggles stay open, and the timeline.
+   */
   buildViewbar() {
     const vb = this.$('viewbar');
+    const A = this.actions;
+    const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
+    const drop = (ic, label, items) => {
+      const b = h('button.icon-btn.sm.drop', { title: label, 'aria-label': label, 'aria-haspopup': 'menu' }, icon(ic), icon('caret-down'));
+      b.onclick = () => this.popAt(b, items());
+      return b;
+    };
+    const NAV = ['orbit', 'pan', 'zoomwin', 'walk'];
     const render = () => {
       const s = this.app.store.doc.settings;
+      const tool = this.app.tools?.id;
+      const navTool = TOOLS.find((x) => x.id === (NAV.includes(tool) ? tool : 'orbit'));
       vb.replaceChildren(
-        ...['iso', 'top', 'front', 'right'].map((v) => h('button.icon-btn.sm', { title: `${this.actions[v].label} view`, 'aria-label': `${this.actions[v].label} view`, onclick: this.actions[v].run }, icon(this.actions[v].icon))),
+        drop('cube', 'Standard views (in the pane you last worked in)', () => ['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run }))),
+        drop(navTool.icon, 'Navigate: orbit, pan, zoom window, walk', () => NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) }))),
+        btn('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run()),
+        drop('squares-four', 'Views: one, two, three or four panes', () => ['layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', '-', 'fitPanes'].map((k) => (k === '-' ? k : { label: A[k].label, icon: A[k].icon, run: A[k].run }))),
         h('span.sep'),
-        ...['edges', 'xray', 'shadows', 'grid'].map((k) =>
-          h('button.icon-btn.sm', { title: this.actions[k].label, 'aria-label': this.actions[k].label, 'aria-pressed': String(!!s[k]), onclick: this.actions[k].run }, icon(this.actions[k].icon)),
-        ),
+        drop('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
+        drop('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
+        ...['edges', 'shadows'].map((k) => btn(A[k].icon, A[k].label, A[k].run, s[k])),
         h('span.sep'),
-        h('button.icon-btn.sm', { title: 'Timeline (Ctrl+T)', 'aria-label': 'Timeline (Ctrl+T)', 'aria-pressed': String(this.app.timeline.active), onclick: this.actions.timeline.run }, icon('film-strip')),
+        btn('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active),
       );
     };
     this.renderViewbar = render;
+  }
+
+  /**
+   * One Export dialog (#192): choose what (the model, the selection, a picture, a video, a drawing, survey points),
+   * then the format. Every choice runs the command it always did (export, render_video, export_drawing…).
+   */
+  async exportDialog(what = 'model') {
+    const A = this.actions;
+    const app = this.app;
+    const fmt = (format, label) => ({ label, run: (selection) => app.reg.run('export', { format, ...(selection ? { selection: true } : {}) }) });
+    const MODEL = [fmt('glb', 'GLB: one compact 3D file'), fmt('gltf', 'glTF'), fmt('obj', 'OBJ'), fmt('stl', 'STL (3D printing)'), fmt('3mf', '3MF (3D printing, with colours)'), fmt('usdz', 'USDZ (AR on iPhone and iPad)'), fmt('ifc', 'IFC (BIM)'), fmt('dxf', 'DXF (CAD)'), fmt('landxml', 'LandXML (surfaces, alignments, points)'), fmt('geojson', 'GeoJSON (GIS)'), fmt('shp', 'Shapefile (GIS)')];
+    const act = (label, id) => ({ label, run: () => A[id].run() });
+    const WHAT = {
+      model: ['The whole model', 'cube', [...MODEL, act('Web viewer: one HTML page that opens anywhere', 'webViewer'), act('Compress a GLB (meshopt or Draco)', 'compress')]],
+      selection: ['The selection', 'selection', MODEL],
+      image: ['A picture of the view', 'image', [act('PNG of the view', 'exportPng'), act('Photoreal still (path traced)', 'renderImage'), act('AI render', 'aiRender')]],
+      video: ['A video of the animation', 'film-strip', [act('MP4, WebM, GIF or PNG frames', 'exportVideo')]],
+      drawing: ['A drawing', 'file-pdf', [act('Drawing sheet (PDF, SVG)', 'exportDrawing'), act('Section (SVG, DXF)', 'exportSection')]],
+      survey: ['Survey points', 'map-pin', [act('Points file (CSV, JobXML, LandXML…)', 'exportPoints')]],
+    };
+    const hasSel = app.selection.length > 0;
+    if (what === 'selection' && !hasSel) what = 'model';
+    const format = h('select', { 'aria-label': 'Format' });
+    const fill = () => format.replaceChildren(...WHAT[what][2].map((f, i) => h('option', { value: i }, f.label)));
+    const choices = h(
+      'div.export-what',
+      { role: 'radiogroup', 'aria-label': 'What to export' },
+      ...Object.entries(WHAT).map(([k, [label, ic]]) =>
+        h('label.export-choice', {}, h('input', { type: 'radio', name: 'export-what', value: k, checked: k === what, disabled: k === 'selection' && !hasSel, onchange: () => ((what = k), fill()) }), icon(ic), h('span', {}, label + (k === 'selection' && !hasSel ? ' (select something first)' : ''))),
+      ),
+    );
+    fill();
+    const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, 'What do you want to export? Then pick the format.'), choices, h('label.field', {}, h('span', {}, 'Format'), format));
+    if ((await this.modal('Export', body, [['Export…', 'go'], ['Cancel', null]])) !== 'go') return;
+    try {
+      const r = await WHAT[what][2][+format.value].run(what === 'selection');
+      if (r?.path) this.toast(`Saved ${r.path}`);
+      return r;
+    } catch (e) {
+      this.toast(e.message, 'danger');
+    }
+  }
+
+  /** Right-click in a view (#193): what can be done to what is under the pointer, or to the view itself. */
+  contextMenu(ev) {
+    const app = this.app;
+    const A = this.actions;
+    const vp = app.viewport;
+    const T = app.tools;
+    const a = (id, label) => A[id] && { label: label || A[id].label, icon: A[id].icon, key: A[id].key, run: A[id].run };
+    let items;
+    if (T.tool?.busy?.()) {
+      items = [
+        { label: 'Finish', icon: 'check', key: 'Enter', run: () => T.guard(() => (T.tool.finish ? T.tool.finish() : T.tool.cancel?.())) },
+        { label: 'Cancel', icon: 'x', key: 'Esc', run: () => (T.tool.cancel?.(), T.clear()) },
+        ...(this.snapItems ? ['-', ...this.snapItems()] : []),
+      ];
+    } else {
+      const mesh = vp.pick(ev);
+      const hit = vp.pickAnnotation(ev) || vp.pickPoint() || mesh || vp.pickCurve() || vp.pickUnderlay();
+      if (hit) {
+        const id = app.pickTarget(hit.entityId);
+        if (!app.selection.includes(id)) app.select([id]);
+      }
+      const ents = app.selection.map((id) => app.entity(id)).filter(Boolean);
+      if (ents.length) {
+        const one = ents.length === 1 ? ents[0] : null;
+        const pts = ents.filter((e) => e.type === 'point');
+        const extra = [];
+        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
+        if (one?.derived?.generator === 'corridor') extra.push(a('roadViews'), a('corridorSurface'), a('corridorVolumes'), a('corridorSolids'));
+        if (one?.alignment) extra.push({ label: 'Corridor along this alignment…', icon: 'road-horizon', run: () => this.commandDialog('create_corridor', { alignment: one.name }) });
+        if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('contours'), a('analyze'));
+        items = [
+          one ? one.name : `${ents.length} selected`,
+          ...extra.filter(Boolean),
+          ...(extra.length ? ['-'] : []),
+          a('zoomSel'),
+          a('hide'),
+          a('isolate'),
+          '-',
+          a('group'),
+          ...(one?.type === 'group' ? [a('ungroup')] : []),
+          a('makeComponent'),
+          a('duplicate'),
+          a('copy'),
+          '-',
+          a('exportSelection'),
+          a('lock'),
+          a('delete'),
+          '-',
+          a('properties'),
+        ];
+      } else items = [a('paste'), a('selectAll'), a('unhideAll'), a('sectionPlanes'), '-', a('zoomExtents'), ...['iso', 'top', 'front', 'right'].map((v) => a(v, `${A[v].label} view`)), '-', a('layout1'), a('layout4'), '-', a('exportAll')];
+    }
+    const at = { getBoundingClientRect: () => ({ left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY }) };
+    this.popAt(at, items.filter(Boolean));
+  }
+
+  /** Snap toggles (#180), kept open, and for the right-click menu while drawing: snap only to one kind next click. */
+  snapSettings() {
+    const now = () => ({ ...SNAPS, ...(this.app.store.doc.settings.snaps || {}) });
+    return ['Snap to', ...Object.keys(SNAPS).map((k) => ({ label: SNAP_LABELS[k], icon: 'magnet', checked: () => now()[k] !== false, run: () => this.app.reg.run('set_snaps', { [k]: now()[k] === false }), keep: true }))];
+  }
+  snapItems() {
+    const T = this.app.tools;
+    return ['Next click snaps only to', ...['endpoint', 'midpoint', 'face', 'axis', 'grid'].map((k) => ({ label: SNAP_LABELS[k], icon: 'crosshair', checked: () => T.only === k, run: () => ((T.only = k), T.status(`Next click: ${SNAP_LABELS[k].toLowerCase()} only.`)) }))];
+  }
+
+  /** Section planes (#187): every plane in the model, which one cuts, and flip / move / delete for each. */
+  async sectionPlanesDialog() {
+    const app = this.app;
+    const body = h('div', {});
+    const render = async () => {
+      const r = await app.reg.run('list_section_planes', {});
+      const go = (args) => app.reg.run('set_section_plane', args).then(render).catch((e) => this.toast(e.message, 'danger'));
+      const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
+      body.replaceChildren(
+        r.planes.length
+          ? h(
+              'div.qty',
+              {},
+              h(
+                'table',
+                {},
+                h('thead', {}, h('tr', {}, ...['Plane', 'Cuts', '', '', '', ''].map((c) => h('th', {}, c)))),
+                h(
+                  'tbody',
+                  {},
+                  r.planes.map((p) =>
+                    h(
+                      'tr',
+                      {},
+                      h('td', {}, p.name),
+                      h('td', {}, btn(p.active ? 'eye' : 'eye-slash', p.active ? 'Cutting: click to stop' : 'Cut with this plane', () => go({ name: p.name, active: !p.active }), p.active)),
+                      h('td', {}, btn('arrows-left-right', 'Flip: cut away the other side', () => go({ name: p.name, flip: true }))),
+                      h('td', {}, btn('minus', 'Move back 0.5 m', () => go({ name: p.name, offset: -0.5 }))),
+                      h('td', {}, btn('plus', 'Move forward 0.5 m', () => go({ name: p.name, offset: 0.5 }))),
+                      h('td', {}, btn('trash', 'Delete this plane', () => app.reg.run('delete_section_plane', { name: p.name }).then(render))),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : h('p.small', {}, 'No section planes yet. Use the Section Plane tool (X) on a face, or the section command.'),
+        h('p.small.muted', {}, 'One plane cuts at a time; the others wait in the list. Section fill (View) closes the cut solids.'),
+      );
+    };
+    await render();
+    this.modal('Section planes', body);
+  }
+
+  /** The display toggles (#194): they keep the list open, like a panel. */
+  displayItems() {
+    const A = this.actions;
+    const s = () => this.app.store.doc.settings;
+    const set = (k, v) => this.app.reg.run('set_style', { [k]: v });
+    return [
+      'Show',
+      ...['edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill'].filter((k) => A[k]).map((k) => ({ label: A[k].label, icon: A[k].icon, checked: A[k].checked, run: A[k].run, keep: true })),
+      { label: 'Point labels', icon: 'tag', checked: () => (s().point_labels ?? 'name') !== 'none', run: () => set('point_labels', (s().point_labels ?? 'name') === 'none' ? 'name' : 'none'), keep: true },
+      { label: 'Snap to drawings (PDF)', icon: 'magnet', checked: () => !!s().snap_underlays, run: () => set('snap_underlays', !s().snap_underlays), keep: true },
+      'Style',
+      ...[['shaded', 'Shaded'], ['hidden_line', 'Hidden line'], ['monochrome', 'Monochrome'], ['sketchy', 'Sketchy']].map(([v, label]) => ({ label, icon: 'paint-brush', checked: () => (s().render_style || 'shaded') === v, run: () => set('render_style', v), keep: true })),
+      'Colour by',
+      ...[['material', 'Material'], ['layer', 'Layer']].map(([v, label]) => ({ label, icon: 'palette', checked: () => (s().color_by || 'material') === v, run: () => set('color_by', v), keep: true })),
+    ];
   }
 
   // ---------------------------------------------------------------- dock
@@ -1007,6 +1257,7 @@ export class UI {
         'div.card',
         {},
         h('div.overline', {}, 'Survey point'),
+        h('label.row.small.param-row', {}, h('span', {}, 'Number'), h('input.grow', { value: e.name, 'aria-label': 'Point number or name', onchange: (ev) => run('set_properties', { ids: [e.id], name: ev.target.value.trim() }) })),
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
@@ -1241,6 +1492,40 @@ export class UI {
     );
   }
 
+  /** Find the models on this PC and connect one in a click (#198). */
+  aiFinder() {
+    const app = this.app;
+    const box = h('div.card.ai-finder', {});
+    const render = (r) => {
+      const cur = app.settings.ai;
+      const using = (s, m) => cur.provider === s.provider && (cur[s.provider]?.model === m) && (cur[s.provider]?.baseUrl || '').replace(/\/$/, '') === s.baseUrl;
+      box.replaceChildren(
+        h('div.row', {}, h('strong.grow', {}, 'Models on this PC'), h('button.btn.sm', { onclick: () => find() }, icon('magnifying-glass'), r ? 'Look again' : 'Find them')),
+        ...(r
+          ? [
+              h('p.small', {}, r.advice),
+              ...r.servers.map((s) => {
+                const pick = h('select', { 'aria-label': `${s.name} model` }, s.models.map((m) => h('option', { value: m, selected: m === s.suggested }, m)));
+                return h(
+                  'div.row.small',
+                  {},
+                  h('span', { style: { minWidth: '120px' } }, s.name),
+                  s.models.length ? pick : h('span.muted.grow', {}, 'running, no model loaded'),
+                  s.models.length ? h('button.btn.sm.primary', { onclick: () => app.reg.run('use_ai_model', { provider: s.provider, base_url: s.baseUrl, model: pick.value }).then(() => (this.toast(`The copilot now uses ${pick.value} on ${s.name}.`), app.ai.renderHead(), this.renderDock())).catch((e) => this.toast(e.message, 'danger')) }, using(s, pick.value) ? 'In use' : 'Use') : null,
+                );
+              }),
+              ...(r.huggingface.length ? [h('p.small.muted', {}, `Downloaded from Hugging Face: ${r.huggingface.map((m) => m.id + (m.gguf ? ' (GGUF)' : '')).join(', ')}. Load one in Ollama or LM Studio to use it here.`)] : []),
+              r.claudeDesktop ? h('p.small', {}, 'Claude Desktop is installed: ', h('button.btn.sm', { onclick: () => this.actions.mcp?.run() }, 'Connect it with MCP'), ' so Claude can drive this app.') : null,
+            ]
+          : [h('p.small.muted', {}, 'Finds Ollama, LM Studio, llama.cpp, vLLM, Jan and GPT4All running here, and models downloaded from Hugging Face.')]),
+      );
+    };
+    const find = () => app.reg.run('detect_local_models', {}).then((r) => ((this.aiFound = r), render(r))).catch((e) => this.toast(e.message, 'danger'));
+    render(this.aiFound);
+    if (!this.aiFound) find();
+    return box;
+  }
+
   panel_settings() {
     const app = this.app;
     const s = app.settings;
@@ -1258,12 +1543,13 @@ export class UI {
         ? [field('Model', ai.anthropic.model, (e) => save({ ai: { anthropic: { model: e.target.value } } })), field(`API key ${ai.anthropic.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { anthropic: { apiKey: e.target.value } } }), { type: 'password', placeholder: 'sk-ant-…' })]
         : prov === 'openai'
           ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
-          : [field('Ollama URL', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
+          : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
     return h(
       'div.panel',
       {},
       ...this.accountCard(),
       h('h3', {}, 'AI'),
+      this.aiFinder(),
       h(
         'label.field',
         {},

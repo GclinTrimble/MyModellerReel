@@ -181,7 +181,7 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .grow { flex: 1; min-width: 0; }
 .field { display: flex; flex-direction: column; gap: var(--my-space-1); }
 .field > span { font-size: var(--my-text-sm); color: var(--my-text-muted); }
-.input, .panel input:not([type='color']):not([type='checkbox']):not([type='range']), .panel select, .panel textarea {
+.input, .panel input:not([type='color']):not([type='checkbox']):not([type='range']):not([type='radio']), .panel select, .panel textarea {
   height: var(--my-control-sm); padding: 0 var(--my-space-2); border-radius: var(--my-radius-xs);
   border: 1px solid var(--my-border); background: var(--my-surface); min-width: 0; width: 100%;
 }
@@ -466,3 +466,17 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .doc-tabs .x { color: var(--my-text-muted); padding: 0 2px; }
 .doc-tabs .x:hover { color: var(--my-danger, #c8553d); }
 .pane-board { position: absolute; display: block; cursor: crosshair; }
+/* the side toolbar's grouped buttons (#175) and the view bar's drop-downs (#174) */
+.icon-btn.slot { position: relative; }
+.slot-more { position: absolute; right: 3px; bottom: 3px; width: 0; height: 0; border-left: 5px solid transparent; border-bottom: 5px solid currentColor; opacity: 0.6; }
+.icon-btn.sm.drop { width: auto; padding: 0 var(--my-space-1); display: inline-flex; gap: 1px; }
+.icon-btn.sm.drop .ph-caret-down { font-size: 9px; opacity: 0.7; }
+#select-box[data-mode='crossing'] { border-style: dashed; background: rgba(79, 160, 90, 0.10); border-color: #3c9a4e; }
+#select-box[data-mode='window'] { border-style: solid; }
+/* the Export dialog (#192) */
+.export-what { display: grid; grid-template-columns: 1fr 1fr; gap: var(--my-space-1); margin: var(--my-space-2) 0; }
+.export-choice { display: flex; align-items: center; gap: var(--my-space-2); padding: var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); cursor: pointer; }
+.export-choice:has(input:checked) { border-color: var(--my-accent); background: var(--my-accent-tint); }
+.export-choice:has(input:disabled) { opacity: 0.55; cursor: default; }
+.export-choice input[type='radio'] { width: auto; height: auto; flex: none; margin: 0; }
+.export-choice span { flex: 1; text-align: left; }

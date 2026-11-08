@@ -344,6 +344,9 @@ export class IO {
   generateMesh(req) {
     return native().invoke('mesh:generate', req);
   }
+  detectModels() {
+    return native().invoke('ai:detect');
+  }
   transcribe(input, lang) {
     return native().invoke('voice:transcribe', input, lang);
   }

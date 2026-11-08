@@ -111,6 +111,55 @@ ipcMain.handle('help:read', (_, id) => {
 });
 ipcMain.handle('app:info', () => ({ test: !!process.env.MMR_TEST, version: app.getVersion(), userData: USER, apiPort: settings.api.port, pluginsDir: USER_PLUGINS, appRoot: ROOT }));
 ipcMain.handle('settings:get', () => publicSettings());
+// Local AI servers and models on this PC (#198): what answers on the usual ports, and the Hugging Face cache.
+ipcMain.handle('ai:detect', async () => {
+  const probe = async (url) => {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(900) });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  const servers = [];
+  const ol = await probe('http://127.0.0.1:11434/api/tags');
+  if (ol) servers.push({ name: 'Ollama', provider: 'ollama', baseUrl: 'http://127.0.0.1:11434', models: (ol.models || []).map((m) => m.name) });
+  for (const [name, port] of [['LM Studio', 1234], ['llama.cpp / LocalAI', 8080], ['vLLM', 8000], ['Jan', 1337], ['GPT4All', 4891]]) {
+    const r = await probe(`http://127.0.0.1:${port}/v1/models`);
+    if (r) servers.push({ name, provider: 'openai', baseUrl: `http://127.0.0.1:${port}/v1`, models: (r.data || []).map((m) => m.id) });
+  }
+  // models downloaded from Hugging Face (they need a server such as Ollama or LM Studio to run)
+  const hub = path.join(process.env.HF_HOME || path.join(require('node:os').homedir(), '.cache', 'huggingface'), 'hub');
+  let huggingface = [];
+  try {
+    huggingface = fs.readdirSync(hub).filter((d) => d.startsWith('models--')).map((d) => {
+      let gguf = false;
+      try {
+        const snaps = path.join(hub, d, 'snapshots');
+        gguf = fs.readdirSync(snaps).some((s) => fs.readdirSync(path.join(snaps, s)).some((f) => f.endsWith('.gguf')));
+      } catch {}
+      return { id: d.slice(8).replace('--', '/'), gguf };
+    });
+  } catch {}
+  const claudeDesktop = fs.existsSync(path.join(process.env.APPDATA || '', 'Claude'));
+  // installed but not running: the app and the models it has, so we can say "start it"
+  const home = require('node:os').homedir();
+  const local = process.env.LOCALAPPDATA || '';
+  const ls = (dir) => {
+    try {
+      return fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+  };
+  const installed = [];
+  const ollamaModels = ls(path.join(home, '.ollama', 'models', 'manifests', 'registry.ollama.ai', 'library')).flatMap((m) => ls(path.join(home, '.ollama', 'models', 'manifests', 'registry.ollama.ai', 'library', m)).map((t) => `${m}:${t}`));
+  if (!ol && (fs.existsSync(path.join(local, 'Programs', 'Ollama')) || ollamaModels.length)) installed.push({ name: 'Ollama', models: ollamaModels, start: 'Start Ollama (from the Start menu, or run "ollama serve").' });
+  const lms = [path.join(home, '.lmstudio', 'models'), path.join(home, '.cache', 'lm-studio', 'models')].flatMap((d) => ls(d).flatMap((pub) => ls(path.join(d, pub)).map((m) => `${pub}/${m}`)));
+  if (!servers.some((s) => s.name === 'LM Studio') && (fs.existsSync(path.join(local, 'Programs', 'LM Studio')) || lms.length)) installed.push({ name: 'LM Studio', models: lms, start: 'Open LM Studio, load a model and turn on its local server (Developer tab).' });
+  return { servers, installed, huggingface, claudeDesktop };
+});
+
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
   if (patch?.ai?.image?.openai && !patch.ai.image.openai.apiKey) delete patch.ai.image.openai.apiKey;
