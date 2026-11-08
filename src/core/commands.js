@@ -56,6 +56,9 @@ import * as Q from './query.js';
 import { validate } from './schema.js';
 import * as LY from './layout.js';
 import * as RD from './roads.js';
+import * as PL from './planar.js';
+import * as TX from './textures.js';
+import * as CRS from './crs.js';
 import { MATERIALS } from './materials.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
@@ -441,10 +444,36 @@ function registerCore(reg, ctx) {
     return place(ctx, null, a, { name: a.height ? 'Prism' : 'Face' }, ['prism', { points: a.points, height: a.height || 0 }]);
   }, true);
 
-  def('create', 'create_face', 'A flat face from 3+ coplanar world points (walls, roofs, any plane). push_pull it to give it thickness.', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z],...]' }, normal: v3('which side is the front (push_pull outwards). Default: up for horizontal faces'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
+  def('create', 'create_face', 'A flat face from 3+ coplanar world points (walls, roofs, any plane). push_pull it to give it thickness.', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z],...]' }, normal: v3('which side is the front (push_pull outwards). Default: up for horizontal faces'), name: common.name, color: common.color, tag: common.tag, split: bool('drawn over a flat shape on the same plane: split its faces where they overlap, one shape (default false; the drawing tools set it)'), parent: str('the group it is drawn in (with split)') }, ['points']), (a) => {
     if (a.points.length < 3 || !G.isPlanar(a.points, 1e-3)) throw new Error('Need 3+ points on one plane.');
     const n = G.polygonNormal(a.points);
     const want = a.normal || (Math.abs(n[1]) > 0.99 ? [0, 1, 0] : n);
+    // drawn over a flat shape on the same plane (#179): one shape, its faces split where they overlap
+    if (a.split) {
+      const doc = ctx.doc;
+      const N = G.norm(want);
+      const d = G.dot(N, a.points[0]);
+      const fr = PL.planeFrame(N, a.points[0]);
+      const cut2 = a.points.map(fr.to);
+      const flatOn = (e) => {
+        if (!e.mesh || e.derived || e.component || e.visible === false || e.locked || (e.parent || null) !== (a.parent || null)) return null;
+        const wm = D.worldMesh(doc, e);
+        if (!wm.f.length || wm.f.some((f, i) => Math.abs(Math.abs(G.dot(G.faceNormal(wm, i), N)) - 1) > 1e-6 || f.some((k) => Math.abs(G.dot(N, wm.v[k]) - d) > 1e-4))) return null;
+        const loops = wm.f.map((f) => f.map((k) => wm.v[k]));
+        return loops.some((l) => PL.overlaps(l.map(fr.to), cut2)) ? loops : null;
+      };
+      for (const e of doc.entities) {
+        const loops = flatOn(e);
+        if (!loops) continue;
+        const r = PL.splitFaces(loops, a.points, N);
+        const world = PL.meshOfLoops(r.faces);
+        const inv = D.worldMatrix(doc, e).clone().invert().elements;
+        const local = ([x, y, z]) => [0, 1, 2].map((k) => Math.round((inv[k] * x + inv[4 + k] * y + inv[8 + k] * z + inv[12 + k]) * 1e6) / 1e6);
+        e.mesh = { v: world.v.map(local), f: world.f };
+        ctx.selection.set([e.id]);
+        return { ...summary(doc, e), split: r.kinds.length, regions: r.kinds, note: `Drawn over ${e.name}: its faces are split where the new shape overlaps them; push / pull each part on its own. Group shapes to keep them apart.` };
+      }
+    }
     const { mesh, origin } = G.recenter(G.flatFace(a.points, want));
     return place(ctx, mesh, { ...a, position: origin }, { name: 'Face' });
   }, true);
@@ -1067,6 +1096,13 @@ function registerCore(reg, ctx) {
     return s;
   };
 
+  def('terrain', 'suggest_coordinate_systems', 'Coordinate systems to choose from for a place (latitude, longitude; default the model\'s geolocation) or for words (a country, a name, "UTM 31"): the national grids that cover it, its UTM zone, with EPSG codes. set_coordinate_system then records one.', obj({ latitude: num('degrees, north positive'), longitude: num('degrees, east positive'), query: str('a country, a name or a code') }), (a) => {
+    const geoloc = ctx.doc.settings.geolocation || {};
+    const latitude = a.latitude ?? geoloc.latitude ?? null;
+    const longitude = a.longitude ?? geoloc.longitude ?? null;
+    if (latitude === null && !a.query) throw new Error('Give a latitude and longitude, set_geolocation first, or words such as a country.');
+    return { latitude, longitude, systems: CRS.suggest({ latitude, longitude, query: a.query || '' }) };
+  });
   def('terrain', 'set_coordinate_system', 'The project coordinate system: an EPSG code and name (recorded and written to GLB exports), and an optional site grid (origin [E, N], rotation in degrees, scale factor) for importing local grid coordinates.', obj({ epsg: num('EPSG code, e.g. 2193'), name: str('name, e.g. NZGD2000 / NZTM'), grid: obj({ origin: { type: 'array', items: { type: 'number' } }, rotation: num('degrees'), scale: num('factor') }, []) }), (a) => {
     const g = S.geo(ctx.doc);
     if (a.epsg !== undefined || a.name !== undefined) g.crs = { epsg: a.epsg ?? g.crs?.epsg ?? null, name: a.name ?? g.crs?.name ?? '' };
@@ -1074,10 +1110,24 @@ function registerCore(reg, ctx) {
     return g;
   }, true);
 
-  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points') }), (a) => {
+  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points'), at: v3('a point of the model (local x, y, z) that has these coordinates: the model stays where it is and is georeferenced around it (#190)'), north_angle: num('grid north: degrees clockwise from the model\'s −z') }), (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const old = g.base || [0, 0, 0];
+    if (a.north_angle !== undefined) ctx.doc.settings.geolocation = { ...(ctx.doc.settings.geolocation || {}), north_angle: a.north_angle };
+    if (a.at) {
+      // this model point is (E, N, Z): nothing moves; survey points keep their place and take new coordinates
+      if ([a.e, a.n].some((x) => x === undefined)) throw new Error('With at, give the point\'s e and n (and z).');
+      const [x, y, z] = a.at;
+      const nb = [a.e - x, a.n + z, (a.z ?? old[2] + y) - y];
+      for (const p of S.points(doc)) {
+        const lp = p.parent ? D.worldMatrix(doc, p).elements.slice(12, 15) : p.position;
+        Object.assign(p.point, { e: r4(nb[0] + lp[0]), n: r4(nb[1] - lp[2]), z: r4(nb[2] + lp[1]) });
+      }
+      g.base = nb.map(r4);
+      S.placePoints(doc);
+      return { base: g.base, at: a.at, ...(a.north_angle !== undefined ? { north_angle: a.north_angle } : {}) };
+    }
     let nb;
     if (a.auto) {
       const pts = S.points(doc);
@@ -2335,21 +2385,26 @@ function registerCore(reg, ctx) {
     return annotSummary(doc, e);
   }, true);
 
-  def('annotate', 'add_label', 'A text label with a leader line pointing at something. text is a template: {name}, {area}, {footprint}, {volume}, {length}, {height}, {elevation}, {tag}, {meta.key}, kept up to date. Default "{name}".', obj({ at: REF, id: str('the entity it points at (its middle) when at is not given'), text: str('template, default "{name}"'), offset: v3('from the point to the text, m (default [0.6, 0.9, 0])'), name: common.name }), (a) => {
+  // how a label or dimension text looks (#183)
+  const LABEL_STYLE = { leader: bool('a leader line to what it points at (default true); false: the text alone'), size: num('text height in pixels (default 12)'), plate: str('white (default) or none', ['white', 'none']), color: str('text colour, #rrggbb') };
+  def('annotate', 'add_label', 'A text label with a leader line pointing at something. text is a template: {name}, {area}, {footprint}, {volume}, {length}, {height}, {elevation}, {tag}, {meta.key}, kept up to date. Default "{name}".', obj({ at: REF, id: str('the entity it points at (its middle) when at is not given'), text: str('template, default "{name}"'), offset: v3('from the point to the text, m (default [0.6, 0.9, 0])'), ...LABEL_STYLE, name: common.name }), (a) => {
     const doc = ctx.doc;
     const ref = AN.makeRef(doc, a.at ?? a.id ?? targets(ctx, {})[0]?.id);
-    const e = annot(doc, { name: a.name || D.uniqueName(doc, 'Label'), annotation: { type: 'label', refs: [ref], text: a.text || '{name}', ...(a.offset ? { offset: a.offset } : {}) } }, AN.DIMS, '#1d262c');
+    const style = Object.fromEntries(Object.keys(LABEL_STYLE).filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
+    const e = annot(doc, { name: a.name || D.uniqueName(doc, a.leader === false ? 'Text' : 'Label'), annotation: { type: 'label', refs: [ref], text: a.text || '{name}', ...(a.offset ? { offset: a.offset } : {}), ...style } }, AN.DIMS, '#1d262c');
     ctx.selection.set([e.id]);
     return annotSummary(doc, e);
   }, true);
 
-  def('annotate', 'edit_annotation', 'Change a dimension or label: its text (template), offset or side.', obj({ id, text: str('label template, or the dimension text ("<>" is the value; "" for the measured value)'), offset: { description: 'dimension: m; label: [x, y, z]' }, normal: v3('dimension side') }, ['id']), (a) => {
+  def('annotate', 'edit_annotation', 'Change a dimension or label after placing it: its text (template), offset (how far a dimension line stands off, or where a label text sits), text_shift (a dimension text slid along its line, m), side, and a label style (leader, size, plate, color).', obj({ id, text: str('label template, or the dimension text ("<>" is the value; "" for the measured value)'), offset: { description: 'dimension: m; label: [x, y, z]' }, text_shift: num('dimension: slide the text along the line, m'), normal: v3('dimension side'), ...LABEL_STYLE }, ['id']), (a) => {
     const doc = ctx.doc;
     const e = D.resolve(doc, a.id)[0];
     if (!e.annotation) throw new Error(`${e.name} is not a dimension or label.`);
     const n = e.annotation;
     if (a.text !== undefined) n.type === 'label' ? (n.text = a.text) : a.text ? (n.text_override = a.text) : delete n.text_override;
     if (a.offset !== undefined) n.offset = a.offset;
+    if (a.text_shift !== undefined) n.text_shift = a.text_shift;
+    for (const k of Object.keys(LABEL_STYLE)) if (a[k] !== undefined) n[k] = a[k];
     if (a.normal) n.normal = a.normal;
     AN.syncAnnotations(doc);
     return annotSummary(doc, e);
@@ -2524,6 +2579,40 @@ function registerCore(reg, ctx) {
     return { updated: ents.map((e) => e.id), texture: ents[0].material.texture };
   }, true);
 
+  // textured materials made here (#186): colour, normal and roughness images, kept as model assets
+  const texCache = new Map();
+  const libraryMaps = (name) => {
+    const c = texCache.get(name);
+    if (c && Assets.get(c.color)) return c;
+    const m = TX.makeMaps(name, 512);
+    const put = (px, k) => Assets.put(TX.png(px, m.size, m.size), { mime: 'image/png', name: `${name} ${k}.png` });
+    const maps = { color: put(m.color, 'colour'), normal: put(m.normal, 'normal'), roughness: put(m.rough, 'roughness') };
+    texCache.set(name, maps);
+    return maps;
+  };
+  def('edit', 'list_material_library', 'The textured materials the app makes itself (wood, brick, stone, concrete, plaster, tiles, roof tiles, marble, grass, gravel, asphalt, brushed metal), by category, with the real size of one tile.', obj({}), () =>
+    Object.entries(TX.LIBRARY).map(([name, m]) => ({ name, category: m.category, tile_m: m.tile })),
+  );
+  def('edit', 'apply_material', 'Give shapes a textured material from the library (list_material_library): a colour image, a normal map (relief) and a roughness map, projected at real size. scale: metres one tile covers (default the material\'s own).', obj({ ids, material: str('library material', Object.keys(TX.LIBRARY)), scale: num('m one tile covers'), projection: str('box (default), planar or cylindrical', ['box', 'planar', 'cylindrical']), rotation: num('degrees') }, ['material']), (a) => {
+    const doc = ctx.doc;
+    const lib = TX.LIBRARY[a.material];
+    if (!lib) throw new Error(`No material "${a.material}". Materials: ${Object.keys(TX.LIBRARY).join(', ')}.`);
+    const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(doc, e.id)]).filter((e) => e.mesh);
+    if (!ents.length) throw new Error('Select the shapes to give it to (or pass ids).');
+    const maps = libraryMaps(a.material);
+    const s = a.scale || lib.tile;
+    for (const e of ents)
+      e.material = {
+        ...e.material,
+        name: a.material,
+        color: '#ffffff',
+        roughness: 1,
+        metalness: lib.metalness,
+        texture: { asset: maps.color, projection: a.projection || 'box', size: [s, s], ...(a.rotation ? { rotation: a.rotation } : {}) },
+        maps: { ...(e.material.maps || {}), normal: maps.normal, roughness: maps.roughness },
+      };
+    return { updated: ents.map((e) => e.id), material: a.material, tile_m: s };
+  }, true);
   def('edit', 'set_material_maps', 'Physical material details: glass (transmission 0–1, ior, thickness m), clear coat, glow strength, and image maps (normal, roughness, ao: absolute image paths, "none" to remove; they use the shape\'s texture projection).', obj({ ids, transmission: num('0–1 (glass)'), ior: num('index of refraction (glass 1.5)'), thickness: num('m'), clearcoat: num('0–1'), clearcoat_roughness: num('0–1'), emissive_intensity: num('glow strength (default 1)'), normal_map: str('path or "none"'), roughness_map: str('path or "none"'), ao_map: str('path or "none"'), normal_scale: num('bumpiness (default 1)') }), async (a) => {
     const doc = ctx.doc;
     const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(doc, e.id)]).filter((e) => e.mesh);

@@ -75,14 +75,19 @@ export function drawLabels(app) {
     if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
     const x = ((v.x + 1) / 2) * r.width;
     const y = ((1 - v.y) / 2) * r.height;
-    g.font = '600 12px "Open Sans", system-ui, sans-serif';
+    // the label's style (#183): size, plate, colour; text alone sits centred on its point
+    const size = Math.max(6, Math.min(72, a.size || 12));
+    const lh = Math.round(size * 1.33);
+    g.font = `600 ${size}px "Open Sans", system-ui, sans-serif`;
     const lines = a.text_now.split('\n');
     const w = Math.max(...lines.map((t) => g.measureText(t).width));
-    const x0 = a.type === 'label' ? x + 4 : x - w / 2;
-    g.fillStyle = 'rgba(255,255,255,0.9)';
-    g.fillRect(x0 - 3, y - 9, w + 6, 16 * lines.length + 2);
-    g.fillStyle = app.viewport.selection?.includes?.(e.id) ? '#c8553d' : '#1d262c';
-    lines.forEach((t, i) => g.fillText(t, x0, y + i * 16));
+    const x0 = a.type === 'label' && a.leader !== false ? x + 4 : x - w / 2;
+    if (a.plate !== 'none') {
+      g.fillStyle = 'rgba(255,255,255,0.9)';
+      g.fillRect(x0 - 3, y - lh * 0.56, w + 6, lh * lines.length + 2);
+    }
+    g.fillStyle = app.viewport.selection?.includes?.(e.id) ? '#c8553d' : a.color || '#1d262c';
+    lines.forEach((t, i) => g.fillText(t, x0, y + i * lh));
     g.font = '600 11px "Open Sans", system-ui, sans-serif';
   }
   // alignment stations: 0+000, 0+020, …

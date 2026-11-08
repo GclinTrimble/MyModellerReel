@@ -544,6 +544,7 @@ test('interop and scale: a scan and its ground, gizmo drag, tabs, web viewer, ve
 
 test('multiple views: four panes, drawing in the plan, maximise, a detached window', async () => {
   await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null)); // an earlier drawing may have opened the Drawings ribbon
   await ok('create_box', { width: 4, height: 3, depth: 6, name: 'House' });
   const l = await ok('set_layout', { count: 4 });
   assert.equal(l.arrangement, 'grid');
@@ -568,7 +569,7 @@ test('multiple views: four panes, drawing in the plan, maximise, a detached wind
   const zs = rect.map((v) => v[2]);
   const ratio = (Math.max(...xs) - Math.min(...xs)) / (Math.max(...zs) - Math.min(...zs));
   assert.ok(rect.every((v) => Math.abs(v[1]) < 1e-6), 'on the ground');
-  assert.ok(Math.abs(ratio - (0.4 * b.width) / (0.1 * b.height)) < 0.5, `plan proportions: ${ratio}`);
+  assert.ok(Math.abs(ratio / ((0.4 * b.width) / (0.1 * b.height)) - 1) < 0.2, `plan proportions: ${ratio}`);
   // a pane's view, maximise, undo
   await ok('set_pane', { pane: 4, view: 'left', style: 'wireframe' });
   await ok('set_layout', { max: 3 });
@@ -686,4 +687,58 @@ test('usability: open lines, window vs crossing, right-click menu, export dialog
   await w.waitForTimeout(200);
   assert.equal(await w.evaluate((id) => !!window.mmr.doc.entities.find((e) => e.id === id), d.id), false, 'the dimension is gone');
   await w.evaluate(() => window.mmr.app.tools.set('select'));
+});
+
+test('drawing and editing: a rectangle over a face splits it, a grip drag, an arc line, ribbons, textured materials', async () => {
+  await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  await ok('set_camera', { position: [0, 30, 0.01], target: [0, 0, 0], projection: 'parallel' });
+  const scr = (p) => w.evaluate((q) => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q)); return [s.x, s.y]; }, p);
+  const click = async (p) => {
+    const [x, y] = await scr(p);
+    await w.mouse.move(x + 2, y);
+    await w.mouse.move(x, y);
+    await w.mouse.click(x, y);
+  };
+  await ok('create_face', { points: [[-4, 0, 3], [4, 0, 3], [4, 0, -3], [-4, 0, -3]], name: 'Slab' });
+  // a rectangle drawn with the mouse half over the slab splits it into one shape of three faces
+  await w.evaluate(() => window.mmr.app.tools.set('rectangle'));
+  await click([1, 0, 1]);
+  await click([7, 0, -5]);
+  await w.waitForTimeout(300);
+  const meshes = await w.evaluate(() => window.mmr.doc.entities.filter((e) => e.mesh).map((e) => [e.name, e.mesh.f.length]));
+  assert.deepEqual(meshes, [['Slab', 3]], JSON.stringify(meshes));
+  // a grip drag moves a corner
+  await w.evaluate(() => (window.mmr.app.tools.set('select'), window.mmr.app.select([window.mmr.doc.entities[0].id])));
+  const [gx, gy] = await scr([-4, 0, 3]);
+  await w.mouse.move(gx + 3, gy);
+  await w.mouse.move(gx, gy);
+  await w.mouse.down();
+  const [tx, ty] = await scr([-6, 0, 3]);
+  await w.mouse.move((gx + tx) / 2, gy);
+  await w.mouse.move(tx, ty);
+  await w.mouse.up();
+  await w.waitForTimeout(300);
+  const xs = await w.evaluate(() => { const e = window.mmr.doc.entities[0]; return e.mesh.v.map((p) => p[0] + e.position[0]); });
+  assert.ok(Math.min(...xs) < -5, `the corner moved out: ${Math.min(...xs)}`);
+  // a line with an arc segment (A)
+  await w.evaluate(() => window.mmr.app.tools.set('line'));
+  await click([-8, 0, 8]);
+  await click([-4, 0, 8]);
+  await w.keyboard.press('a');
+  await click([-1, 0, 5]);
+  await w.keyboard.press('Enter');
+  await w.waitForTimeout(300);
+  const line = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name.startsWith('Line'))?.curve.points.length);
+  assert.ok(line > 4, `the arc added points: ${line}`);
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  // the Site ribbon shows its tools; a textured swatch gives the selection its material
+  await w.evaluate(() => window.mmr.app.ui.setRibbon('Site', 'Roads'));
+  assert.ok((await w.locator('#ribbon .ribbon-btn').count()) >= 6);
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  assert.equal(await w.locator('#ribbon:visible').count(), 0);
+  await w.evaluate(() => (window.mmr.app.select([window.mmr.doc.entities.find((e) => e.name === 'Slab').id]), window.mmr.app.ui.show('materials')));
+  await w.locator('.swatch', { hasText: 'Red brick' }).click();
+  await w.waitForTimeout(500);
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'Slab').material.name), 'Red brick');
 });

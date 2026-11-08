@@ -6,6 +6,7 @@ export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
+import * as TX from '../core/textures.js';
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
@@ -40,6 +41,10 @@ export class UI {
     this.buildActions();
     this.buildMenus();
     this.buildToolbar();
+    try {
+      const r = JSON.parse(localStorage.getItem('mymodellerreel.ribbon') || 'null');
+      if (r?.name) queueMicrotask(() => this.setRibbon(r.name, r.tab));
+    } catch {}
     this.buildViewbar();
     this.buildTabs();
     this.buildPalette();
@@ -376,6 +381,8 @@ export class UI {
       versions: { label: 'Versions…', icon: 'clock-counter-clockwise', run: () => this.versionsDialog() },
       webViewer: { label: 'Export a web viewer (HTML)…', icon: 'globe', run: run('export_web_viewer', {}) },
       exportAll: { label: 'Export…', icon: 'export', key: 'Ctrl+E', run: () => this.exportDialog() },
+      ribbonSite: { label: 'Site ribbon: survey, surfaces, design, roads, earthworks', icon: 'mountains', checked: () => this.ribbon?.name === 'Site', run: () => this.setRibbon(this.ribbon?.name === 'Site' ? null : 'Site') },
+      ribbonDrawings: { label: 'Drawings ribbon: bring in, scale, place, take lines out', icon: 'file-pdf', checked: () => this.ribbon?.name === 'Drawings', run: () => this.setRibbon(this.ribbon?.name === 'Drawings' ? null : 'Drawings') },
       exportSelection: { label: 'Export the selection…', icon: 'export', run: () => this.exportDialog('selection') },
       isolate: { label: 'Isolate (hide everything else)', icon: 'eye', run: () => sel().length && app.reg.run('set_properties', { ids: app.store.doc.entities.filter((e) => !e.parent && !sel().includes(e.id) && e.visible !== false).map((e) => e.id), visible: false }) },
       properties: { label: 'Properties', icon: 'info', run: () => this.show('entity') },
@@ -411,8 +418,8 @@ export class UI {
         if (path) run('load_feature_library', { path })();
       } },
       processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
-      coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: form('set_coordinate_system') },
-      basePoint: { label: 'Base point…', icon: 'crosshair', run: form('set_base_point') },
+      coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
+      basePoint: { label: 'Base point: click a point, type its coordinates', icon: 'crosshair', run: () => app.tools.set('basepoint') },
       units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
       survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
@@ -435,8 +442,8 @@ export class UI {
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', 'Views', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'sectionPlanes', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
-      Drawings: ['importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
+      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
@@ -740,6 +747,85 @@ export class UI {
     this.modal('Section planes', body);
   }
 
+  /** Pick a coordinate system from a place or words (#189): suggestions with their EPSG codes, one click to use. */
+  async crsDialog() {
+    const app = this.app;
+    const geo = app.store.doc.settings.geolocation || {};
+    const lat = h('input', { type: 'number', step: 'any', value: geo.latitude ?? '', placeholder: '48.85', 'aria-label': 'Latitude' });
+    const lon = h('input', { type: 'number', step: 'any', value: geo.longitude ?? '', placeholder: '2.35', 'aria-label': 'Longitude' });
+    const words = h('input', { placeholder: 'a country, a name, UTM 31…', 'aria-label': 'Words' });
+    const list = h('div', {});
+    const cur = app.store.doc.geo?.crs;
+    const find = async () => {
+      const args = { ...(lat.value !== '' && lon.value !== '' ? { latitude: +lat.value, longitude: +lon.value } : {}), ...(words.value.trim() ? { query: words.value.trim() } : {}) };
+      try {
+        const r = await app.reg.run('suggest_coordinate_systems', args);
+        list.replaceChildren(
+          r.systems.length
+            ? h(
+                'div.qty',
+                {},
+                h(
+                  'table',
+                  {},
+                  h('thead', {}, h('tr', {}, ...['EPSG', 'Name', 'Where', ''].map((c) => h('th', {}, c)))),
+                  h(
+                    'tbody',
+                    {},
+                    r.systems.map((s) =>
+                      h(
+                        'tr',
+                        {},
+                        h('td', {}, String(s.epsg)),
+                        h('td', { style: { textAlign: 'left' } }, s.name),
+                        h('td', { style: { textAlign: 'left' }, title: s.why }, s.area),
+                        h('td', {}, h('button.btn.sm' + (cur?.epsg === s.epsg ? '' : '.primary'), { onclick: async () => {
+                          await app.reg.run('set_coordinate_system', { epsg: s.epsg, name: s.name });
+                          if (args.latitude !== undefined && (geo.latitude !== args.latitude || geo.longitude !== args.longitude)) await app.reg.run('set_geolocation', { latitude: args.latitude, longitude: args.longitude });
+                          this.toast(`Coordinate system: EPSG:${s.epsg} ${s.name}`);
+                          this.closeModal();
+                        } }, cur?.epsg === s.epsg ? 'In use' : 'Use')),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            : h('p.small', {}, 'Nothing found: try a country name or a UTM zone.'),
+        );
+      } catch (e) {
+        list.replaceChildren(h('p.small', {}, e.message));
+      }
+    };
+    const body = h(
+      'div.panel.form',
+      { style: { padding: 0 } },
+      h('p.small.muted', {}, `Where is the project? Give its latitude and longitude (from a map, or the geolocation), or words such as a country. ${cur ? `Now: ${cur.epsg ? `EPSG:${cur.epsg} ` : ''}${cur.name || ''}.` : ''}`),
+      h('div.row', {}, h('label.field.grow', {}, h('span', {}, 'Latitude'), lat), h('label.field.grow', {}, h('span', {}, 'Longitude'), lon)),
+      h('label.field', {}, h('span', {}, 'Or words'), words),
+      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest')),
+      list,
+    );
+    for (const el of [lat, lon, words]) el.onkeydown = (e) => e.key === 'Enter' && find();
+    if (geo.latitude !== undefined || words.value) find();
+    this.modal('Coordinate system', body);
+  }
+  /** The base point at a clicked model point (#190): its coordinates and grid north. */
+  async basePointDialog(at) {
+    const app = this.app;
+    const g = app.store.doc.geo || {};
+    const b = g.base || [0, 0, 0];
+    const cur = { e: b[0] + at[0], n: b[1] - at[2], z: b[2] + at[1] };
+    const f = (label, v) => h('label.field', {}, h('span', {}, label), h('input', { type: 'number', step: 'any', value: Math.round(v * 1000) / 1000 }));
+    const fe = f('Easting', cur.e);
+    const fn = f('Northing', cur.n);
+    const fz = f('Elevation', cur.z);
+    const fa = f('Grid north (° clockwise from the model\'s −z)', app.store.doc.settings.geolocation?.north_angle || 0);
+    const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, `The point you clicked (${at.map((x) => x.toFixed(2)).join(', ')} in the model): what are its real coordinates? Nothing moves; the model is georeferenced around it.`), fe, fn, fz, fa);
+    if ((await this.modal('Base point', body, [['Set', 'go'], ['Cancel', null]])) !== 'go') return;
+    const val = (x) => +x.querySelector('input').value;
+    return app.reg.run('set_base_point', { at, e: val(fe), n: val(fn), z: val(fz), north_angle: val(fa) }).then((r) => this.toast(`Base point E ${r.base[0]} N ${r.base[1]} Z ${r.base[2]}`)).catch((e) => this.toast(e.message, 'danger'));
+  }
+
   /** The display toggles (#194): they keep the list open, like a panel. */
   displayItems() {
     const A = this.actions;
@@ -828,7 +914,62 @@ export class UI {
       h('button.btn', { onclick: run('reject') }, icon('x'), 'Reject'),
     );
   }
+  // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
+  static RIBBONS = {
+    Site: {
+      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint'],
+      Surfaces: ['surface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
+      Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
+      Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
+      Earthworks: ['cutFill', 'volumeReport', 'corridorVolumes', 'corridorSolids'],
+    },
+    Drawings: {
+      '1 Bring in': ['importPdf', 'importImage', 'readDrawing', 'vectorise'],
+      '2 Scale': ['tool:calibrate', 'drawingScale', 'snapDrawings'],
+      '3 Place on the map': ['tool:control', 'georef', 'georefReport', 'worldFile'],
+      '4 Take lines out': ['pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours'],
+      '5 Clean up': ['tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide'],
+      '6 To the model': ['elevate', 'toBreaklines', 'extrudeLines', 'sweepLines'],
+    },
+  };
+  /** Show a ribbon (Site, Drawings) on one of its tabs, or hide it (null). */
+  setRibbon(name, tab = null) {
+    const R = UI.RIBBONS;
+    this.ribbon = name && R[name] ? { name, tab: tab && R[name][tab] ? tab : this.ribbon?.name === name ? this.ribbon.tab : Object.keys(R[name])[0] } : null;
+    try {
+      localStorage.setItem('mymodellerreel.ribbon', JSON.stringify(this.ribbon));
+    } catch {}
+    this.renderRibbon();
+  }
+  renderRibbon() {
+    let el = this.$('ribbon');
+    if (!el) {
+      el = h('div.ribbon', { id: 'ribbon', role: 'toolbar', 'aria-label': 'Ribbon' });
+      document.querySelector('.stage').prepend(el);
+    }
+    el.hidden = !this.ribbon;
+    if (!this.ribbon) return void (this.app.viewport.dirty = true);
+    const { name, tab } = this.ribbon;
+    const tabs = UI.RIBBONS[name];
+    const item = (id) => {
+      if (id.startsWith('tool:')) {
+        const t = TOOLS.find((x) => x.id === id.slice(5));
+        return t && h('button.ribbon-btn', { title: tr(t.label), 'aria-pressed': String(this.app.tools.id === t.id), onclick: () => (this.app.tools.set(t.id), this.renderRibbon()) }, icon(t.icon), h('span', {}, tr(t.label).replace(/\s*\(.*$/, '')));
+      }
+      const a = this.actions[id];
+      return a && h('button.ribbon-btn', { title: t(a.label), onclick: () => a.run() }, icon(a.icon || 'dot-outline'), h('span', {}, t(a.label).replace(/…$/, '').replace(/\s*\(.*$/, '').replace(/:.*$/, '')));
+    };
+    el.replaceChildren(
+      h('div.ribbon-tabs', {}, h('select', { 'aria-label': 'Ribbon', onchange: (e) => this.setRibbon(e.target.value) }, Object.keys(UI.RIBBONS).map((n) => h('option', { value: n, selected: n === name }, t(n)))), ...Object.keys(tabs).map((k) => h('button.ribbon-tab', { role: 'tab', 'aria-selected': String(k === tab), onclick: () => this.setRibbon(name, k) }, k)), h('span.spacer'), h('button.icon-btn.sm', { title: 'Hide the ribbon', 'aria-label': 'Hide the ribbon', onclick: () => this.setRibbon(null) }, icon('x'))),
+      h('div.ribbon-body', {}, ...tabs[tab].map(item).filter(Boolean)),
+    );
+    this.app.viewport.dirty = true;
+  }
+
   onSelection() {
+    // a drawing selected: offer its workflow (#197), once, if no ribbon is open
+    const one = this.app.selection.length === 1 && this.app.entity(this.app.selection[0]);
+    if (one?.underlay && !this.ribbon && !this.ribbonOffered) (this.ribbonOffered = true), this.setRibbon('Drawings', one.underlay.affine ? '2 Scale' : '1 Bring in');
     if (this.tab === 'outliner' || this.tab === 'entity') this.renderDock();
     const n = this.app.selection.length;
     if (n && this.app.tools.id === 'select') this.setStatus(n === 1 ? `${this.app.entity(this.app.selection[0])?.name} selected.` : `${n} selected.`);
@@ -1263,6 +1404,31 @@ export class UI {
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
       );
     }
+    if (e.annotation && e.annotation.type !== 'guide') {
+      // a dimension or label after placing it (#182, #183); dragging its text with Select does the same
+      const n = e.annotation;
+      const edit = (k, v) => run('edit_annotation', { id: e.id, [k]: v });
+      const row = (label, input) => h('label.row.small.param-row', {}, h('span', {}, label), input);
+      const label = n.type === 'label';
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, label ? (n.leader === false ? 'Text' : 'Label') : 'Dimension'),
+        row(label ? 'Text' : 'Text (<> = value)', h('input.grow', { value: label ? n.text : n.text_override || '', placeholder: label ? '{name}' : n.text_now, onchange: (ev) => edit('text', ev.target.value) })),
+        ...(label
+          ? [
+              row('Leader', h('input', { type: 'checkbox', checked: n.leader !== false, onchange: (ev) => edit('leader', ev.target.checked) })),
+              row('Size', h('input.grow', { type: 'number', min: 6, max: 72, step: 1, value: n.size || 12, onchange: (ev) => edit('size', +ev.target.value) })),
+              row('Plate', h('select.grow', { onchange: (ev) => edit('plate', ev.target.value) }, ['white', 'none'].map((v) => h('option', { value: v, selected: (n.plate || 'white') === v }, v)))),
+              row('Colour', h('input', { type: 'color', value: n.color || '#1d262c', onchange: (ev) => edit('color', ev.target.value) })),
+            ]
+          : [
+              row('Offset (m)', h('input.grow', { type: 'number', step: 0.1, value: n.offset ?? 0.5, onchange: (ev) => edit('offset', +ev.target.value) })),
+              row('Text slide (m)', h('input.grow', { type: 'number', step: 0.1, value: n.text_shift || 0, onchange: (ev) => edit('text_shift', +ev.target.value) })),
+            ]),
+        h('p.small.muted', {}, 'Or drag its text with the Select tool.'),
+      );
+    }
     if (e.underlay) {
       const u = e.underlay;
       const slider = (k, label) => h('label.row.small', {}, h('span', { style: { width: '64px' } }, label), h('input.grow', { type: 'range', min: 0, max: 1, step: 0.05, value: u[k] ?? 0, 'aria-label': label, onchange: (ev) => run('set_underlay', { id: e.id, [k]: +ev.target.value }) }));
@@ -1370,6 +1536,11 @@ export class UI {
 
   panel_materials() {
     const app = this.app;
+    const setTex = (name) => {
+      this.setPaint({ ...this.paint, material: name });
+      if (app.selection.length) app.reg.run('apply_material', { ids: app.selection, material: name }).catch((e) => this.toast(e.message, 'danger'));
+      else app.tools.set('paint');
+    };
     const set = (m) => {
       this.setPaint(m);
       if (app.selection.length) app.reg.run('set_material', { ids: app.selection, color: m.color, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.8 });
@@ -1380,13 +1551,42 @@ export class UI {
       {},
       h('h3', {}, 'Materials'),
       h('p.muted.small', {}, 'Click a swatch: it paints the selection, or arms the Paint Bucket (B) when nothing is selected. Alt-click in the model samples a colour.'),
-      h('div.swatches', {}, MATERIALS.map((m) => h('button.swatch', { 'aria-pressed': String(this.paint.color === m.color), onclick: () => set(m) }, h('i', { style: { background: m.color, opacity: m.opacity ?? 1 } }), m.name))),
+      h('div.overline', {}, 'Textured'),
+      // textured materials made in the app (#186): colour, relief and roughness, at real size
+      ...Object.entries(Object.groupBy(Object.entries(TX.LIBRARY), ([, m]) => m.category)).map(([cat, list]) =>
+        h(
+          'div',
+          {},
+          h('div.small.muted', {}, cat),
+          h(
+            'div.swatches',
+            {},
+            list.map(([name]) =>
+              h('button.swatch', { 'aria-pressed': String(this.paint.material === name), title: `${name}: click to give it to the selection, or to paint with it`, onclick: () => setTex(name) }, h('i', { style: { backgroundImage: `url(${this.texThumb(name)})`, backgroundSize: 'cover' } }), name),
+            ),
+          ),
+        ),
+      ),
+      h('div.overline', {}, 'Colours'),
+      h('div.swatches', {}, MATERIALS.map((m) => h('button.swatch', { 'aria-pressed': String(!this.paint.material && this.paint.color === m.color), onclick: () => set(m) }, h('i', { style: { background: m.color, opacity: m.opacity ?? 1 } }), m.name))),
       h('label.row', {}, h('span.small', {}, 'Custom'), h('input', { type: 'color', value: this.paint.color, onchange: (ev) => set({ ...this.paint, name: 'Custom', color: ev.target.value }) })),
     );
   }
+  /** A small picture of a library material, made once. */
+  texThumb(name) {
+    this.thumbs ||= new Map();
+    if (!this.thumbs.has(name)) {
+      const m = TX.makeMaps(name, 64);
+      const c = document.createElement('canvas');
+      c.width = c.height = 64;
+      c.getContext('2d').putImageData(new ImageData(m.color, 64, 64), 0, 0);
+      this.thumbs.set(name, c.toDataURL());
+    }
+    return this.thumbs.get(name);
+  }
   setPaint(m) {
     this.paint = m;
-    this.app.tools.paint = { color: m.color, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.8 };
+    this.app.tools.paint = m.material ? { material: m.material } : { color: m.color, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.8 };
     if (this.tab === 'materials') this.renderDock();
   }
 

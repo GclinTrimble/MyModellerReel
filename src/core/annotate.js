@@ -118,7 +118,8 @@ export function dimensionGeometry(doc, a, pts) {
   const tick = Math.min(0.12, Math.abs(meas) * 0.06);
   const t = scl(unit(add(dir, side)), tick);
   const line = [p, add(pa, scl(side, ext)), add(pa, t), sub(pa, t), pa, qa, add(qa, t), sub(qa, t), qa, add(qa, scl(side, ext)), q];
-  return { points: line, text: fmt(Math.abs(meas)), at: add(scl(add(pa, qa), 0.5), scl(side, Math.sign(off || 1) * 0.12)), value: Math.abs(meas) };
+  // text_shift (#182): the text slid along the dimension line, m
+  return { points: line, text: fmt(Math.abs(meas)), at: add(add(scl(add(pa, qa), 0.5), scl(side, Math.sign(off || 1) * 0.12)), scl(dir, a.text_shift || 0)), value: Math.abs(meas), frame: { dir, side } };
 }
 
 const units = (doc) => ({ unit: doc.settings.display_units || 'auto', precision: doc.settings.precision ?? undefined });
@@ -164,6 +165,8 @@ export function annotationGeometry(doc, e) {
     return { points: [add(pts[0], scl(d, -LONG)), add(pts[0], scl(d, LONG))], text: '', at: pts[0], pts };
   }
   if (a.type === 'label') {
+    // text alone (#183): no leader, the text where it points (moved by offset)
+    if (a.leader === false) return { points: [pts[0], pts[0]], text: labelText(doc, a.text, a.refs[0]?.id, pts[0]), at: add(pts[0], a.offset || [0, 0, 0]), pts };
     const off = a.offset || [0.6, 0.9, 0];
     const elbow = add(pts[0], off);
     const end = add(elbow, [Math.sign(off[0] || 1) * 0.3, 0, 0]);
@@ -187,6 +190,7 @@ export function syncAnnotations(doc) {
     e.annotation.text_now = g.text;
     e.annotation.at = D.round3(g.at);
     if (g.value !== undefined) e.annotation.value = Math.round(g.value * 1e6) / 1e6;
+    if (g.frame) e.annotation.frame = { dir: D.round3(g.frame.dir), side: D.round3(g.frame.side) }; // for dragging it (#182)
     e.annotation.last = g.pts.map(D.round3);
   }
 }

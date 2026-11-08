@@ -6,6 +6,7 @@ import * as D from '../core/document.js';
 import { AXIS_COLORS, meshGeometry } from './viewport.js';
 import { arcThrough } from '../core/curves.js';
 import * as L from '../core/layers.js';
+import { LIBRARY as TX_LIBRARY } from '../core/textures.js';
 import { formatLength } from '../core/units.js';
 import * as MD from '../core/modeling.js';
 import { floorAt, blocked } from './scale.js';
@@ -32,12 +33,14 @@ const SNAP_PX = 12;
 const ACCENT = 0x2f6f86;
 const HIGHLIGHT = 0xe8bc5e;
 
+const TX_NAMES = new Set(Object.keys(TX_LIBRARY));
+
 /** Snap kinds (#180) and their defaults; doc.settings.snaps overrides them (set_snaps). */
 export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true };
 export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
-export const TOOLBAR = ['select', '-', 'line', ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'curve'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend'], 'sculpt', '-', ['tape', 'dimension', 'label'], 'paint', 'eraser', 'section'];
+export const TOOLBAR = ['select', '-', 'line', ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc', 'curve'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], 'paint', 'eraser', 'section'];
 
 export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
@@ -48,6 +51,8 @@ export const TOOLS = [
   { id: 'polygon', label: 'Polygon', key: 'G', icon: 'hexagon', group: 'draw' },
   { id: 'curve', label: 'Curve (path for sweeps and motion)', key: 'U', icon: 'bezier-curve', group: 'draw' },
   { id: 'arc', label: 'Arc (start, end, bulge)', key: 'A', icon: 'circle-half', group: 'draw' },
+  { id: 'arc3', label: 'Arc through three points', key: '', icon: 'circle-half-tilt', group: 'draw' },
+  { id: 'arcc', label: 'Arc from its centre', key: '', icon: 'circle-dashed', group: 'draw' },
   { id: 'point', label: 'Survey point (click to add)', key: 'N', icon: 'map-pin', group: 'draw' },
   { id: 'trim', label: 'Trim curves', key: 'W', icon: 'scissors', group: 'draft' },
   { id: 'extend', label: 'Extend curves', key: 'Y', icon: 'arrow-line-right', group: 'draft' },
@@ -61,6 +66,8 @@ export const TOOLS = [
   { id: 'tape', label: 'Tape Measure (Ctrl: guide line, Alt: guide point)', key: 'T', icon: 'ruler', group: 'construct' },
   { id: 'dimension', label: 'Dimension (two points)', key: 'D', icon: 'arrows-horizontal', group: 'construct' },
   { id: 'label', label: 'Label (click a shape; type a template)', key: 'K', icon: 'tag', group: 'construct' },
+  { id: 'text', label: 'Text (no leader)', key: '', icon: 'text-t', group: 'construct' },
+  { id: 'basepoint', label: 'Base point (click a point, type its coordinates)', key: '', icon: 'crosshair-simple', group: 'site' },
   { id: 'paint', label: 'Paint Bucket (Alt samples)', key: 'B', icon: 'paint-bucket', group: 'construct' },
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
@@ -167,6 +174,7 @@ export class Tools {
   }
 
   key(ev) {
+    if (this.tool.key?.(ev)) return true; // a tool's own keys first (A: arc segments in the Line tool)
     const arrows = { ArrowRight: 'x', ArrowLeft: 'z', ArrowUp: 'y', ArrowDown: null };
     if (ev.key in arrows) {
       this.lock = this.lock === arrows[ev.key] ? null : arrows[ev.key];
@@ -293,9 +301,97 @@ export class Tools {
 // ---------------------------------------------------------------- tools
 
 class SelectTool {
-  hint = 'Click to select, Shift toggles, drag for a box. Double-click a group to edit inside it. Esc leaves.';
+  hint = 'Click to select, Shift toggles, drag for a box. Drag a corner, edge or curve point of the selected shape to move it. Double-click a group to edit inside it. Esc leaves.';
   constructor(t) {
     this.t = t;
+  }
+  leave() {
+    this.showGrips(null);
+  }
+
+  // ---------------------------------------------------------------- grips (#181): corners, edge middles, curve points
+  /** The grips of the one selected shape: [{ p (world), kind: corner | edge | point, ids }], or null. */
+  gripsOf() {
+    const app = this.t.app;
+    if (app.selection.length !== 1) return null;
+    const e = app.entity(app.selection[0]);
+    const doc = app.store.doc;
+    if (!e || L.isLocked(doc, e) || e.annotation || e.point) return null;
+    // surfaces and road designs are edited through their sources (points, alignment), not by their corners
+    const gen = e.derived?.generator;
+    if (e.meta?.surface || ['surface', 'corridor', 'finished_ground', 'pad'].includes(gen) || gen?.startsWith('design_')) return null;
+    if (e.mesh && e.mesh.v.length <= 400) {
+      const wm = D.worldMesh(doc, e);
+      const grips = wm.v.map((p, i) => ({ p: V(...p), kind: 'corner', ids: [i] }));
+      const seen = new Set();
+      for (const f of wm.f)
+        f.forEach((a, k) => {
+          const b = f[(k + 1) % f.length];
+          const key = a < b ? `${a},${b}` : `${b},${a}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          grips.push({ p: V(...wm.v[a]).add(V(...wm.v[b])).multiplyScalar(0.5), kind: 'edge', ids: [a, b] });
+        });
+      return { e, grips };
+    }
+    if (e.curve && e.curve.points.length <= 400 && !e.alignment) {
+      const m = new THREE.Matrix4().fromArray(D.worldMatrix(doc, e).elements);
+      return { e, grips: e.curve.points.map((p, i) => ({ p: V(...p).applyMatrix4(m), kind: 'point', ids: [i] })) };
+    }
+    return null;
+  }
+  showGrips(g) {
+    const vp = this.t.vp;
+    if (this.gripObj) vp.scene.remove(this.gripObj), this.gripObj.geometry.dispose();
+    this.gripObj = null;
+    if (!g) return void (vp.dirty = true);
+    const geo = new THREE.BufferGeometry().setFromPoints(g.grips.map((x) => x.p));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(g.grips.flatMap((x) => (x.kind === 'edge' ? [0.55, 0.75, 0.85] : [0.18, 0.44, 0.53])), 3));
+    this.gripObj = new THREE.Points(geo, new THREE.PointsMaterial({ size: 9, sizeAttenuation: false, vertexColors: true, depthTest: false }));
+    this.gripObj.renderOrder = 997;
+    vp.scene.add(this.gripObj);
+    vp.dirty = true;
+  }
+  /** Keep the grips on the selected shape (cheap: only when the selection or the document changed). */
+  syncGrips() {
+    const key = `${this.t.app.selection.join()}|${this.t.app.store.doc.journal?.length ?? 0}|${this.t.app.store.doc.entities.length}`;
+    if (key === this.gripKey && !this.grip) return this.grips;
+    this.gripKey = key;
+    this.grips = this.gripsOf();
+    this.showGrips(this.grips);
+    return this.grips;
+  }
+  gripAt(ev) {
+    const g = this.syncGrips();
+    if (!g) return null;
+    let best = null;
+    for (const x of g.grips) {
+      const s = this.t.vp.toScreen(x.p);
+      const d = Math.hypot(s.x - ev.clientX, s.y - ev.clientY);
+      if (!s.behind && d < 9 && (!best || d < best.d || (d === best.d && x.kind !== 'edge'))) best = { ...x, d };
+    }
+    return best && { e: g.e, ...best };
+  }
+  gripMove(ev) {
+    const g = this.grip;
+    const inf = this.t.infer(ev, { from: g.p, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(V(0, 1, 0), g.p) });
+    g.to = inf.point.clone();
+    this.t.vp.overlay.clear();
+    this.t.lines([g.p, g.to], inf.axis ? AXIS_COLORS[inf.axis] : ACCENT);
+    this.t.status(`Move the ${g.kind === 'edge' ? 'edge' : g.kind === 'point' ? 'curve point' : 'corner'} ${fmt(g.to.distanceTo(g.p))}. Let go where it goes.`);
+  }
+  async gripCommit(to) {
+    const g = this.grip;
+    this.grip = null;
+    this.t.clear();
+    if (!to || to.distanceTo(g.p) < 1e-6) return;
+    const by = to.clone().sub(g.p).toArray().map((x) => Math.round(x * 1e6) / 1e6);
+    if (g.kind === 'point') {
+      const m = new THREE.Matrix4().fromArray(D.worldMatrix(this.t.app.store.doc, g.e).elements);
+      const pts = g.e.curve.points.map((p, i) => (i === g.ids[0] ? to.toArray() : V(...p).applyMatrix4(m).toArray()));
+      await this.t.run('set_curve', { id: g.e.id, points: pts });
+    } else await this.t.run('move_elements', { id: g.e.id, vertices: g.ids, by });
+    this.gripKey = null;
   }
   /** Over a surface: its elevation and slope there, in the status bar. */
   readout(ev) {
@@ -312,10 +408,35 @@ class SelectTool {
     this.t.status(`${e.name}: Z ${(hit.point.y + base).toFixed(3)} · slope ${(slope * 100).toFixed(1)} % (${((Math.atan(slope) * 180) / Math.PI).toFixed(1)}°)`);
   }
   down(ev) {
+    const g = !ev.shiftKey && !ev.ctrlKey && this.gripAt(ev);
+    this.start = { x: ev.clientX, y: ev.clientY };
+    if (g) return void (this.grip = { ...g, to: g.p.clone() });
+    // a selected dimension or label: drag its text (#182)
+    const ann = !ev.shiftKey && !ev.ctrlKey && this.t.vp.pickAnnotation(ev);
+    if (ann && this.t.app.selection.includes(ann.entityId)) {
+      const e = this.t.app.entity(ann.entityId);
+      const at0 = V(...e.annotation.at);
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(this.t.vp.camera.getWorldDirection(V()).negate(), at0);
+      const start = this.t.vp.ray(ev).intersectPlane(plane, V());
+      if (start) return void (this.annDrag = { e, at0, plane, start, delta: V() });
+    }
     this.start = { x: ev.clientX, y: ev.clientY };
   }
   move(ev) {
-    if (!this.start) return this.readout(ev);
+    if (this.grip) return this.gripMove(ev);
+    if (this.annDrag) {
+      const d = this.annDrag;
+      const p = this.t.vp.ray(ev).intersectPlane(d.plane, V());
+      if (!p) return;
+      d.delta = p.sub(d.start);
+      this.t.vp.overlay.clear();
+      this.t.lines([d.at0, d.at0.clone().add(d.delta)], ACCENT);
+      return this.t.status(`Move the text of ${d.e.name} ${fmt(d.delta.length())}`);
+    }
+    if (!this.start) {
+      this.syncGrips();
+      return this.readout(ev);
+    }
     const r = this.t.vp.canvas.parentElement.getBoundingClientRect();
     const [x0, x1] = [this.start.x, ev.clientX].sort((a, b) => a - b);
     const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
@@ -327,6 +448,35 @@ class SelectTool {
     if (!this.t.box.hidden) this.t.status(crossing ? 'Crossing: selects what the box touches.' : 'Window: selects what is fully inside the box.');
   }
   up(ev) {
+    if (this.annDrag) {
+      const { e, delta } = this.annDrag;
+      this.annDrag = null;
+      this.t.clear();
+      this.t.status(this.hint);
+      if (delta.length() < 1e-4) return;
+      const n = e.annotation;
+      const r4 = (x) => Math.round(x * 1e4) / 1e4;
+      if (n.type === 'label') {
+        const off = n.offset || (n.leader === false ? [0, 0, 0] : [0.6, 0.9, 0]);
+        return this.t.run('edit_annotation', { id: e.id, offset: off.map((x, k) => r4(x + delta.getComponent(k))) });
+      }
+      if (n.frame) {
+        const side = V(...n.frame.side);
+        const dir = V(...n.frame.dir);
+        return this.t.run('edit_annotation', { id: e.id, offset: r4((n.offset ?? 0.5) + delta.dot(side)), text_shift: r4((n.text_shift || 0) + delta.dot(dir)) });
+      }
+      return;
+    }
+    if (this.grip) {
+      const g = this.grip;
+      if (Math.hypot(ev.clientX - this.start.x, ev.clientY - this.start.y) >= 4) {
+        this.start = null;
+        return this.gripCommit(g.to);
+      }
+      // a click on a grip without dragging: an ordinary click (it may pick a survey point on that corner)
+      this.grip = null;
+      this.t.clear();
+    }
     const app = this.t.app;
     const s = this.start;
     this.start = null;
@@ -407,7 +557,8 @@ class DrawBase {
       const ok = await this.t.run('imprint', { id: on.id, face: on.face, points: p }).then(() => true, () => false);
       if (ok) return this.t.status('Imprinted on the face. Push/Pull (P) it in or out; all the way through makes a hole.');
     }
-    await this.t.run('create_face', { points: p, normal: this.n.toArray(), name });
+    const r = await this.t.run('create_face', { points: p, normal: this.n.toArray(), name, split: true, ...(this.t.app.context ? { parent: this.t.app.context } : {}) });
+    if (r?.split) return this.t.status(`Drawn over ${r.name}: ${r.split} faces now; Push/Pull (P) each part on its own.`);
     this.t.status('Face made. Push/Pull (P) gives it thickness.');
   }
 }
@@ -436,19 +587,50 @@ class LineTool extends DrawBase {
   dbl() {
     return this.finish();
   }
+  /** A while drawing: the next segments are arcs, tangent to the line so far (#177); A again: straight. */
+  key(ev) {
+    if (ev.key.toLowerCase() !== 'a' || ev.ctrlKey || ev.metaKey || !this.pts.length) return false;
+    this.arc = !this.arc;
+    this.t.status(this.arc ? 'Arc segments: tangent to the line so far. A again for straight.' : 'Straight segments. A for arcs.');
+    return true;
+  }
+  /** The tangent arc from the last point to p, as points (the last point left out); straight when it cannot bend. */
+  arcTo(p) {
+    const L = this.pts.at(-1);
+    const prev = this.pts.at(-2);
+    if (!prev) return [p];
+    const t = L.clone().sub(prev).normalize();
+    const n = this.n.clone().normalize();
+    const side = n.clone().cross(t).normalize(); // in the plane, square to the tangent
+    const d = p.clone().sub(L);
+    const h = d.dot(side);
+    if (Math.abs(h) < 1e-6) return [p];
+    const r = d.lengthSq() / (2 * h); // signed: the centre is on the side of p
+    const c = L.clone().addScaledVector(side, r);
+    const a0 = L.clone().sub(c);
+    const a1 = p.clone().sub(c);
+    let sweep = Math.atan2(a0.clone().cross(a1).dot(n), a0.dot(a1));
+    if (Math.sign(sweep) !== Math.sign(r * 1)) sweep += Math.sign(r) * 2 * Math.PI; // keep going the way the tangent points
+    const steps = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI / 24)));
+    return Array.from({ length: steps }, (_, k) => a0.clone().applyAxisAngle(n, (sweep * (k + 1)) / steps).add(c));
+  }
   move(ev) {
     const last = this.pts.at(-1);
     const inf = this.t.infer(ev, { from: last, extra: this.pts.slice(0, 1) });
     this.cur = inf.point;
     if (!last) return;
     this.t.vp.overlay.clear();
-    this.t.lines([...this.pts, this.cur], inf.axis ? AXIS_COLORS[inf.axis] : 0x1d262c);
-    this.t.status(`Length ${fmt(last.distanceTo(this.cur))}`, 'Length');
+    this.t.lines([...this.pts, ...(this.arc ? this.arcTo(this.cur) : [this.cur])], inf.axis ? AXIS_COLORS[inf.axis] : 0x1d262c);
+    this.t.status(`${this.arc ? 'Arc to' : 'Length'} ${fmt(last.distanceTo(this.cur))}${this.arc ? '' : ' · A for an arc'}`, 'Length');
   }
   async down(ev) {
     const inf = this.t.infer(ev, { from: this.pts.at(-1), extra: this.pts.slice(0, 1) });
     if (!this.pts.length && inf.hit) (this.n = inf.hit.normal.clone()), (this.on = inf.kind !== 'On ground' ? { id: inf.hit.entityId, face: inf.hit.faceIndex } : null);
     else if (!this.pts.length) (this.n = V(0, 1, 0)), (this.on = null);
+    if (this.arc && this.pts.length >= 2) {
+      const arc = this.arcTo(inf.point);
+      this.pts.push(...arc.slice(0, -1).map((p) => p.clone()));
+    }
     await this.add(inf.point);
   }
   async add(p) {
@@ -824,7 +1006,7 @@ class ScaleTool {
   }
   vcb(text) {
     const ids = this.t.app.selection;
-    const f = text.split(/[,;s]+/).map(Number);
+    const f = text.split(/[,;\s]+/).map(Number);
     if (!ids.length || !f.every((x) => x > 0)) return;
     return this.t.run('scale', { ids, factor: f.length === 3 ? f : f[0], pivot: 'base' });
   }
@@ -871,15 +1053,18 @@ class TapeTool {
 }
 
 class PaintTool {
-  hint = 'Click a shape to paint it with the colour from the Materials panel. Alt-click samples a colour.';
+  hint = 'Click a shape to paint it with the colour or textured material chosen in the Materials panel. Alt-click samples one.';
   constructor(t) {
     this.t = t;
   }
   async down(ev) {
     const hit = this.t.vp.pick(ev);
     if (!hit) return;
-    if (ev.altKey) return this.t.app.ui.setPaint({ ...this.t.app.entity(hit.entityId).material });
-    await this.t.run('set_material', { ids: [this.t.app.pickTarget(hit.entityId)], ...this.t.paint });
+    const m = this.t.app.entity(hit.entityId).material;
+    if (ev.altKey) return this.t.app.ui.setPaint({ ...m, material: m.texture && TX_NAMES.has(m.name) ? m.name : undefined });
+    const ids = [this.t.app.pickTarget(hit.entityId)];
+    if (this.t.paint.material) return this.t.run('apply_material', { ids, material: this.t.paint.material });
+    await this.t.run('set_material', { ids, ...this.t.paint });
   }
 }
 
@@ -1037,14 +1222,14 @@ class PointTool {
   /** The value box (#188): coordinates add a point there, #name renames the last point, anything else is the code. */
   async vcb(text) {
     const t = text.trim();
-    const nums = t.split(/[,;s]+/).map(Number);
+    const nums = t.split(/[,;\s]+/).map(Number);
     if (nums.length >= 2 && nums.length <= 3 && nums.every(Number.isFinite)) {
       const [e, n, z = 0] = nums;
       const r = await this.t.run('add_point', { e, n, z, code: this.code });
       this.last = r.id;
       return this.t.status(`Point ${r.name} at E ${e} N ${n} Z ${z}.`);
     }
-    const m = t.match(/^#s*(.+)$/);
+    const m = t.match(/^#\s*(.+)$/);
     if (m) {
       if (!this.last) return this.t.status('Place a point first, then type #name to rename it.');
       await this.t.run('set_properties', { ids: [this.last], name: m[1].trim() });
@@ -1285,6 +1470,39 @@ class LabelTool {
   }
 }
 
+/** Text without a leader (#183): click where it goes, type the words first. */
+class TextTool extends LabelTool {
+  hint = 'Type the text in the value box, then click where it goes (on a shape, it follows it). Style it in the Entity panel.';
+  constructor(t) {
+    super(t);
+    this.text = 'Text';
+  }
+  async down(ev) {
+    const inf = this.t.infer(ev);
+    await this.t.run('add_label', { at: refAt(this.t, inf), text: this.text, leader: false, size: 14 });
+  }
+  vcb(text) {
+    this.text = text || 'Text';
+    this.t.status(`Text: ${this.text}. Click where it goes.`);
+  }
+}
+
+/** Base point (#190): click a point of the model, then type its real coordinates. */
+class BasePointTool {
+  hint = 'Click a point of the model whose real coordinates you know (a corner, a survey mark); then type them.';
+  constructor(t) {
+    this.t = t;
+  }
+  move(ev) {
+    this.t.infer(ev);
+  }
+  async down(ev) {
+    const p = this.t.infer(ev).point;
+    await this.t.app.ui.basePointDialog(D.round3(p.toArray()));
+    this.t.set('select');
+  }
+}
+
 /** Zoom window: drag a box, the view zooms into it. */
 class ZoomWindowTool {
   hint = 'Drag a box around what you want to see up close.';
@@ -1383,6 +1601,69 @@ class ArcTool extends DrawBase {
   }
 }
 
+/** Arc through three points (#178): start, a point on the arc, end. */
+class Arc3Tool extends ArcTool {
+  hint = 'Click the start, a point the arc passes through, then the end.';
+  vcbLabel = '';
+  preview(cur) {
+    this.t.vp.overlay.clear();
+    if (!this.p1) return this.t.lines([this.p0, cur], ACCENT);
+    try {
+      const a = arcThrough(this.p0.toArray(), this.p1.toArray(), cur.toArray(), 32);
+      this.t.lines(a.points.map((p) => V(...p)), ACCENT);
+      this.t.status(`Radius ${fmt(a.radius)}, angle ${Math.round((a.sweep * 180) / Math.PI)}°`);
+    } catch {
+      this.t.lines([this.p0, this.p1, cur], ACCENT);
+    }
+  }
+  async down(ev) {
+    if (!this.p0) return this.startPlane(this.t.infer(ev));
+    if (!this.p1) return void (this.p1 = this.onPlane(ev));
+    const [s, t, e] = [this.p0, this.p1, this.onPlane(ev)].map((p) => D.round3(p.toArray()));
+    this.cancel();
+    await this.t.run('create_arc', { kind: 'three_point', start: s, through: t, end: e });
+  }
+  vcb() {}
+}
+
+/** Arc from its centre (#178): the centre, the start (the radius), then the end, counter-clockwise; type an angle. */
+class ArcCenterTool extends ArcTool {
+  hint = 'Click the centre, then the start (it sets the radius), then the end. Type the angle (90) instead of the last click.';
+  vcbLabel = 'Angle °';
+  points(endDir, sweepDeg = null) {
+    const c = this.p0;
+    const r0 = this.p1.clone().sub(c);
+    const n = this.n.clone().normalize();
+    let sweep = sweepDeg !== null ? (sweepDeg * Math.PI) / 180 : Math.atan2(r0.clone().cross(endDir).dot(n), r0.dot(endDir));
+    if (sweepDeg === null && sweep <= 0) sweep += 2 * Math.PI;
+    return [0, 0.5, 1].map((k) => r0.clone().applyAxisAngle(n, sweep * k).add(c));
+  }
+  preview(cur) {
+    this.t.vp.overlay.clear();
+    if (!this.p1) return this.t.lines([this.p0, cur], ACCENT), this.t.status(`Radius ${fmt(this.p0.distanceTo(cur))}`);
+    const [s, m, e] = this.points(cur.clone().sub(this.p0));
+    try {
+      const a = arcThrough(s.toArray(), m.toArray(), e.toArray(), 48);
+      this.t.lines([this.p0, ...a.points.map((p) => V(...p)), this.p0], ACCENT);
+      this.t.status(`Radius ${fmt(a.radius)}, angle ${Math.round((a.sweep * 180) / Math.PI)}°`, 'Angle °');
+    } catch {}
+  }
+  async commit3(s, m, e) {
+    this.cancel();
+    await this.t.run('create_arc', { kind: 'three_point', start: D.round3(s.toArray()), through: D.round3(m.toArray()), end: D.round3(e.toArray()) });
+  }
+  async down(ev) {
+    if (!this.p0) return this.startPlane(this.t.infer(ev));
+    if (!this.p1) return void (this.p1 = this.onPlane(ev));
+    return this.commit3(...this.points(this.onPlane(ev).sub(this.p0)));
+  }
+  vcb(text) {
+    const deg = parseFloat(text);
+    if (!this.p1 || !deg) return;
+    return this.commit3(...this.points(null, deg));
+  }
+}
+
 /** Click points of a path; Enter or double-click finishes. Three or more points make a smooth spline. */
 class CurveTool {
   hint = 'Click the points of a path (they snap like lines). Enter or double-click finishes; 3+ points make a smooth curve. Esc cancels.';
@@ -1430,6 +1711,10 @@ const IMPL = {
   polygon: PolygonTool,
   curve: CurveTool,
   arc: ArcTool,
+  arc3: Arc3Tool,
+  text: TextTool,
+  basepoint: BasePointTool,
+  arcc: ArcCenterTool,
   point: PointTool,
   calibrate: CalibrateTool,
   control: ControlTool,

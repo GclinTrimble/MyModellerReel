@@ -24,8 +24,11 @@ export function bytes(id) {
 export const ids = () => [...store.keys()];
 
 /** For saving: the assets a document uses, as base64. */
+/** The asset ids a document uses (drawings, scans, audio, textures). */
+export const usedIds = (doc) => new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...doc.entities.filter((e) => e.pointcloud).map((e) => e.pointcloud.asset), ...(doc.animation?.audio || []).map((c) => c.asset), ...lookAssets(doc)]);
+
 export function pack(doc) {
-  const used = new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...doc.entities.filter((e) => e.pointcloud).map((e) => e.pointcloud.asset), ...(doc.animation?.audio || []).map((c) => c.asset), ...lookAssets(doc)]);
+  const used = usedIds(doc);
   const out = {};
   for (const id of used) {
     const a = store.get(id);

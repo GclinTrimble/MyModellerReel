@@ -975,6 +975,89 @@ const PAGES = {
     await js("document.querySelector('.ai-finder')?.scrollIntoView(); return 1;");
     await shot('Settings › AI: the models on this PC, found for you; connect one in a click');
   },
+  async 'draw-and-edit'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    const slab = await run('create_face', { points: [[-3, 0, 2], [3, 0, 2], [3, 0, -2], [-3, 0, -2]], name: 'Slab' });
+    await run('create_face', { points: [[1, 0, 0], [5, 0, 0], [5, 0, -4], [1, 0, -4]], split: true });
+    await camera([5, 9, 10], [1, 0, -1]);
+    await run('select', { ids: ['Slab'] });
+    await shot('Draw over a face: it splits; one shape, three faces');
+    const e = await js(`const e = window.mmr.doc.entities.find((x) => x.name === 'Slab'); const v = e.mesh.v; return e.mesh.f.map((f) => f.map((k) => v[k]));`);
+    const area = (l) => Math.abs(l.reduce((s, p, i) => s + (p[2] * l[(i + 1) % l.length][0] - p[0] * l[(i + 1) % l.length][2]), 0) / 2);
+    const overlap = e.findIndex((l) => Math.abs(area(l) - 4) < 1e-3);
+    await run('push_pull', { id: slab.id, face: overlap, distance: 1.2 });
+    await run('select', { ids: ['Slab'] });
+    await shot('Push/Pull one part: the others stay flat');
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select(['Slab']); return 1;");
+    await shot('Selected: grips on its corners and edge middles; drag one to move it');
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('create_arc', { kind: 'three_point', start: [-4, 0, 0], through: [-2.5, 0, -1.5], end: [-1, 0, 0] });
+    await run('create_arc', { kind: 'three_point', start: [1, 0, 0], through: [2.4, 0, -1.4], end: [3, 0, 0.6] });
+    await camera([0, 9, 7], [0, 0, 0.3]);
+    await none();
+    // a line with the real Line tool: two straight clicks, A, an arc segment, Enter
+    await js("window.mmr.app.tools.set('line'); return 1;");
+    const at = (p) => js(`const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(${p.join(',')})); return [Math.round(s.x), Math.round(s.y)];`);
+    const click = async (p) => {
+      const [x, y] = await at(p);
+      return [{ type: 'mouseMove', x: x + 3, y }, { type: 'mouseMove', x, y }, { type: 'wait', ms: 80 }, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 120 }];
+    };
+    await req('POST', '/api/input', { events: [...(await click([-4, 0, 2.2])), ...(await click([-0.8, 0, 2.2])), { type: 'keyDown', keyCode: 'A' }, { type: 'keyUp', keyCode: 'A' }, { type: 'wait', ms: 100 }, ...(await click([1.6, 0, -0.6])), { type: 'keyDown', keyCode: 'Return' }, { type: 'keyUp', keyCode: 'Return' }, { type: 'wait', ms: 300 }] });
+    await js("window.mmr.app.tools.set('select'); return 1;");
+    await none();
+    await js("const b = document.querySelectorAll('.toolbar .slot')[4]; b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); return 1;");
+    await shot('Arcs: start-end-bulge, through three points, from the centre; in a line, A switches to arc segments');
+    await clean();
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('create_box', { width: 4, height: 2.4, depth: 3, name: 'Shed', color: '#e9e4d8' });
+    await run('add_dimension', { from: [-2, 0, 1.5], to: [2, 0, 1.5], name: 'Width', offset: 0.8 });
+    await run('edit_annotation', { id: 'Width', text_shift: 0.9 });
+    await run('add_label', { id: 'Shed', text: 'Garden shed', leader: false, size: 22, color: '#2f6f86', plate: 'none', offset: [0, 2.2, 0] });
+    await run('add_label', { at: [2, 1.2, 1.5], text: 'Door here', size: 13 });
+    await camera([5, 5, 8], [0, 1, 0]);
+    await run('select', { ids: ['Width'] });
+    await panel('entity');
+    await shot('Dimensions and labels stay editable: drag the text, change the offset, text alone, size and colour');
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('create_box', { width: 6, height: 3, depth: 4, name: 'House' });
+    await run('create_box', { width: 6.6, height: 0.3, depth: 4.6, position: [0, 3, 0], name: 'Roof' });
+    await run('create_face', { points: [[-9, 0, 7], [9, 0, 7], [9, 0, -6], [-9, 0, -6]], name: 'Yard' });
+    await run('create_box', { width: 1.2, height: 0.05, depth: 6, position: [0, 0, 5], name: 'Path' });
+    await run('apply_material', { ids: ['House'], material: 'Red brick' });
+    await run('apply_material', { ids: ['Roof'], material: 'Roof tiles' });
+    await run('apply_material', { ids: ['Yard'], material: 'Grass' });
+    await run('apply_material', { ids: ['Path'], material: 'Gravel' });
+    await camera([9, 6, 13], [0, 1.5, 0]);
+    await none();
+    await panel('materials');
+    await shot('Textured materials: brick, roof tiles, grass, gravel… with relief, at real size');
+  },
+  async 'site-setup'() {
+    await fresh();
+    await roadScene();
+    await camera([60, 70, 110], [0, 0, 10]);
+    await none();
+    await js("window.mmr.app.ui.setRibbon('Site', 'Survey'); return 1;");
+    await shot('Site › Site ribbon: survey, surfaces, design, roads and earthworks, as tabs');
+    await js("window.mmr.app.ui.setRibbon('Site', 'Roads'); return 1;");
+    await shot('Roads: alignment, corridor, road views, the cut, the profile');
+    await js("window.mmr.app.ui.setRibbon('Drawings', '2 Scale'); return 1;");
+    await shot('Drawings ribbon: a PDF from bringing it in to the model, step by step');
+    await js("window.mmr.app.ui.setRibbon('Site', 'Survey'); return 1;");
+    await run('set_geolocation', { latitude: 48.85, longitude: 2.35 });
+    await js('window.mmr.app.ui.crsDialog(); return 1;');
+    await shot('Coordinate system: the systems used where the project is, with their EPSG codes');
+    await clean();
+    await js('window.mmr.app.ui.basePointDialog([12.5, 3.1, -4]); return 1;');
+    await shot('Base point: click a point you know, type its coordinates and grid north');
+    await clean();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('set_style', { grid: true });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

@@ -20,7 +20,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
   (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files), `survey.js` (points,
   coordinates, codes, point files), `terrain.js` (TIN triangulation, sampling, cut/fill, alignments, corridors),
-  `sitework.js` (surface / corridor / finished ground / design generators), `roads.js` (corridor sections with ditches,
+  `planar.js` (drawing over a flat face splits it), `textures.js` (the textured material library: maps and PNG), `crs.js` (coordinate systems for a
+  place), `sitework.js` (surface / corridor / finished ground / design generators), `roads.js` (corridor sections with ditches,
   benches and superelevation, cut / fill areas, average-end-area volumes, earthwork and pavement solids, finished ground), `layers.js` (the tag list is the layer list: colour, lock,
   current layer, ByLayer, schemas, states), `underlay.js` (drawing ↔ plan affine, calibration, least-squares
   georeferencing, world files), `pdf.js` (pdf.js reading: pages, layers, paths and text), `drafting.js` (2D polyline

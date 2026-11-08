@@ -34,8 +34,10 @@ export function textureOf(asset, { data = false, onReady } = {}) {
   t.colorSpace = data ? THREE.NoColorSpace : THREE.SRGBColorSpace;
   t.anisotropy = 8;
   t.userData.waiting = onReady ? [onReady] : [];
-  textures.set(key, t);
   const a = Assets.get(asset);
+  // only a texture that can load is kept: one asked for before its bytes are unpacked (an autosave being restored)
+  // would stay empty for good
+  if (a) textures.set(key, t);
   if (a)
     createImageBitmap(new Blob([a.bytes], { type: a.mime }), { imageOrientation: 'flipY' })
       .then((img) => {

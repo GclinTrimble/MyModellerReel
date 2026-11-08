@@ -139,6 +139,7 @@ app.select = (ids) => {
   app.selection = [...new Set(ids)].filter((id) => app.entity(id));
   app.viewport.highlight(app.selection);
   app.ui.onSelection();
+  app.tools?.tool?.syncGrips?.(); // grips follow the selection (#181)
   if (app.timeline.active) app.timeline.render();
 };
 /** Clicking a shape selects its outermost group, unless you are editing inside a group. */
@@ -285,11 +286,19 @@ app.mcpConfig = () => ({
   mcpServers: { mymodellerreel: { command: 'node', args: [`${app.info.appRoot || '<project folder>'}\\src\\mcp\\server.js`] } },
 });
 
+let lastAssetIds = ''; // the asset ids the last disk copy holds
 app.autosave = () => {
   try {
     localStorage.setItem(AUTOSAVE, JSON.stringify({ doc: store.doc, file: app.file }));
   } catch {
     /* quota: the model is bigger than local storage; the user's own saves still work */
+  }
+  // local storage keeps no file bytes: when the model starts using new ones (a texture, a PDF, a scan), put a copy
+  // with them on disk now rather than at the next five-minute copy, so a restart does not lose them
+  const ids = [...Assets.usedIds(store.doc)].filter((id) => Assets.get(id)).sort().join();
+  if (ids !== lastAssetIds) {
+    lastAssetIds = ids;
+    if (ids) native.invoke('autosave:write', JSON.stringify({ doc: store.doc, file: app.file, assets: Assets.pack(store.doc) })).catch(() => {});
   }
 };
 
@@ -309,6 +318,7 @@ store.on((doc) => {
   app.viewport.rebuild();
   app.viewport.showProposal(store.proposalDiff());
   app.panes?.sync(); // undo, open or a command changed the layout (#160)
+  app.tools?.tool?.syncGrips?.();
   app.ui.refresh();
   app.timeline.render();
   app.setFile(app.file, true);
@@ -492,6 +502,6 @@ if (store.doc.entities.length)
     .invoke('autosave:list')
     .then(async (l) => {
       const s = l[0] && JSON.parse(await native.invoke('autosave:read', l[0].name));
-      if (s?.assets && Object.keys(s.assets).length) Assets.unpack(s.assets), app.viewport.rebuild();
+      if (s?.assets && Object.keys(s.assets).length) Assets.unpack(s.assets), app.viewport.rebuild(), (lastAssetIds = Object.keys(s.assets).sort().join());
     })
     .catch(() => {});
