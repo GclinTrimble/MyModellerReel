@@ -59,6 +59,7 @@ import * as RD from './roads.js';
 import * as PL from './planar.js';
 import * as TX from './textures.js';
 import * as CRS from './crs.js';
+import * as LEARN from './learning.js';
 import { MATERIALS } from './materials.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
@@ -1307,10 +1308,10 @@ function registerCore(reg, ctx) {
     if (a.codes) p.points = { codes: a.codes };
     for (const k of ['breaklines', 'boundaries']) if (a[k] !== undefined) p[k] = Array.isArray(a[k]) ? D.resolve(ctx.doc, a[k]).map((x) => x.id) : a[k];
     if (a.exclude) p.exclude = pointsByRefs(a.exclude).map((x) => x.id);
-    for (const k of ['max_edge', 'min_z', 'max_z']) if (a[k] !== undefined) p[k] = a[k];
+    for (const k of ['max_edge', 'min_edge', 'min_z', 'max_z', 'outline', 'voids']) if (a[k] !== undefined) p[k] = a[k];
     return p;
   };
-  const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
+  const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_edge: num('drop triangles with a side shorter than this, m (slivers)'), outline: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan outline [[x, z], …] (model) the surface stays inside (#212)' }, voids: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, description: 'areas left out: [[[x, z], …], …] (model)' }, min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
   def('terrain', 'create_surface', 'A TIN surface (constrained Delaunay) from survey points, breaklines and boundaries. It stays live: move, add or delete a point or a line and it rebuilds. Several surfaces can live side by side (existing ground, design, as-built).', obj({ name: common.name, ...SRC, color: common.color, tag: common.tag }), (a) => {
     const doc = ctx.doc;
     const params = surfaceParams(a);
@@ -1334,7 +1335,7 @@ function registerCore(reg, ctx) {
     return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
 
-  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'swap', 'add_point', 'restore']), at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
+  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'swap', 'add_point', 'remove_point', 'restore']), at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
     const doc = ctx.doc;
     const s = surfaceOf(a.id);
     if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
@@ -1342,13 +1343,19 @@ function registerCore(reg, ctx) {
     if (a.action === 'restore') delete p.deleted, delete p.swaps;
     else if (a.action === 'delete') p.deleted = [...(p.deleted || []), a.at];
     else if (a.action === 'swap') p.swaps = [...(p.swaps || []), pointsByRefs([a.a, a.b]).map((x) => x.id)];
-    else {
+    else if (a.action === 'remove_point') {
+      // left out of this surface (the survey point itself stays) (#212)
+      const pt = a.a ? pointsByRefs([a.a])[0] : null;
+      if (!pt) throw new Error('Give a: the point to leave out.');
+      p.exclude = [...new Set([...(p.exclude || []), pt.id])];
+    } else {
       const y = surfaceSampler(doc, s).z(a.at[0], a.at[1]);
       if (y === null) throw new Error('That point is outside the surface.');
       const pt = S.addPoint(doc, { ...S.toProject(doc, [a.at[0], y, a.at[1]]), name: a.name, code: a.code || '' });
       if (Array.isArray(p.points)) p.points = [...p.points, pt.id];
     }
     if (!a.at && ['delete', 'add_point'].includes(a.action)) throw new Error('Give at: [x, z].');
+    if (a.action === 'restore') delete p.exclude;
     s.derived.params = p;
     R.regenerate(doc, s);
     return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
@@ -3325,6 +3332,24 @@ function registerCore(reg, ctx) {
     return { shortcuts: s };
   });
   def('scene', 'list_shortcuts', 'Your keyboard shortcuts (on top of the built-in ones).', obj({}), () => ctx.io?.settings?.().shortcuts || {});
+  // learning modules (#213): progress is the user's, kept with the app's settings (not in the model)
+  const lessonsDone = () => ctx.io?.settings?.()?.learning?.done || ctx.learning?.done || [];
+  const saveDone = async (done) => {
+    if (ctx.io?.setSettings) await ctx.io.setSettings({ learning: { done } });
+    else ctx.learning = { done };
+  };
+  def('scene', 'list_lessons', 'The learning modules (1 Getting started … 5 Presenting): each lesson (a help page), whether it is done, whether it has guided steps, and the points, level and badges earned.', obj({}), () => {
+    const done = new Set(lessonsDone());
+    return { ...LEARN.progress([...done]), modules: LEARN.MODULES.map((m) => ({ id: m.id, title: m.title, lessons: m.lessons.map((l) => ({ id: l.id, done: done.has(l.id), guided: !!l.guide })) })) };
+  });
+  def('scene', 'complete_lesson', 'Mark a lesson done (or not, done: false). Lessons also complete by themselves when you run one of their commands.', obj({ id: str('lesson (help page id)'), done: bool('default true') }, ['id']), async (a) => {
+    if (!LEARN.allLessons().some((l) => l.id === a.id)) throw new Error(`No lesson "${a.id}".`);
+    const done = new Set(lessonsDone());
+    if (a.done === false) done.delete(a.id);
+    else done.add(a.id);
+    await saveDone([...done]);
+    return LEARN.progress([...done]);
+  });
   // AI setup that connects by itself (#198)
   def('ai', 'detect_local_models', 'Find the AI models on this PC: servers answering on their usual ports (Ollama, LM Studio, llama.cpp / LocalAI, vLLM, Jan, GPT4All) with their models, models downloaded from Hugging Face (they need one of those servers to run), and whether Claude Desktop is installed (for the MCP link).', obj({}), async () => {
     if (!ctx.io?.detectModels) throw new Error('Needs the desktop app.');

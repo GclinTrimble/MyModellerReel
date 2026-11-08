@@ -107,7 +107,7 @@ export class Help {
     const listEl = h('div.help-list');
     this.renderList(listEl, list);
     queueMicrotask(() => search.focus());
-    return h('div.panel.help', {}, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Every page shows the clicks, a prompt for the copilot, and the commands for scripts and MCP.'));
+    return h('div.panel.help', {}, app.learning ? app.learning.card() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Every page shows the clicks, a prompt for the copilot, and the commands for scripts and MCP.'));
   }
 
   renderList(el, list = findHowtos(this.query, 50)) {

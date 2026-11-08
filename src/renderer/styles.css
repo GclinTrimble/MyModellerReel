@@ -537,3 +537,22 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .tree-row.drop { outline: 2px dashed var(--my-accent); outline-offset: -2px; }
 .tree-row input.rename { flex: 1; min-width: 0; height: 22px; }
 .segmented.small .seg { padding: 2px 8px; font-size: var(--my-text-xs); }
+.menu-pop .has-sub.open { background: var(--my-accent-tint); }
+#menu-sub { position: fixed; z-index: 51; }
+body.no-toolbar .workspace { grid-template-columns: 0 1fr var(--dock-w); }
+body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; overflow: hidden; }
+/* learning modules (#213) and guided steps (#214) */
+.learn { display: flex; flex-direction: column; gap: var(--my-space-1); margin-bottom: var(--my-space-3); }
+.learn-bar { height: 6px; background: var(--my-surface-2); border-radius: 3px; overflow: hidden; }
+.learn-bar i { display: block; height: 100%; background: var(--my-accent); }
+.learn-head { text-align: left; display: flex; align-items: center; gap: var(--my-space-1); width: 100%; border: 0; background: none; padding: var(--my-space-1) 0; font: inherit; font-weight: 600; cursor: pointer; color: var(--my-text); }
+.learn-head .ph-fill.ph-medal { color: #c8a23c; }
+.learn-lessons { display: flex; flex-direction: column; gap: 2px; padding-left: var(--my-space-3); }
+.learn-lesson { display: flex; align-items: center; gap: var(--my-space-1); font-size: var(--my-text-sm); }
+.learn-lesson button.link { border: 0; background: none; text-align: left; padding: 2px 0; color: var(--my-accent-text); cursor: pointer; font: inherit; }
+.learn-done { color: #3c9a4e; } .learn-todo { color: var(--my-text-muted); }
+.guide { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
+.guide-hl { position: fixed; border-radius: 8px; box-shadow: 0 0 0 3px var(--my-accent), 0 0 0 9px rgba(47, 111, 134, 0.25); animation: guide-pulse 1.4s ease-in-out infinite; }
+@keyframes guide-pulse { 50% { box-shadow: 0 0 0 3px var(--my-accent), 0 0 0 14px rgba(47, 111, 134, 0.1); } }
+.guide-card { position: fixed; width: 300px; pointer-events: auto; background: var(--my-surface); color: var(--my-text); border-radius: 10px; padding: var(--my-space-3); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); border-left: 4px solid var(--my-accent); }
+.guide-card p { margin: 4px 0 8px; }

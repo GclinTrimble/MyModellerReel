@@ -107,13 +107,16 @@ export function buildForm(app, c, preset = {}, { pick } = {}) {
       read = () => (ta.value.trim() ? JSON.parse(ta.value) : undefined);
     }
     readers[k] = read;
+    // screen readers (and tests) find each field by its name
+    const first = control.matches?.('input, select, textarea') ? control : control.querySelector?.('input:not([type=checkbox]):not([type=color]), select, textarea');
+    if (first && !first.getAttribute('aria-label')) first.setAttribute('aria-label', human(k));
     const msg = h('div.form-error', { role: 'alert' });
     const row = h('div.form-field', {}, h('div.form-label', {}, h('span', {}, human(k), req.has(k) ? h('span.form-req', { title: 'Needed' }, ' *') : null), tip(s)), control, s.description ? h('div.form-help', {}, s.description) : null, msg);
     rows[k] = msg;
     return row;
   };
   const keys = Object.keys(props);
-  const main = keys.filter((k) => req.has(k) || preset[k] !== undefined || (k === 'ids' && app.selection.length));
+  const main = keys.filter((k) => req.has(k) || preset[k] !== undefined || k === 'ids' || k === 'id'); // which thing(s) it acts on come first
   const more = keys.filter((k) => !main.includes(k));
   const el = h(
     'div.cmd-form',

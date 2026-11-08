@@ -1058,6 +1058,81 @@ const PAGES = {
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
     await run('set_style', { grid: true });
   },
+  async 'everyday-workflow'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); window.mmr.app.ui.setSideToolbar(true); return 1;");
+    await run('create_box', { width: 4, height: 3, depth: 4, name: 'Studio', color: '#e9e4d8' });
+    await run('create_box', { width: 1, height: 1, depth: 1, position: [4, 0, 2], name: 'Crate' });
+    await run('make_component', { ids: ['Crate'], name: 'Crate' });
+    await run('create_cylinder', { radius: 0.6, height: 2.5, position: [-4, 0, 1], name: 'Tank' });
+    await run('group', { ids: ['Studio', 'Tank'], name: 'Site buildings' });
+    for (let i = 1; i <= 6; i++) await run('add_point', { e: i * 1.5 - 5, n: 6, z: 0 });
+    await camera([10, 8, 13], [0, 1, 0]);
+    await none();
+    await js("window.mmr.app.ui.commandDialog('create_layer', { name: 'C-ROAD/Kerbs' }); return 1;");
+    await shot('New layer: a name, a colour, a line type you can see; the rest under More options');
+    await clean();
+    await js("window.mmr.app.ui.commandDialog('create_corridor', { alignment: 'Main road' }); return 1;");
+    await shot('Every form in plain words: the right control for each value, tips, More options folded');
+    await clean();
+    await panel('outliner');
+    await js("window.mmr.app.ui.outline = { by: 'hierarchy', q: '', open: new Set(['Survey points']) }; window.mmr.app.ui.renderDock(); return 1;");
+    await shot('The outliner as a tree: folders, search, group by type or layer, drag onto a group');
+    const r = await run('place_component', { name: 'Crate' });
+    await js(`setTimeout(() => window.mmr.app.tools.place(['${r.id}'])); return 1;`);
+    await wait(400);
+    const [x, y] = await js("const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(-1, 0, 4)); return [Math.round(s.x), Math.round(s.y)];");
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x: x - 40, y }, { type: 'mouseMove', x, y }, { type: 'wait', ms: 300 }] });
+    await shot('Placing a component: it follows the mouse, lands on faces and the ground, click to drop');
+    await req('POST', '/api/input', { events: [{ type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 300 }] });
+    await none();
+    await js("const b = [...document.querySelectorAll('#menubar button')].find((x) => x.textContent === 'View'); b.click(); const row = [...document.querySelectorAll('#menu-pop .has-sub')].find((x) => x.textContent.includes('Display')); row.dispatchEvent(new MouseEvent('mouseenter')); return 1;");
+    await shot('Long menus in groups: View › Display, Style, Sections, Handles…');
+    await clean();
+    await js("window.mmr.app.ui.setRibbon('Draw and modify', 'Draw'); return 1;");
+    await shot('Any menu as a ribbon: Draw and modify, Edit, View, Animate, Site, Drawings');
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+  },
+  async 'edit-a-surface-by-hand'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    const pts = [];
+    for (let i = 0; i <= 5; i++) for (let j = 0; j <= 5; j++) pts.push(`${i}_${j},${j * 5},${i * 5},${(Math.sin(i) + Math.cos(j)).toFixed(2)},GND`);
+    await run('import_points', { text: pts.join('\n') });
+    await run('set_base_point', { e: 0, n: 0, z: 0 });
+    await run('create_surface', { name: 'Existing ground' });
+    await camera([12.5, 45, -12.49], [12.5, 0, -12.5]);
+    await run('set_camera', { projection: 'parallel' });
+    await js("window.mmr.app.select([window.mmr.doc.entities.find((e) => e.name === 'Existing ground').id]); window.mmr.app.tools.set('surfedit'); return 1;");
+    await shot('Site › Edit surface: the keys for each edit are in the status bar');
+    await run('edit_triangles', { id: 'Existing ground', action: 'delete', at: [7, -8] });
+    await run('edit_triangles', { id: 'Existing ground', action: 'swap', a: '2_2', b: '3_3' }).catch(() => run('edit_triangles', { id: 'Existing ground', action: 'swap', a: '2_3', b: '3_2' }));
+    await shot('Delete a triangle (D), swap an edge (W), add (A) or leave out (R) a point');
+    await run('set_surface_sources', { id: 'Existing ground', voids: [[[14, -14], [21, -14], [21, -21], [14, -21]]] });
+    await shot('Draw a hole (H): a pond or a building left out of the surface');
+    await run('set_surface_sources', { id: 'Existing ground', outline: [[0, -2], [25, 0], [25, -25], [3, -22]] });
+    await shot('Draw the outline (B); "max 30" or "min 0.5" limits the triangle sides');
+    await run('set_camera', { projection: 'perspective' });
+    await js("window.mmr.app.tools.set('select'); return 1;");
+  },
+  async 'learn-step-by-step'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    for (const id of ['draw-and-edit', 'work-faster', 'multiple-views']) await run('complete_lesson', { id, done: false });
+    await run('complete_lesson', { id: 'multiple-views' });
+    await camera([8, 10, 12], [0, 0, 0]);
+    await js("window.mmr.app.learning.open.add('m2'); window.mmr.app.help.page = null; window.mmr.app.ui.show('help'); return 1;");
+    await shot('Help › Learn: five modules of lessons, points and levels');
+    await js("window.mmr.app.learning.start('draw-and-edit'); return 1;");
+    await shot('Guide me: the next thing to click is highlighted');
+    await js("window.mmr.app.tools.set('rectangle'); return 1;");
+    await wait(800);
+    const ev = await js("const v = window.mmr.app.viewport; const ev = []; for (const p of [[-2, 0, 2], [2, 0, -2]]) { const s = v.toScreen(new window.mmr.THREE.Vector3(...p)); const x = Math.round(s.x), y = Math.round(s.y); ev.push({ type: 'mouseMove', x: x + 2, y }, { type: 'mouseMove', x, y }, { type: 'wait', ms: 100 }, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 600 }); } return ev;");
+    await req('POST', '/api/input', { events: ev });
+    await wait(800);
+    await shot('Each step moves on when you have done it; the lesson earns its points');
+    await js('window.mmr.app.learning.stop(); return 1;');
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

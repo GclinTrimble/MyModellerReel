@@ -16,6 +16,7 @@ import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
 import { IO } from './io.js';
 import { Panes } from './panes.js';
+import { Learning } from './learning.js';
 import { drawLabels } from './labels.js';
 import { registerFont } from '../core/font.js';
 import { setLanguage } from '../core/i18n.js';
@@ -319,6 +320,7 @@ store.on((doc) => {
   app.viewport.showProposal(store.proposalDiff());
   app.panes?.sync(); // undo, open or a command changed the layout (#160)
   app.tools?.tool?.syncGrips?.();
+  app.tools?.tool?.afterRebuild?.(); // a preview in progress (placing a component) holds the new objects
   app.ui.refresh();
   app.timeline.render();
   app.setFile(app.file, true);
@@ -441,6 +443,16 @@ const theme = localStorage.getItem('mymodellerreel.theme');
 app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
 app.ai = new Assistant(app);
 app.help = new Help(app);
+app.learning = new Learning(app);
+// every command, from any source, may complete a lesson or a guided step (#213, #214)
+{
+  const run0 = app.reg.run.bind(app.reg);
+  app.reg.run = async (name, args) => {
+    const r = await run0(name, args);
+    if (name !== 'complete_lesson' && name !== 'list_lessons') queueMicrotask(() => app.learning.ran(name));
+    return r;
+  };
+}
 app.ui.init();
 app.tools = new Tools(app);
 app.panes = new Panes(app);

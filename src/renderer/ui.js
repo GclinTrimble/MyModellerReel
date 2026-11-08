@@ -46,6 +46,7 @@ export class UI {
     try {
       const r = JSON.parse(localStorage.getItem('mymodellerreel.ribbon') || 'null');
       if (r?.name) queueMicrotask(() => this.setRibbon(r.name, r.tab));
+      if (localStorage.getItem('mymodellerreel.toolbar') === '0') document.body.classList.add('no-toolbar');
     } catch {}
     this.buildViewbar();
     this.buildTabs();
@@ -146,9 +147,8 @@ export class UI {
   /** Click points in the view while a form waits (it hides, then comes back). n = 0: until Enter. */
   async pickInView(n, hint) {
     const dlg = this.$('modal');
-    this.keepModal = true;
+    this.modalClosing = true;
     dlg.close();
-    this.keepModal = false;
     try {
       const pts = await this.app.tools.pickPoints(n, hint);
       return pts.map((p) => p.toArray());
@@ -443,6 +443,8 @@ export class UI {
       versions: { label: 'Versions…', icon: 'clock-counter-clockwise', run: () => this.versionsDialog() },
       webViewer: { label: 'Export a web viewer (HTML)…', icon: 'globe', run: run('export_web_viewer', {}) },
       exportAll: { label: 'Export…', icon: 'export', key: 'Ctrl+E', run: () => this.exportDialog() },
+      ribbon: { label: 'Ribbon: tools in tabs', icon: 'rows', checked: () => !!this.ribbon, run: () => this.setRibbon(this.ribbon ? null : 'Draw and modify') },
+      sideToolbar: { label: 'Side toolbar', icon: 'sidebar', checked: () => !document.body.classList.contains('no-toolbar'), run: () => this.setSideToolbar(document.body.classList.contains('no-toolbar')) },
       ribbonSite: { label: 'Site ribbon: survey, surfaces, design, roads, earthworks', icon: 'mountains', checked: () => this.ribbon?.name === 'Site', run: () => this.setRibbon(this.ribbon?.name === 'Site' ? null : 'Site') },
       ribbonDrawings: { label: 'Drawings ribbon: bring in, scale, place, take lines out', icon: 'file-pdf', checked: () => this.ribbon?.name === 'Drawings', run: () => this.setRibbon(this.ribbon?.name === 'Drawings' ? null : 'Drawings') },
       exportSelection: { label: 'Export the selection…', icon: 'export', run: () => this.exportDialog('selection') },
@@ -481,6 +483,7 @@ export class UI {
       } },
       processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
       coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
+      editSurface: { label: 'Edit surface by hand: swap, delete, points, outline, holes', icon: 'triangle', run: () => app.tools.set('surfedit') },
       basePoint: { label: 'Base point: click a point, type its coordinates', icon: 'crosshair', run: () => app.tools.set('basepoint') },
       units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
       survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
@@ -501,10 +504,10 @@ export class UI {
       File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', 'Views', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'sectionPlanes', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
@@ -522,15 +525,49 @@ export class UI {
     this.closeMenu();
     this.openName = name;
     btn.setAttribute('aria-expanded', 'true');
+    const item = (id, reopen) => {
+      if (id === '-') return h('hr');
+      const a = this.actions[id];
+      if (!a) return h('div.overline', {}, t(id));
+      const on = a.checked?.();
+      // a toggle keeps the menu open (#194): switch several things on and off in one go
+      const click = a.checked ? async () => (await a.run(), reopen()) : () => (this.closeMenu(), a.run());
+      return h('button', { role: 'menuitem', 'aria-checked': a.checked ? String(!!on) : undefined, onclick: click }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
+    };
+    // a long menu (#208): the items under each heading go into a sub-menu that opens beside it
+    const list = this.menus[name];
+    const parts = [];
+    if (list.length > 16) {
+      let cur = null;
+      for (const id of list) {
+        if (id !== '-' && !this.actions[id]) parts.push((cur = { sub: id, items: [] }));
+        else if (id === '-') (cur = null), parts.push(id);
+        else if (cur) cur.items.push(id);
+        else parts.push(id);
+      }
+    } else parts.push(...list);
+    const openSub = (p, row) => {
+      this.$('menu-sub')?.remove();
+      const sub = h('div.menu-pop', { id: 'menu-sub', role: 'menu' });
+      const render = () => sub.replaceChildren(...p.items.map((id) => item(id, render)));
+      render();
+      document.body.append(sub);
+      const r = row.getBoundingClientRect();
+      Object.assign(sub.style, { left: `${r.right + 2}px`, top: `${Math.max(8, Math.min(r.top - 4, innerHeight - sub.offsetHeight - 8))}px` });
+      for (const x of pop.querySelectorAll('.has-sub')) x.classList.toggle('open', x === row);
+    };
+    const reopenMain = () => ((this.openName = null), this.openMenu(name, btn));
     pop.replaceChildren(
-      ...this.menus[name].map((id) => {
-        if (id === '-') return h('hr');
-        const a = this.actions[id];
-        if (!a) return h('div.overline', {}, t(id));
-        const on = a.checked?.();
-        // a toggle keeps the menu open (#194): switch several things on and off in one go
-        const click = a.checked ? async () => (await a.run(), (this.openName = null), this.openMenu(name, btn)) : () => (this.closeMenu(), a.run());
-        return h('button', { role: 'menuitem', 'aria-checked': a.checked ? String(!!on) : undefined, onclick: click }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
+      ...parts.map((p) => {
+        if (typeof p === 'string') {
+          const el = item(p, reopenMain);
+          el.onmouseenter = () => (this.$('menu-sub')?.remove(), pop.querySelectorAll('.has-sub').forEach((x) => x.classList.remove('open')));
+          return el;
+        }
+        const row = h('button.has-sub', { role: 'menuitem', 'aria-haspopup': 'menu' }, icon(this.actions[p.items[0]]?.icon || 'folder-simple'), t(p.sub), h('span.key', {}, icon('caret-right')));
+        row.onmouseenter = () => openSub(p, row);
+        row.onclick = () => openSub(p, row);
+        return row;
       }),
     );
     const r = btn.getBoundingClientRect();
@@ -538,6 +575,7 @@ export class UI {
     pop.hidden = false;
   }
   closeMenu() {
+    this.$('menu-sub')?.remove();
     this.$('menu-pop').hidden = true;
     for (const b of this.$('menubar').children) b.setAttribute('aria-expanded', 'false');
     this.openName = null;
@@ -741,7 +779,7 @@ export class UI {
         if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
         if (one?.derived?.generator === 'corridor') extra.push(a('roadViews'), a('corridorSurface'), a('corridorVolumes'), a('corridorSolids'));
         if (one?.alignment) extra.push({ label: 'Corridor along this alignment…', icon: 'road-horizon', run: () => this.commandDialog('create_corridor', { alignment: one.name }) });
-        if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('contours'), a('analyze'));
+        if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('editSurface'), a('contours'), a('analyze'));
         items = [
           one ? one.name : `${ents.length} selected`,
           ...extra.filter(Boolean),
@@ -999,7 +1037,7 @@ export class UI {
   static RIBBONS = {
     Site: {
       Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint'],
-      Surfaces: ['surface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
+      Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
       Earthworks: ['cutFill', 'volumeReport', 'corridorVolumes', 'corridorSolids'],
@@ -1014,13 +1052,36 @@ export class UI {
     },
   };
   /** Show a ribbon (Site, Drawings) on one of its tabs, or hide it (null). */
+  /** Every ribbon: Site and Drawings by workflow, and one per long menu, a tab per section of it (#209). */
+  ribbons() {
+    const out = {};
+    for (const m of ['Tools', 'Edit', 'Arrange', 'View', 'Animate']) {
+      const tabs = {};
+      let cur = 'Main';
+      for (const id of this.menus[m] || []) {
+        if (id === '-') continue;
+        if (!this.actions[id] && !id.startsWith('tool:')) cur = id;
+        else (tabs[cur] ||= []).push(id);
+      }
+      out[m === 'Tools' ? 'Draw and modify' : m] = tabs;
+    }
+    return { ...out, ...UI.RIBBONS };
+  }
   setRibbon(name, tab = null) {
-    const R = UI.RIBBONS;
+    const R = this.ribbons();
     this.ribbon = name && R[name] ? { name, tab: tab && R[name][tab] ? tab : this.ribbon?.name === name ? this.ribbon.tab : Object.keys(R[name])[0] } : null;
     try {
       localStorage.setItem('mymodellerreel.ribbon', JSON.stringify(this.ribbon));
     } catch {}
     this.renderRibbon();
+  }
+  /** Show or hide the side toolbar (#209): with a ribbon open, its tools are there. */
+  setSideToolbar(on) {
+    document.body.classList.toggle('no-toolbar', !on);
+    try {
+      localStorage.setItem('mymodellerreel.toolbar', on ? '1' : '0');
+    } catch {}
+    this.app.viewport.dirty = true;
   }
   renderRibbon() {
     let el = this.$('ribbon');
@@ -1031,7 +1092,7 @@ export class UI {
     el.hidden = !this.ribbon;
     if (!this.ribbon) return void (this.app.viewport.dirty = true);
     const { name, tab } = this.ribbon;
-    const tabs = UI.RIBBONS[name];
+    const tabs = this.ribbons()[name];
     const item = (id) => {
       if (id.startsWith('tool:')) {
         const t = TOOLS.find((x) => x.id === id.slice(5));
@@ -1041,7 +1102,7 @@ export class UI {
       return a && h('button.ribbon-btn', { title: t(a.label), onclick: () => a.run() }, icon(a.icon || 'dot-outline'), h('span', {}, t(a.label).replace(/…$/, '').replace(/\s*\(.*$/, '').replace(/:.*$/, '')));
     };
     el.replaceChildren(
-      h('div.ribbon-tabs', {}, h('select', { 'aria-label': 'Ribbon', onchange: (e) => this.setRibbon(e.target.value) }, Object.keys(UI.RIBBONS).map((n) => h('option', { value: n, selected: n === name }, t(n)))), ...Object.keys(tabs).map((k) => h('button.ribbon-tab', { role: 'tab', 'aria-selected': String(k === tab), onclick: () => this.setRibbon(name, k) }, k)), h('span.spacer'), h('button.icon-btn.sm', { title: 'Hide the ribbon', 'aria-label': 'Hide the ribbon', onclick: () => this.setRibbon(null) }, icon('x'))),
+      h('div.ribbon-tabs', {}, h('select', { 'aria-label': 'Ribbon', onchange: (e) => this.setRibbon(e.target.value) }, Object.keys(this.ribbons()).map((n) => h('option', { value: n, selected: n === name }, t(n)))), ...Object.keys(tabs).map((k) => h('button.ribbon-tab', { role: 'tab', 'aria-selected': String(k === tab), onclick: () => this.setRibbon(name, k) }, k)), h('span.spacer'), h('button.icon-btn.sm', { title: 'Hide the ribbon', 'aria-label': 'Hide the ribbon', onclick: () => this.setRibbon(null) }, icon('x'))),
       h('div.ribbon-body', {}, ...tabs[tab].map(item).filter(Boolean)),
     );
     this.app.viewport.dirty = true;
@@ -1589,6 +1650,42 @@ export class UI {
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
       );
     }
+    if (e.alignment) {
+      // an alignment's corners (#210): the radius of each curve, edited in place; the road on it follows
+      const al = e.alignment;
+      const pts = al.points || [];
+      const radii = [...(al.radii || [])];
+      const inner = pts.slice(1, -1);
+      return h(
+        'div.card',
+        {},
+        h('div.overline', {}, `Alignment · ${fmt(al.length || 0)}`),
+        inner.length
+          ? h(
+              'div.qty',
+              {},
+              h(
+                'table',
+                {},
+                h('thead', {}, h('tr', {}, h('th', {}, 'Corner'), h('th', {}, 'Radius (m)'))),
+                h(
+                  'tbody',
+                  {},
+                  inner.map((p, i) =>
+                    h(
+                      'tr',
+                      {},
+                      h('td', {}, `PI ${i + 1}`),
+                      h('td', {}, h('input', { type: 'number', min: 0, step: 1, value: radii[i] || 0, 'aria-label': `Radius at PI ${i + 1}`, onchange: (ev) => ((radii[i] = +ev.target.value), run('set_alignment', { id: e.id, radii: inner.map((_, k) => radii[k] || 0) })) })),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : h('p.small.muted', {}, 'A straight alignment: add points to give it curves.'),
+        h('p.small.muted', {}, 'A road built on it (Site › Corridor) follows every change.'),
+      );
+    }
     if (e.annotation && e.annotation.type !== 'guide') {
       // a dimension or label after placing it (#182, #183); dragging its text with Select does the same
       const n = e.annotation;
@@ -2039,9 +2136,10 @@ export class UI {
     const dlg = this.$('modal');
     return new Promise((resolve) => {
       dlg.replaceChildren(
-        h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => (dlg.close(), resolve(value)) }, label)))),
+        h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => ((this.modalClosing = true), dlg.close(), resolve(value)) }, label)))),
       );
-      dlg.onclose = () => !this.keepModal && resolve(null); // picking in the view hides it for a moment
+      // the close event comes later: one we caused (a button, picking in the view) is not a Cancel
+      dlg.onclose = () => (this.modalClosing ? (this.modalClosing = false) : resolve(null));
       dlg.showModal();
     });
   }

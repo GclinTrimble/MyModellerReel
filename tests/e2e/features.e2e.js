@@ -62,9 +62,9 @@ test('every command is in the palette; one with parameters opens its form', asyn
   await w.fill('#palette-input', 'place_on');
   await w.keyboard.press('Enter');
   const form = w.locator('#modal');
-  await form.getByText('place on').waitFor();
-  await form.locator('input').nth(0).fill('Ball');
-  await form.locator('input').nth(1).fill('Table');
+  await form.getByText('Place on').first().waitFor();
+  await form.locator('input[aria-label="Which ones"]').fill('Ball');
+  await form.locator('input[aria-label="Target"]').fill('Table');
   await form.getByRole('button', { name: 'Run' }).click();
   const ball = (await ok('get_entity', { id: 'Ball' })).min;
   assert.equal(ball[1], 1);
@@ -74,7 +74,7 @@ test('parametric: sweep from the Library, edit a parameter in the Entity panel, 
   await ok('create_curve', { points: [[0, 0, 5], [3, 0, 6], [6, 0, 5]], kind: 'spline', name: 'Path' });
   await ok('select', { ids: ['Path'] });
   await w.click('[data-tab="library"]');
-  await w.locator('button.profile', { hasText: 'pipe' }).click();
+  await w.locator('button.profile', { hasText: /^pipe$/ }).click();
   const sweep = (await ok('get_scene')).entities.find((e) => e.generator === 'sweep');
   assert.ok(sweep, 'a sweep was made');
   await ok('create_box', { width: 1, height: 1, depth: 1, name: 'Param box', position: [8, 0, 0] });
@@ -741,4 +741,45 @@ test('drawing and editing: a rectangle over a face splits it, a grip drag, an ar
   await w.locator('.swatch', { hasText: 'Red brick' }).click();
   await w.waitForTimeout(500);
   assert.equal(await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'Slab').material.name), 'Red brick');
+});
+
+test('friendly: a form keeps its error, the outliner drags into a group, a component follows the mouse, a guided step moves on', async () => {
+  await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  // the New layer dialog: no name, an error in place, then a layer
+  await w.evaluate(() => { window.mmr.app.ui.commandDialog('create_layer'); });
+  await w.locator('#modal button', { hasText: 'Create' }).click();
+  assert.match(await w.locator('#modal .form-top').innerText(), /name/);
+  await w.locator('#modal input[aria-label="Layer name"]').fill('Walls');
+  await w.locator('#modal button', { hasText: 'Create' }).click();
+  await w.waitForTimeout(200);
+  assert.ok(await w.evaluate(() => window.mmr.doc.tags.some((t) => t.name === 'Walls')));
+  // the outliner: drag a box onto a group
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'A' });
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'B', position: [3, 0, 0] });
+  await ok('group', { ids: ['B'], name: 'G' });
+  await ok('select', { mode: 'none' });
+  await w.evaluate(() => window.mmr.app.ui.show('outliner'));
+  await w.locator('.outline-tree .tree-row', { hasText: 'A' }).first().dragTo(w.locator('.outline-tree .tree-row', { hasText: 'G' }).first());
+  await w.waitForTimeout(300);
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'A').parent), await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'G').id));
+  // a component follows the mouse and lands where clicked
+  await ok('set_camera', { position: [0, 30, 0.01], target: [0, 0, 0], projection: 'parallel' });
+  await ok('make_component', { ids: ['G'], name: 'Pair' });
+  const r = await ok('place_component', { name: 'Pair' });
+  await w.evaluate((id) => window.mmr.app.tools.place([id]), r.id);
+  const [x, y] = await w.evaluate(() => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(-6, 0, 5)); return [s.x, s.y]; });
+  await w.mouse.move(x - 20, y);
+  await w.mouse.move(x, y);
+  await w.mouse.click(x, y);
+  await w.waitForTimeout(300);
+  const pos = await w.evaluate((id) => window.mmr.doc.entities.find((e) => e.id === id).position, r.id);
+  assert.ok(Math.abs(pos[0] + 6) < 0.6 && Math.abs(pos[2] - 5) < 0.6, `placed at ${pos}`);
+  // a guided lesson: picking the tool moves it to the next step
+  await w.evaluate(() => (window.mmr.app.tools.set('select'), window.mmr.app.learning.start('draw-and-edit')));
+  await w.evaluate(() => window.mmr.app.tools.set('rectangle'));
+  await w.waitForTimeout(900);
+  assert.equal(await w.evaluate(() => window.mmr.app.learning.guide?.i), 1);
+  await w.evaluate(() => (window.mmr.app.learning.stop(), window.mmr.app.tools.set('select')));
+  await ok('set_camera', { projection: 'perspective' });
 });

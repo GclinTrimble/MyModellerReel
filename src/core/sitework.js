@@ -74,8 +74,12 @@ export function buildSurface(doc, p) {
     for (let k = 1; k < ids.length; k++) for (const seg of splitAtPoints(v, ids[k - 1], ids[k])) constraints.push(seg), owners.push(l.id);
     if (l.line.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
   }
+  // a drawn outline and voids in plan (#212), next to the boundaries made of points
+  if (p.outline?.length >= 3) outer.push(p.outline);
+  for (const h of p.voids || []) if (h.length >= 3) holes.push(h);
   const { faces, failed } = TR.triangulate(v, { constraints, outer, holes, maxEdge: p.max_edge || 0 });
   let f = faces;
+  if (p.min_edge > 0) f = f.filter((tri) => tri.every((i, k) => Math.hypot(v[i][0] - v[tri[(k + 1) % 3]][0], v[i][2] - v[tri[(k + 1) % 3]][2]) >= p.min_edge));
   for (const [x, z] of p.deleted || []) f = f.filter((tri) => !insideTri([x, z], tri.map((i) => v[i])));
   for (const [a, b] of p.swaps || []) TR.swapEdge(f, v, vertexIds.indexOf(a), vertexIds.indexOf(b));
   if (!f.length) throw new Error('No triangles left (check the boundary and max_edge).');
@@ -128,7 +132,7 @@ const world = (fn) => (args) => {
 registerGenerator('surface', {
   description: 'TIN surface from survey points, breaklines and boundaries (stays live)',
   world: true,
-  params: { points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand', adjustments: 'sculpt / stamp operations applied on top (design adjustments)' },
+  params: { points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_edge: 'drop triangles with a shorter side, m', outline: 'plan outline [[x, z], …]', voids: 'areas left out [[[x, z], …], …]', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand', adjustments: 'sculpt / stamp operations applied on top (design adjustments)' },
   inputsFrom: (p, doc) => {
     const s = surfaceSources(doc, p);
     return [...s.points, ...s.breaklines, ...s.boundaries].map((x) => x.id);

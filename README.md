@@ -69,6 +69,9 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Drawing that behaves**: shapes drawn over a face split it, grips on corners and edges, arcs three ways and arc
   segments in lines, dimensions and labels you can still move and style, textured materials (brick, wood, stone, grass…),
   Site and Drawings ribbons, a coordinate system picker and a base point set from a point you know.
+- **Friendly to use**: forms in plain words with the right control for each value, a New layer dialog, the outliner
+  as a tree with drag and drop, components that follow the mouse, grouped menus and a ribbon for every menu, a path /
+  alignment tool with corner radii, civil sweep profiles, surface editing by hand, and lessons with points and guided steps.
 - **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
   editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
   shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a

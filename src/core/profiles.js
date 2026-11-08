@@ -84,6 +84,79 @@ export const PROFILES = {
     anchor: 'bottom-left',
     build: ({ height: h, depth: d }) => [[0, 0], [d, 0], [d, h - d], ...arc(d, 0, Math.PI / 2, 6, 0, h - d).slice(1)],
   },
+  // civil engineering sections (#211): roads, drainage, barriers, walls
+  road_crown: {
+    description: 'Road pavement with a crown: two lanes falling to each side at a crossfall, with a pavement depth',
+    params: { width: [7, 'total width, m'], crossfall: [2.5, '% fall from the crown'], depth: [0.4, 'pavement depth, m'] },
+    anchor: 'top-center',
+    build: ({ width: w, crossfall: c, depth: d }) => { const f = (w / 2) * (c / 100); return [[-w / 2, -f - d], [w / 2, -f - d], [w / 2, -f], [0, 0], [-w / 2, -f]]; },
+  },
+  barrier_kerb: {
+    description: 'Barrier kerb: a near-vertical face 150 mm high, road on the left',
+    params: { height: [0.3, 'total height, m'], width: [0.15, 'm'], upstand: [0.15, 'face height above the road, m'] },
+    anchor: 'bottom-left',
+    build: ({ height: h, width: w, upstand: u }) => [[0, 0], [w, 0], [w, h], [0.02, h], [0, h - 0.02], [0, h - u]],
+  },
+  mountable_kerb: {
+    description: 'Mountable (semi-mountable) kerb: a sloping face cars can drive over, road on the left',
+    params: { height: [0.2, 'total height, m'], width: [0.3, 'm'], upstand: [0.1, 'face height above the road, m'] },
+    anchor: 'bottom-left',
+    build: ({ height: h, width: w, upstand: u }) => [[0, 0], [w, 0], [w, h], [w * 0.55, h], [0, h - u]],
+  },
+  footpath_kerb: {
+    description: 'Footpath slab with its kerb on the road side (left)',
+    params: { width: [1.8, 'footpath width, m'], thickness: [0.1, 'slab, m'], upstand: [0.15, 'kerb above the road, m'], kerb: [0.15, 'kerb width, m'] },
+    anchor: 'bottom-left',
+    build: ({ width: w, thickness: t, upstand: u, kerb: k }) => [[0, 0], [k + w, 0], [k + w, u + t], [0, u + t]],
+  },
+  v_ditch: {
+    description: 'V-shaped ditch (the void: subtract it from terrain)',
+    params: { depth: [0.5, 'm'], slope: [3, 'side slope, horizontal per 1 vertical'] },
+    anchor: 'top-center',
+    build: ({ depth: d, slope: s }) => [[0, -d], [s * d, 0], [-s * d, 0]],
+  },
+  lined_channel: {
+    description: 'Concrete-lined trapezoidal channel: the lining as a solid',
+    params: { depth: [0.8, 'm'], bottom: [0.6, 'bottom width, m'], slope: [1, 'side slope, H per 1 V'], thickness: [0.1, 'lining, m'] },
+    anchor: 'top-center',
+    build: ({ depth: d, bottom: b, slope: s, thickness: t }) => {
+      const tw = b / 2 + s * d;
+      return [[-tw - t, 0], [-tw, 0], [-b / 2, -d], [b / 2, -d], [tw, 0], [tw + t, 0], [b / 2 + t * 0.4, -d - t], [-b / 2 - t * 0.4, -d - t]];
+    },
+  },
+  u_drain: {
+    description: 'Precast U-drain / box culvert open at the top: walls and floor',
+    params: { width: [0.6, 'inside width, m'], height: [0.6, 'inside height, m'], wall: [0.1, 'm'] },
+    anchor: 'bottom-center',
+    build: ({ width: w, height: h, wall: t }) => [[-w / 2 - t, 0], [w / 2 + t, 0], [w / 2 + t, h + t], [w / 2, h + t], [w / 2, t], [-w / 2, t], [-w / 2, h + t], [-w / 2 - t, h + t]],
+  },
+  hollow_pipe: {
+    description: 'Hollow pipe or culvert: a ring with a wall thickness',
+    params: { diameter: [0.6, 'inside diameter, m'], wall: [0.06, 'm'] },
+    anchor: 'center',
+    build: ({ diameter, wall: t }) => { const r = diameter / 2; return [...arc(r + t, 0, 2 * Math.PI, 32), ...arc(r, 2 * Math.PI, 0, 32)]; },
+  },
+  pipe_trench: {
+    description: 'Pipe trench with sloped sides and bedding: the trench void, to subtract from terrain',
+    params: { depth: [1.5, 'm'], bottom: [0.9, 'bottom width, m'], slope: [0.5, 'side slope, H per 1 V'] },
+    anchor: 'top-center',
+    build: ({ depth: d, bottom: b, slope: s }) => [[-b / 2, -d], [b / 2, -d], [b / 2 + s * d, 0], [-b / 2 - s * d, 0]],
+  },
+  guard_rail: {
+    description: 'W-beam guard rail on its posts line (the rail as a folded steel section)',
+    params: { height: [0.31, 'rail depth, m'], depth: [0.085, 'm'], thickness: [0.003, 'm'] },
+    anchor: 'left',
+    build: ({ height: h, depth: d, thickness: t }) => {
+      const z = [[0, 0], [d, h * 0.2], [d, h * 0.4], [0, h * 0.5], [d, h * 0.6], [d, h * 0.8], [0, h]];
+      return [...z, ...z.slice().reverse().map(([u, v]) => [u + t, v])];
+    },
+  },
+  l_wall: {
+    description: 'L-shaped retaining wall: a stem on a footing with its heel to the right',
+    params: { height: [1.5, 'm'], stem: [0.2, 'm'], base: [1, 'footing width, m'], footing: [0.25, 'm'] },
+    anchor: 'bottom-left',
+    build: ({ height: h, stem: s, base: b, footing: f }) => [[0, 0], [b, 0], [b, f], [s, f], [s, h], [0, h]],
+  },
 };
 
 export const ANCHORS = ['center', 'bottom-center', 'top-center', 'bottom-left', 'bottom-right', 'top-left', 'top-right', 'left', 'right'];
