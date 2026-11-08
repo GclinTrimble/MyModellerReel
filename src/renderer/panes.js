@@ -276,6 +276,7 @@ export class Panes {
     if (this.focusI === i) return;
     this.focusI = i;
     this.heads.forEach((el, k) => el?.classList.toggle('focused', k === i));
+    this.app.ui.renderViewbar?.(); // its projection and wireframe buttons show this pane
   }
 
   markCustom(cfg, camera, controls) {
@@ -307,11 +308,6 @@ export class Panes {
         if (r) Object.assign(p.board.style, { left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) });
       }
     });
-    // the view bar sits in the bottom corner of pane 1 when there are several (the chips are at the top, the road
-    // drawings have their axes at the bottom)
-    const vb = document.getElementById('viewbar');
-    const r1 = rects[0];
-    if (vb) Object.assign(vb.style, L.count > 1 && r1 ? { right: `calc(${pct(1 - r1.x - r1.w)} + 12px)`, bottom: `calc(${pct(1 - r1.y - r1.h)} + 12px)` } : { right: '', bottom: '' });
     for (const p of all)
       if (p.win) {
         p.visible = true;
@@ -326,7 +322,9 @@ export class Panes {
         const r = rects[k];
         if (!r) return;
         const el = this.head(p, L);
-        Object.assign(el.style, { left: `calc(${pct(r.x)} + 8px)`, top: `calc(${pct(r.y)} + 8px)` });
+        // the view bar stays top right in every layout (#205): the chip of the pane under it steps down
+        const under = r.y < 1e-6 && r.x + r.w > 1 - 1e-6;
+        Object.assign(el.style, { left: `calc(${pct(r.x)} + 8px)`, top: `calc(${pct(r.y)} + ${under ? 56 : 8}px)` });
         this.wrap.append(el);
         this.heads[p.i] = el;
       });

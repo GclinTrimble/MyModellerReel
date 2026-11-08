@@ -658,6 +658,20 @@ function registerCore(reg, ctx) {
     return summary(doc, e);
   }, true);
 
+  def('edit', 'set_parent', 'Move entities into a group (parent: the group) or out of any group (parent: null or ""): they keep their place in the world (#203).', obj({ ids, parent: str('the group to move them into; empty for none') }), (a) => {
+    const doc = ctx.doc;
+    const g = a.parent ? D.resolve(doc, a.parent)[0] : null;
+    if (g && g.type !== 'group') throw new Error(`${g.name} is not a group.`);
+    const moved = [];
+    for (const e of targets(ctx, a)) {
+      if (g && (e.id === g.id || D.descendants(doc, e.id).some((d) => d.id === g.id))) throw new Error(`${e.name} cannot go inside itself.`);
+      const w = D.worldMatrix(doc, e);
+      e.parent = g ? g.id : null;
+      D.setWorldMatrix(doc, e, w);
+      moved.push(e.id);
+    }
+    return { moved, parent: g ? g.name : null };
+  }, true);
   def('edit', 'set_material', 'Colour and finish of shapes (applies to every shape inside groups).', obj({ ids, color: str('#rrggbb'), opacity: num('0..1'), metalness: num('0..1'), roughness: num('0..1'), emissive: str('#rrggbb glow') }), (a) => {
     const doc = ctx.doc;
     const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(doc, e.id)]);

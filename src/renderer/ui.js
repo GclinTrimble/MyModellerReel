@@ -7,6 +7,8 @@ import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profil
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
+import { buildForm, SWATCHES } from './forms.js';
+const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
@@ -55,43 +57,103 @@ export class UI {
   async commandDialog(name, preset = {}) {
     const c = this.app.reg.commands.get(name);
     if (!c) return this.toast(`No command ${name}`, 'danger');
-    const props = c.params.properties || {};
-    const req = new Set(c.params.required || []);
-    const inputs = {};
-    const fields = Object.entries(props).map(([k, s]) => {
-      const v = preset[k];
-      const text = v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v);
-      let input;
-      if (s.enum || s.type === 'boolean') {
-        const opts = s.enum || ['true', 'false'];
-        input = h('select', {}, h('option', { value: '' }, req.has(k) ? 'choose…' : '(default)'), opts.map((o) => h('option', { value: o, selected: String(v) === o }, o)));
-      } else input = h('input', { value: text, type: s.type === 'number' ? 'number' : 'text', step: 'any', placeholder: s.type === 'array' ? (k === 'ids' ? 'selection' : '[…]') : s.type === 'object' ? '{ "key": "value" }' : '' });
-      inputs[k] = [input, s];
-      return h('label.field', {}, h('span', {}, `${k}${req.has(k) ? ' *' : ''}`, s.description ? h('span.muted', {}, ` · ${s.description}`) : null), input);
-    });
-    const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, c.description), fields.length ? fields : h('p.small', {}, 'No parameters.'));
-    if ((await this.modal(name.replace(/_/g, ' '), body, [['Run', 'run'], ['Cancel', null]])) !== 'run') return;
-    const args = {};
-    for (const [k, [input, s]] of Object.entries(inputs)) {
-      const raw = input.value.trim();
-      if (!raw) continue;
-      if (s.type === 'number') args[k] = +raw;
-      else if (s.type === 'boolean') args[k] = raw === 'true';
-      else if (s.type === 'string') args[k] = raw;
-      else {
-        try {
-          args[k] = JSON.parse(raw);
-        } catch {
-          args[k] = s.type === 'array' ? raw.split(',').map((x) => x.trim()) : raw;
-        }
+    if (name === 'create_layer') return this.layerDialog(preset);
+    // a friendly form (#201): plain words, the right control per field, points picked in the view, errors in place
+    const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint) });
+    const err = h('div.form-error.form-top', { role: 'alert' });
+    const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, c.description), err, form.el);
+    const title = (TITLES[name] || name.replace(/_/g, ' ')).replace(/^./, (x) => x.toUpperCase());
+    for (;;) {
+      if ((await this.modal(title, body, [['Run', 'run'], ['Cancel', null]])) !== 'run') return;
+      let args;
+      try {
+        args = form.read();
+        const r = await this.app.reg.run(name, args);
+        this.toast(r?.name ? `${title}: ${r.name}` : `${title}: done`);
+        return r;
+      } catch (e) {
+        // stay open with the message, next to the field when it names one
+        err.textContent = e.message;
+        const k = Object.keys(c.params.properties || {}).find((x) => e.message.includes(x));
+        if (k) form.error(k, e.message);
       }
     }
+  }
+  /** New layer (#202): a name, a colour from swatches, a line type you can see, lock, folder, current. */
+  async layerDialog(preset = {}) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const used = new Set((doc.tags || []).map((t) => t.color));
+    let color = preset.color || SWATCHES.find((c) => !used.has(c)) || SWATCHES[0];
+    let lineType = preset.line_type || 'continuous';
+    const name = h('input', { value: preset.name || '', placeholder: 'e.g. Walls, C-ROAD/Kerbs', 'aria-label': 'Layer name' });
+    const sw = h('div.form-swatches.big', {});
+    const drawSw = () =>
+      sw.replaceChildren(
+        ...SWATCHES.map((c) => h('button.form-swatch', { type: 'button', title: c, 'aria-pressed': String(c === color), style: { background: c }, onclick: () => ((color = c), drawSw()) })),
+        h('input', { type: 'color', value: color, title: 'Another colour', oninput: (e) => ((color = e.target.value), drawSw()) }),
+      );
+    drawSw();
+    const dash = { continuous: '', dashed: '8 4', dotted: '1.5 4', center: '14 3 3 3', hidden: '5 3', dashdot: '8 3 1.5 3' };
+    const lt = h('div.line-types', {});
+    const drawLt = () =>
+      lt.replaceChildren(
+        ...Object.entries(dash).map(([k, d]) =>
+          h('button.line-type', { type: 'button', title: k, 'aria-pressed': String(k === lineType), onclick: () => ((lineType = k), drawLt()) }, svgLine(d, color), h('span', {}, k)),
+        ),
+      );
+    const svgLine = (d, c) => {
+      const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      s.setAttribute('viewBox', '0 0 60 8');
+      s.innerHTML = `<line x1="2" y1="4" x2="58" y2="4" stroke="${c}" stroke-width="2" stroke-dasharray="${d}"/>`;
+      return s;
+    };
+    drawLt();
+    const folders = [...new Set((doc.tags || []).map((t) => t.folder).filter(Boolean))];
+    const folder = h('input', { value: preset.folder || '', list: 'layer-folders', placeholder: 'none' });
+    const locked = h('input', { type: 'checkbox', checked: !!preset.locked });
+    const current = h('input', { type: 'checkbox', checked: preset.current ?? true });
+    const weight = h('input', { type: 'number', step: 0.05, min: 0, value: preset.line_weight ?? '', placeholder: 'default' });
+    const desc = h('input', { value: preset.description || '', placeholder: 'what goes on it' });
+    const err = h('div.form-error.form-top', { role: 'alert' });
+    const row = (label, ctl, help) => h('div.form-field', {}, h('div.form-label', {}, h('span', {}, label)), ctl, help ? h('div.form-help', {}, help) : null);
+    const body = h(
+      'div.panel.form',
+      { style: { padding: 0 } },
+      err,
+      row('Name', name, 'A slash makes a group in the list: C-ROAD/Kerbs.'),
+      row('Colour', sw),
+      row('Line type', lt),
+      h('div.form-row', {}, h('label.form-check', {}, current, 'Draw new things on it'), h('label.form-check', {}, locked, 'Locked (cannot be picked)')),
+      h('details.form-more', {}, h('summary', {}, 'More options'), row('Folder', h('div.form-stack', {}, folder, h('datalist', { id: 'layer-folders' }, folders.map((f) => h('option', { value: f })))), 'Group layers under a folder in the list.'), row('Line weight (mm)', weight), row('Description', desc)),
+    );
+    for (;;) {
+      if ((await this.modal('New layer', body, [['Create', 'go'], ['Cancel', null]])) !== 'go') return;
+      if (!name.value.trim()) {
+        err.textContent = 'Give the layer a name.';
+        continue;
+      }
+      const args = { name: name.value.trim(), color, line_type: lineType, locked: locked.checked, current: current.checked, ...(folder.value.trim() ? { folder: folder.value.trim() } : {}), ...(weight.value !== '' ? { line_weight: +weight.value } : {}), ...(desc.value.trim() ? { description: desc.value.trim() } : {}) };
+      try {
+        const r = await app.reg.run('create_layer', args);
+        this.toast(`Layer ${args.name}${args.current ? ': new things go on it' : ''}`);
+        return r;
+      } catch (e) {
+        err.textContent = e.message;
+      }
+    }
+  }
+  /** Click points in the view while a form waits (it hides, then comes back). n = 0: until Enter. */
+  async pickInView(n, hint) {
+    const dlg = this.$('modal');
+    this.keepModal = true;
+    dlg.close();
+    this.keepModal = false;
     try {
-      const r = await this.app.reg.run(name, args);
-      this.toast(JSON.stringify(r).slice(0, 200));
-      return r;
-    } catch (e) {
-      this.toast(e.message, 'danger');
+      const pts = await this.app.tools.pickPoints(n, hint);
+      return pts.map((p) => p.toArray());
+    } finally {
+      dlg.showModal();
     }
   }
 
@@ -204,7 +266,7 @@ export class UI {
       selectWhere: { label: 'Select by…', icon: 'list-magnifying-glass', run: form('select_where') },
       metadata: { label: 'Set metadata…', icon: 'tag-simple', run: form('set_metadata') },
       makeComponent: { label: 'Make component…', icon: 'squares-four', run: () => (sel().length ? this.commandDialog('make_component', { name: app.entity(sel()[0])?.name }) : this.toast('Select what the component is made of.')) },
-      placeComponent: { label: 'Place component…', icon: 'squares-four', run: form('place_component') },
+      placeComponent: { label: 'Place component…', icon: 'squares-four', run: async () => { const r = await this.commandDialog('place_component', { name: Object.keys(app.store.doc.components || {})[0] }); if (r?.id) app.tools.place([r.id]); } },
       makeUnique: { label: 'Make unique', icon: 'link-break', run: () => sel().length && app.reg.run('make_unique', {}).then((r) => this.toast(`Now its own component: ${r.component}`)).catch((e) => this.toast(e.message, 'danger')) },
       replaceComponent: { label: 'Replace component…', icon: 'swap', run: form('replace_component') },
       imprint: { label: 'Imprint on a face…', icon: 'selection-foreground', run: () => this.commandDialog('imprint', { id: sel()[0], face: 'top', shape: 'rectangle', size: [0.5, 0.5] }) },
@@ -581,7 +643,19 @@ export class UI {
       const s = this.app.store.doc.settings;
       const tool = this.app.tools?.id;
       const navTool = TOOLS.find((x) => x.id === (NAV.includes(tool) ? tool : 'orbit'));
+      // projection and wireframe of the pane last worked in (#205)
+      const panes = this.app.panes;
+      const multi = panes?.layout.count > 1;
+      const pane = multi ? panes.focusI + 1 : 1;
+      const cfg = multi ? panes.layout.panes[pane - 1] : null;
+      const parallel = (pane === 1 ? s.projection : cfg?.projection) === 'parallel';
+      const wire = multi ? cfg?.style === 'wireframe' : !!s.wireframe;
+      const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
       vb.replaceChildren(
+        btn('cursor', 'Select (Space)', () => this.app.tools.set('select'), tool === 'select'),
+        btn('perspective', parallel ? 'Parallel projection: click for perspective' : 'Perspective: click for parallel projection', () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }), parallel),
+        btn('cube-transparent', 'Wireframe', () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()), wire),
+        h('span.sep'),
         drop('cube', 'Standard views (in the pane you last worked in)', () => ['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run }))),
         drop(navTool.icon, 'Navigate: orbit, pan, zoom window, walk', () => NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) }))),
         btn('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run()),
@@ -875,8 +949,15 @@ export class UI {
       if (body.firstChild !== this.app.ai.el) body.replaceChildren(this.app.ai.el);
       return;
     }
+    // keep where the panel was scrolled to, and inner lists too (#204): a re-render no longer jumps to the top
+    this.dockScroll ||= {};
+    if (body.dataset.tab === this.tab) this.dockScroll[this.tab] = [body.scrollTop, ...[...body.querySelectorAll('.qty, .outline-tree')].map((x) => x.scrollTop)];
     const panel = this[`panel_${this.tab}`]();
     body.replaceChildren(panel);
+    body.dataset.tab = this.tab;
+    const [top = 0, ...inner] = this.dockScroll[this.tab] || [];
+    body.scrollTop = top;
+    [...body.querySelectorAll('.qty, .outline-tree')].forEach((x, i) => inner[i] !== undefined && (x.scrollTop = inner[i]));
   }
   refresh() {
     if (this.tab !== 'ai') this.renderDock();
@@ -979,31 +1060,11 @@ export class UI {
     const app = this.app;
     const doc = app.store.doc;
     const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
-    const rows = [];
-    const walk = (parent, depth) => {
-      for (const e of doc.entities.filter((x) => x.parent === parent)) {
-        const animated = doc.animation.tracks.some((t) => t.target === e.id);
-        rows.push(
-          h(
-            `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
-            { style: { paddingLeft: `${8 + depth * 16}px` }, onclick: (ev) => app.select(ev.ctrlKey || ev.shiftKey ? [...new Set([...app.selection, e.id])] : [e.id]), ondblclick: () => run('zoom_extents', { ids: [e.id] }) },
-            icon(e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : 'cube'),
-            e.mesh || e.curve ? h('span.swatch-dot', { style: { background: L.colorOf(doc, e) } }) : null,
-            h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id})` }, e.name),
-            animated ? icon('film-strip') : null,
-            h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
-            h('button.icon-btn.sm', { title: e.locked ? 'Unlock' : 'Lock', 'aria-label': e.locked ? 'Unlock' : 'Lock', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], locked: !e.locked })) }, icon(e.locked ? 'lock-simple' : 'lock-simple-open')),
-          ),
-        );
-        walk(e.id, depth + 1);
-      }
-    };
-    walk(null, 0);
     return h(
       'div.panel',
       {},
       h('div.row', {}, h('h3.grow', {}, 'Outliner'), h('span.muted.small', {}, `${doc.entities.length} entities`)),
-      rows.length ? h('div.tree', {}, rows) : h('p.muted', {}, 'Nothing here yet. Draw with the tools on the left, or ask the AI to build something.'),
+      doc.entities.length ? this.outlineTree(run) : h('p.muted', {}, 'Nothing here yet. Draw with the tools on the left, or ask the AI to build something.'),
       h('div.row', {}, h('div.overline.grow', {}, 'Layers'), h('button.icon-btn.sm', { title: 'New layer', 'aria-label': 'New layer', onclick: () => this.actions.newLayer.run() }, icon('plus'))),
       h('div.tree', {}, this.layerRows(doc, run)),
       h('label.row.small', {}, h('input', { type: 'checkbox', checked: doc.settings.color_by === 'layer', onchange: (ev) => run('set_style', { color_by: ev.target.checked ? 'layer' : 'material' }) }), 'Colour by layer'),
@@ -1011,6 +1072,130 @@ export class UI {
       Object.keys(doc.selection_sets || {}).length
         ? h('div.chips', {}, ...Object.entries(doc.selection_sets).map(([name, ids]) => h('span.chip', {}, h('button.chip-main', { title: `Select ${ids.length}`, onclick: () => run('select_set', { name }) }, `${name} · ${ids.length}`), h('button.chip-x', { title: 'Forget this set', 'aria-label': `Forget ${name}`, onclick: () => run('delete_selection_set', { name }) }, icon('x')))))
         : h('p.muted.small', {}, 'Select things and press + to name the selection.'),
+    );
+  }
+
+  /**
+   * The outliner as a tree (#203): grouped by hierarchy, type or layer, folders that fold, a search box, Ctrl / Shift
+   * to select several, drag onto a group to move things in (or onto the list to take them out), rename in place.
+   */
+  outlineTree(run) {
+    const app = this.app;
+    const doc = app.store.doc;
+    this.outline ||= { by: 'hierarchy', q: '', open: new Set(['Groups and shapes']) };
+    const o = this.outline;
+    const q = o.q.toLowerCase();
+    const match = (e) => !q || e.name.toLowerCase().includes(q) || (e.tag || '').toLowerCase().includes(q) || (e.point?.code || '').toLowerCase().includes(q);
+    const kind = (e) => (e.type === 'point' ? 'Survey points' : e.annotation ? 'Dimensions and labels' : e.underlay ? 'Drawings' : e.pointcloud ? 'Point clouds' : e.alignment ? 'Alignments' : e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.generator === 'finished_ground' ? 'Surfaces' : e.curve ? 'Lines and curves' : 'Groups and shapes');
+    const iconOf = (e) => (e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
+    const order = [];
+    const row = (e, depth) => {
+      order.push(e.id);
+      const animated = doc.animation.tracks.some((t) => t.target === e.id);
+      const name = h(`span.name${e.visible ? '' : '.dim'}`, { title: `${e.name} (${e.id}) · double-click to rename` }, e.name);
+      name.ondblclick = (ev) => {
+        ev.stopPropagation();
+        const inp = h('input.rename', { value: e.name, 'aria-label': `Rename ${e.name}` });
+        const done = (ok) => (ok && inp.value.trim() && inp.value.trim() !== e.name ? run('set_properties', { ids: [e.id], name: inp.value.trim() }) : this.renderDock());
+        inp.onkeydown = (k) => (k.key === 'Enter' ? done(true) : k.key === 'Escape' ? done(false) : null);
+        inp.onblur = () => done(true);
+        name.replaceWith(inp);
+        inp.focus();
+        inp.select();
+      };
+      const isGroup = e.type === 'group';
+      const kids = isGroup && o.by === 'hierarchy' ? doc.entities.filter((x) => x.parent === e.id) : [];
+      const open = o.open.has(e.id);
+      const r = h(
+        `div.tree-row${app.selection.includes(e.id) ? '.sel' : ''}`,
+        {
+          style: { paddingLeft: `${6 + depth * 14}px` },
+          draggable: 'true',
+          onclick: (ev) => {
+            if (ev.shiftKey && this.outlineAnchor) {
+              const [i, j] = [order.indexOf(this.outlineAnchor), order.indexOf(e.id)].sort((x, y) => x - y);
+              return app.select([...new Set([...app.selection, ...order.slice(i, j + 1)])]);
+            }
+            this.outlineAnchor = e.id;
+            app.select(ev.ctrlKey || ev.metaKey ? (app.selection.includes(e.id) ? app.selection.filter((x) => x !== e.id) : [...app.selection, e.id]) : [e.id]);
+          },
+          ondblclick: () => run('zoom_extents', { ids: [e.id] }),
+          ondragstart: (ev) => ev.dataTransfer.setData('text/x-mmr-ids', JSON.stringify(app.selection.includes(e.id) ? app.selection : [e.id])),
+          ...(isGroup
+            ? {
+                ondragover: (ev) => (ev.preventDefault(), r.classList.add('drop')),
+                ondragleave: () => r.classList.remove('drop'),
+                ondrop: (ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  const ids = JSON.parse(ev.dataTransfer.getData('text/x-mmr-ids') || '[]').filter((x) => x !== e.id);
+                  if (ids.length) o.open.add(e.id), run('set_parent', { ids, parent: e.id });
+                },
+              }
+            : {}),
+        },
+        kids.length ? h('button.tree-fold', { 'aria-label': open ? 'Fold' : 'Unfold', onclick: (ev) => (ev.stopPropagation(), open ? o.open.delete(e.id) : o.open.add(e.id), this.renderDock()) }, icon(open ? 'caret-down' : 'caret-right')) : h('span.tree-fold'),
+        icon(iconOf(e)),
+        e.mesh || e.curve ? h('span.swatch-dot', { style: { background: L.colorOf(doc, e) } }) : null,
+        name,
+        kids.length ? h('span.muted.small', {}, kids.length) : null,
+        animated ? icon('film-strip') : null,
+        h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
+        h('button.icon-btn.sm', { title: e.locked ? 'Unlock' : 'Lock', 'aria-label': e.locked ? 'Unlock' : 'Lock', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], locked: !e.locked })) }, icon(e.locked ? 'lock-simple' : 'lock-simple-open')),
+      );
+      return [r, ...(open || q ? kids.filter((k) => match(k) || q === '').flatMap((k) => row(k, depth + 1)) : [])];
+    };
+    const folder = (key, label, ents) => {
+      const open = o.open.has(key) || !!q;
+      const ids = ents.map((e) => e.id);
+      return [
+        h(
+          'div.tree-row.tree-folder',
+          { onclick: () => (open ? o.open.delete(key) : o.open.add(key), this.renderDock()), title: 'Click to fold or unfold' },
+          h('span.tree-fold', {}, icon(open ? 'caret-down' : 'caret-right')),
+          icon('folder-simple'),
+          h('span.name', {}, label),
+          h('span.muted.small', {}, ents.length),
+          h('button.icon-btn.sm', { title: `Select all ${ents.length}`, 'aria-label': `Select ${label}`, onclick: (ev) => (ev.stopPropagation(), app.select(ids)) }, icon('selection-all')),
+          h('button.icon-btn.sm', { title: 'Hide or show them all', 'aria-label': `Hide or show ${label}`, onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids, visible: !ents.every((e) => e.visible) })) }, icon(ents.every((e) => e.visible) ? 'eye' : 'eye-slash')),
+        ),
+        ...(open ? ents.flatMap((e) => row(e, 1)) : []),
+      ];
+    };
+    const top = doc.entities.filter((e) => (o.by === 'hierarchy' ? !e.parent : true) && (match(e) || (e.type === 'group' && D.descendants(doc, e.id).some(match))));
+    const groups = new Map();
+    for (const e of top) {
+      const key = o.by === 'layer' ? e.tag || 'Untagged' : kind(e);
+      if (o.by !== 'layer' && o.by !== 'type' && key === 'Groups and shapes') continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    let rows;
+    if (o.by === 'hierarchy') {
+      // groups and shapes at the top level; the rest (points, lines, drawings…) folded into folders by kind
+      const loose = top.filter((e) => kind(e) === 'Groups and shapes');
+      rows = [...loose.flatMap((e) => row(e, 0)), ...[...groups].flatMap(([k, list]) => folder(k, k, list))];
+    } else rows = [...groups].sort(([a], [b]) => a.localeCompare(b)).flatMap(([k, list]) => folder(`${o.by}:${k}`, k, list));
+    const search = h('input.outline-search', { value: o.q, placeholder: 'Search by name, layer or code', 'aria-label': 'Search the outliner', oninput: (ev) => ((o.q = ev.target.value), clearTimeout(this.outlineT), (this.outlineT = setTimeout(() => (this.renderDock(), this.$('dock-body').querySelector('.outline-search')?.focus()), 200))) });
+    const by = h('div.segmented.small', { role: 'radiogroup', 'aria-label': 'Group by' }, ...[['hierarchy', 'Groups'], ['type', 'Type'], ['layer', 'Layer']].map(([v, l]) => h('button.seg', { type: 'button', 'aria-pressed': String(o.by === v), onclick: () => ((o.by = v), this.renderDock()) }, l)));
+    const tree = h(
+      'div.tree.outline-tree',
+      {
+        ondragover: (ev) => ev.preventDefault(),
+        ondrop: (ev) => {
+          const ids = JSON.parse(ev.dataTransfer.getData('text/x-mmr-ids') || '[]');
+          if (ids.some((id) => app.entity(id)?.parent)) run('set_parent', { ids, parent: '' });
+        },
+      },
+      rows.length ? rows : h('p.muted.small', {}, 'Nothing matches.'),
+    );
+    return h(
+      'div.outline',
+      {},
+      h('div.row', {}, search),
+      h('div.row', {}, by, h('span.grow'), h('button.btn.sm', { title: 'Group the selection (Ctrl+G)', disabled: app.selection.length < 1, onclick: () => this.actions.group.run() }, icon('stack'), 'Group')),
+      tree,
+      h('p.muted.small', {}, 'Ctrl or Shift selects several; drag onto a group to move them in, onto the list to take them out; double-click a name to rename it.'),
     );
   }
 
@@ -1640,7 +1825,7 @@ export class UI {
         ...(list.length ? list : []).map((f) => {
           const img = h('img', { alt: '' });
           app.io.libraryThumb(f.name).then((src) => (img.src = src)).catch(() => {});
-          const place = (position) => run('insert_asset', { name: f.name, position });
+          const place = (position) => app.reg.run('insert_asset', { name: f.name, position }).then((r) => r?.id && app.tools.place([r.id])).catch((e) => this.toast(e.message, 'danger'));
           return h('button.asset', { title: `${f.name}: click to place, or drag into the view`, draggable: true, ondragstart: (e) => e.dataTransfer.setData('text/x-mmr-asset', f.name), onclick: () => place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100))) }, img, h('span', {}, f.name.replace(/\.\w+$/, '')));
         }),
         ...(list.length ? [] : [h('p.muted.small', {}, 'Put GLB or glTF files in the library folder.')]),
@@ -1856,7 +2041,7 @@ export class UI {
       dlg.replaceChildren(
         h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => (dlg.close(), resolve(value)) }, label)))),
       );
-      dlg.onclose = () => resolve(null);
+      dlg.onclose = () => !this.keepModal && resolve(null); // picking in the view hides it for a moment
       dlg.showModal();
     });
   }

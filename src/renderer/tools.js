@@ -154,6 +154,27 @@ export class Tools {
     }
   }
 
+  /** Something just made follows the pointer until a click drops it (#207). */
+  place(ids) {
+    if (ids.some((id) => !this.vp.objs.get(id))) this.vp.rebuild(); // just made: draw it first
+    this.placeIds = ids;
+    this.set('place');
+  }
+  /** Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). */
+  pickPoints(count = 1, hint = '') {
+    const back = this.id === 'pick' ? 'select' : this.id;
+    return new Promise((resolve) => {
+      this.pickCount = count;
+      this.pickHint = `${hint || 'Click a point.'}${count === 1 ? '' : ' Enter when done, Esc to stop.'}`;
+      this.pickDone = (pts) => {
+        this.clear();
+        setTimeout(() => this.set(back));
+        resolve(pts);
+      };
+      this.set('pick');
+    });
+  }
+
   set(id) {
     this.tool?.cancel?.();
     this.tool?.leave?.();
@@ -347,7 +368,7 @@ class SelectTool {
     if (!g) return void (vp.dirty = true);
     const geo = new THREE.BufferGeometry().setFromPoints(g.grips.map((x) => x.p));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(g.grips.flatMap((x) => (x.kind === 'edge' ? [0.55, 0.75, 0.85] : [0.18, 0.44, 0.53])), 3));
-    this.gripObj = new THREE.Points(geo, new THREE.PointsMaterial({ size: 9, sizeAttenuation: false, vertexColors: true, depthTest: false }));
+    this.gripObj = new THREE.Points(geo, new THREE.PointsMaterial({ size: 14, sizeAttenuation: false, vertexColors: true, depthTest: false }));
     this.gripObj.renderOrder = 997;
     vp.scene.add(this.gripObj);
     vp.dirty = true;
@@ -358,8 +379,29 @@ class SelectTool {
     if (key === this.gripKey && !this.grip) return this.grips;
     this.gripKey = key;
     this.grips = this.gripsOf();
-    this.showGrips(this.grips);
+    this.showGrips(null); // grips show one at a time, near the pointer (#206)
     return this.grips;
+  }
+  /** Is a world point hidden behind a face (seen from the camera)? */
+  occluded(p) {
+    const vp = this.t.vp;
+    const cam = vp.camera.position;
+    const dir = p.clone().sub(cam);
+    const dist = dir.length();
+    const rc = new THREE.Raycaster(cam.clone(), dir.normalize(), 0, dist);
+    const meshes = [];
+    vp.modelRoot.traverseVisible((o) => o.isMesh && !o.userData.underlay && !o.userData.isCurve && meshes.push(o));
+    const hit = rc.intersectObjects(meshes, false)[0];
+    return !!hit && hit.distance < dist - Math.max(0.01, dist * 0.002);
+  }
+  /** Near a corner or edge of the selected shape: highlight that one grip, like a snap. */
+  hoverGrip(ev) {
+    const g = this.gripAt(ev);
+    const key = g ? `${g.kind}:${g.ids.join()}` : null;
+    if (key === this.hoverKey) return;
+    this.hoverKey = key;
+    this.showGrips(g ? { grips: [g] } : null);
+    if (g) this.t.status(`Drag the ${g.kind === 'edge' ? 'edge' : g.kind === 'point' ? 'curve point' : 'corner'} to move it.`);
   }
   gripAt(ev) {
     const g = this.syncGrips();
@@ -368,8 +410,9 @@ class SelectTool {
     for (const x of g.grips) {
       const s = this.t.vp.toScreen(x.p);
       const d = Math.hypot(s.x - ev.clientX, s.y - ev.clientY);
-      if (!s.behind && d < 9 && (!best || d < best.d || (d === best.d && x.kind !== 'edge'))) best = { ...x, d };
+      if (!s.behind && d < 12 && (!best || d < best.d || (d === best.d && x.kind !== 'edge'))) best = { ...x, d };
     }
+    if (best && this.occluded(best.p)) return null; // not through a face
     return best && { e: g.e, ...best };
   }
   gripMove(ev) {
@@ -434,7 +477,7 @@ class SelectTool {
       return this.t.status(`Move the text of ${d.e.name} ${fmt(d.delta.length())}`);
     }
     if (!this.start) {
-      this.syncGrips();
+      this.hoverGrip(ev);
       return this.readout(ev);
     }
     const r = this.t.vp.canvas.parentElement.getBoundingClientRect();
@@ -1504,6 +1547,81 @@ class BasePointTool {
 }
 
 /** Zoom window: drag a box, the view zooms into it. */
+/** A new component or library model follows the pointer (#207): it lands on faces and the ground; click drops it. */
+class PlaceTool extends MoveTool {
+  hint = 'Move the mouse to place it (it lands on faces and the ground, and snaps); click to drop it. Esc takes it away.';
+  vcbLabel = '';
+  constructor(t) {
+    super(t);
+    const ids = t.placeIds || [];
+    t.placeIds = null;
+    this.fresh = ids;
+    t.vp.modelRoot.updateMatrixWorld(true);
+    if (!this.grab(ids)) return;
+    // the thing being placed is not under the pointer for picking and snapping
+    this.muted = [];
+    for (const { o } of this.orig) o.traverse((x) => x.isMesh && (this.muted.push([x, x.raycast]), (x.raycast = () => {})));
+    const e = t.app.entity(ids[0]);
+    this.base = V(...D.worldMatrix(t.app.store.doc, e).elements.slice(12, 15));
+    this.delta = V();
+  }
+  move(ev) {
+    if (!this.ids) return;
+    // the view was rebuilt since (the command that made it): take hold of the new objects
+    if (this.orig.some(({ o }) => !o?.parent)) {
+      const ids = this.ids;
+      this.t.vp.modelRoot.updateMatrixWorld(true);
+      if (!this.grab(ids)) return;
+    }
+    const inf = this.t.infer(ev);
+    this.delta = inf.point.clone().sub(this.base);
+    this.show(inf.axis);
+    this.t.status(`Place it · ${inf.kind}. Click to drop it, Esc to take it away.`);
+  }
+  async down() {
+    if (!this.ids) return;
+    this.placed = true;
+    await this.commit();
+    this.t.set('select');
+  }
+  cancel() {
+    for (const [x, r] of this.muted || []) x.raycast = r;
+    this.muted = null;
+    const gone = !this.placed && this.fresh?.length ? this.fresh : null;
+    this.fresh = null;
+    super.cancel();
+    if (gone) this.t.run('delete', { ids: gone }).catch(() => {});
+  }
+}
+
+/** Points for a form (#201): click them (they snap); Enter, Esc or the count ends it. */
+class PickTool {
+  constructor(t) {
+    this.t = t;
+    this.pts = [];
+    this.hint = t.pickHint || 'Click a point.';
+  }
+  busy() {
+    return true;
+  }
+  move(ev) {
+    const inf = this.t.infer(ev, { from: this.pts.at(-1) });
+    if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT));
+  }
+  down(ev) {
+    this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
+    if (this.t.pickCount && this.pts.length >= this.t.pickCount) this.finish();
+  }
+  finish() {
+    const done = this.t.pickDone;
+    this.t.pickDone = null;
+    done?.(this.pts);
+  }
+  cancel() {
+    this.finish();
+  }
+}
+
 class ZoomWindowTool {
   hint = 'Drag a box around what you want to see up close.';
   constructor(t) {
@@ -1714,6 +1832,8 @@ const IMPL = {
   arc3: Arc3Tool,
   text: TextTool,
   basepoint: BasePointTool,
+  pick: PickTool,
+  place: PlaceTool,
   arcc: ArcCenterTool,
   point: PointTool,
   calibrate: CalibrateTool,
