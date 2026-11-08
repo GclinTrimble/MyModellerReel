@@ -24,6 +24,8 @@ const DEFAULTS = {
     anthropic: { apiKey: '', model: 'claude-sonnet-5-5' },
     openai: { baseUrl: 'https://api.mistral.ai/v1', apiKey: '', model: 'mistral-large-latest' },
     toolset: 'auto', // tools for local models: auto (routed per request) | all | a toolset name
+    // image models for AI render and AI textures (#64, #65): a local ComfyUI, or an OpenAI-compatible images API
+    image: { provider: 'comfyui', comfyui: { baseUrl: 'http://127.0.0.1:8188', checkpoint: '' }, openai: { baseUrl: 'https://api.openai.com/v1', apiKey: '', model: 'gpt-image-1' } },
   },
   api: { port: 7717 },
   startup: { defaultApplied: false }, // Start with Windows was turned on once, at the first start of the installed app
@@ -48,6 +50,8 @@ function publicSettings() {
     s.ai[p].hasKey = !!s.ai[p].apiKey;
     delete s.ai[p].apiKey;
   }
+  s.ai.image.openai.hasKey = !!s.ai.image.openai.apiKey;
+  delete s.ai.image.openai.apiKey;
   return s;
 }
 
@@ -101,6 +105,7 @@ ipcMain.handle('app:info', () => ({ test: !!process.env.MMR_TEST, version: app.g
 ipcMain.handle('settings:get', () => publicSettings());
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
+  if (patch?.ai?.image?.openai && !patch.ai.image.openai.apiKey) delete patch.ai.image.openai.apiKey;
   settings = merge(settings, patch);
   saveSettings();
   return publicSettings();
@@ -130,7 +135,7 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image and IFC files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image and IFC files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
@@ -240,6 +245,53 @@ ipcMain.handle('ai:chat', async (event, body) => {
     if (aiAbort?.signal.aborted) throw new Error('Stopped.');
     throw e;
   }
+});
+
+// An image from an image model (#64, #65): { prompt, negative, image (base64 PNG of the view, or none), strength,
+// width, height } → { b64 } PNG. ComfyUI: upload, queue, wait for /history, fetch /view. OpenAI: images API.
+ipcMain.handle('ai:image', async (_, req) => {
+  const IG = await import('../core/imagegen.js');
+  const cfg = settings.ai.image;
+  const signal = AbortSignal.timeout(600000);
+  if (cfg.provider === 'openai') {
+    if (!cfg.openai.apiKey) throw new Error('Add an API key for the image model in AI settings.');
+    const r = IG.openaiImageRequest({ prompt: req.prompt, image: req.image, model: cfg.openai.model, baseUrl: cfg.openai.baseUrl });
+    const headers = { authorization: `Bearer ${cfg.openai.apiKey}` };
+    let res;
+    if (r.form) {
+      const form = new FormData();
+      for (const [k, v] of Object.entries(r.form)) form.append(k, v);
+      form.append(r.file.field, new Blob([Buffer.from(req.image, 'base64')], { type: r.file.type }), r.file.name);
+      res = await fetch(r.url, { method: 'POST', headers, body: form, signal });
+    } else res = await fetch(r.url, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(r.json), signal });
+    const out = IG.openaiImageResult(await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } })));
+    if (out.b64) return { b64: out.b64 };
+    return { b64: Buffer.from(await (await fetch(out.url, { signal })).arrayBuffer()).toString('base64') };
+  }
+  const base = cfg.comfyui.baseUrl.replace(/\/$/, '');
+  const hint = (e) => new Error(`ComfyUI at ${base} did not answer (${e.message}). Start ComfyUI, or choose another image model in AI settings.`);
+  let image = null;
+  if (req.image) {
+    const form = new FormData();
+    form.append('image', new Blob([Buffer.from(req.image, 'base64')], { type: 'image/png' }), `mmr-view-${Date.now()}.png`);
+    form.append('overwrite', 'true');
+    const up = await fetch(`${base}/upload/image`, { method: 'POST', body: form, signal }).catch((e) => { throw hint(e); });
+    image = (await up.json()).name;
+  }
+  const graph = IG.comfyWorkflow({ ...req, image, checkpoint: cfg.comfyui.checkpoint });
+  const q = await fetch(`${base}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: graph }), signal }).catch((e) => { throw hint(e); });
+  const qj = await q.json();
+  if (!qj.prompt_id) throw new Error(`ComfyUI refused the workflow: ${JSON.stringify(qj.error || qj.node_errors || qj).slice(0, 300)}`);
+  for (let i = 0; i < 600; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const h = await (await fetch(`${base}/history/${qj.prompt_id}`, { signal })).json();
+    const im = IG.comfyResult(h, qj.prompt_id);
+    if (im) {
+      const v = await fetch(`${base}/view?${new URLSearchParams({ filename: im.filename, subfolder: im.subfolder || '', type: im.type })}`, { signal });
+      return { b64: Buffer.from(await v.arrayBuffer()).toString('base64') };
+    }
+  }
+  throw new Error('ComfyUI took more than 10 minutes.');
 });
 
 // ---------------------------------------------------------------- local HTTP API (used by the MCP server and scripts)

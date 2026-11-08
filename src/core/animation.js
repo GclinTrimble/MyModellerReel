@@ -2,6 +2,8 @@
 // track = { target, property, keys: [{ t, v, ease }] } — `ease` shapes the segment that ends at that key.
 // Properties: position | rotation | scale (number[3]), opacity (0..1), visible (bool), color ('#rrggbb'),
 // and for the camera: position | target (number[3]), fov (degrees).
+import { sunAt } from './sun.js';
+
 
 export const EASES = {
   linear: (u) => u,
@@ -51,6 +53,7 @@ export function evaluate(doc, t) {
     if (v !== undefined) (out[tr.target] ||= {})[tr.property] = v;
   }
   for (const m of doc.animation.motions || []) applyMotion(doc, m, t, out);
+  if (doc.animation.sun) out.sun = sunAt(doc, t); // a sun study (#87)
   return out;
 }
 

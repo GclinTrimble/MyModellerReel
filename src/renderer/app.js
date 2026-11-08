@@ -50,6 +50,7 @@ app.file = restored?.file || null;
 
 app.entity = (id) => getEntity(store.doc, id);
 app.viewport = new Viewport(document.getElementById('viewport'), store);
+app.viewport.onStatus = (t) => app.ui?.setStatus(t);
 app.timeline = new Timeline(app);
 app.io = new IO(app);
 app.ui = new UI(app);

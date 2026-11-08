@@ -13,6 +13,9 @@ import * as RV from './review.js';
 import * as AN from './annotate.js';
 import * as SEC from './section.js';
 import * as SHT from './sheet.js';
+import * as SUN from './sun.js';
+import * as LK from './look.js';
+import * as IG from './imagegen.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
@@ -2305,6 +2308,134 @@ function registerCore(reg, ctx) {
     return { path: a.path, sheet: a.sheet || 'A3', scale: `1:${L2.scale}`, views: views.map((v) => v.name), ...(a.preview ? { preview: SHT.sheetSvg(L2) } : {}) };
   });
 
+
+  // ---------------------------------------------------------------- look: sun, camera, lights, environment, materials, effects, renders (Phase 12)
+  const fileBytes = async (path, kind) => {
+    if (!ctx.io?.readBinary) throw new Error(`Reading ${kind} files needs the desktop app.`);
+    const ext = path.split('.').pop().toLowerCase();
+    return Assets.put(await ctx.io.readBinary(path), { mime: { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', hdr: 'image/vnd.radiance', exr: 'image/x-exr' }[ext] || 'application/octet-stream', name: path.split(/[\\/]/).pop() });
+  };
+
+  def('view', 'set_geolocation', 'Where the model is on Earth, for real sun angles: latitude and longitude (degrees, north and east positive), the time zone (hours from UTC) and north_angle (true north, degrees clockwise from the model\'s −z).', obj({ latitude: num('−90…90'), longitude: num('−180…180'), utc_offset: num('hours (default from the longitude)'), north_angle: num('degrees (default 0: −z is north)'), place: str('a name for it') }), (a) => {
+    const g = { ...(ctx.doc.settings.geolocation || {}) };
+    for (const k of ['latitude', 'longitude', 'utc_offset', 'north_angle', 'place']) if (a[k] !== undefined) g[k] = a[k];
+    if (g.latitude !== undefined && Math.abs(g.latitude) > 90) throw new Error('latitude is between −90 and 90.');
+    ctx.doc.settings.geolocation = g;
+    const s = ctx.doc.settings.sun;
+    if (s.date) Object.assign(s, SUN.modelSun(ctx.doc, s.date, s.time || '12:00'));
+    return { geolocation: SUN.geoOf(ctx.doc), sun: s };
+  }, true);
+
+  def('view', 'set_sun_time', 'Put the sun where it really is on a date and a local time at the geolocation (set_geolocation): shadows for a shadow study. Below the horizon it is night.', obj({ date: str('YYYY-MM-DD'), time: str('HH:MM local (default 12:00)') }, ['date']), (a) => {
+    const s = SUN.modelSun(ctx.doc, a.date, a.time || '12:00');
+    ctx.doc.settings.sun = { ...ctx.doc.settings.sun, azimuth: s.azimuth, elevation: s.elevation, date: a.date, time: a.time || '12:00' };
+    return { ...ctx.doc.settings.sun, true_azimuth: s.true_azimuth, geolocation: SUN.geoOf(ctx.doc), night: s.elevation < 0 };
+  }, true);
+
+  def('animate', 'animate_sun', 'A sun study on the timeline: the clock over a day (date, from, to) or the same hour over a span of dates (time, from_date, to_date), between start and end (s). "off": none.', obj({ date: str('YYYY-MM-DD (a day study)'), from: str('HH:MM (default 06:00)'), to: str('HH:MM (default 20:00)'), time: str('HH:MM (a year study)'), from_date: str('YYYY-MM-DD'), to_date: str('YYYY-MM-DD'), start: T('default 0'), end: T('default start + 8 s'), off: bool('remove the sun study') }), (a) => {
+    const doc = ctx.doc;
+    if (a.off) return delete doc.animation.sun, { sun: null };
+    const start = A.timeOf(doc, a.start, 0);
+    const end = A.timeOf(doc, a.end, start + 8);
+    if (!(end > start)) throw new Error('end must come after start.');
+    const s = a.from_date ? { time: a.time || '12:00', from_date: a.from_date, to_date: a.to_date || a.from_date, start, end } : { date: a.date || doc.settings.sun.date || new Date().toISOString().slice(0, 10), from: a.from || '06:00', to: a.to || '20:00', start, end };
+    SUN.localTime(s.date || s.from_date, s.from || s.time); // checks the formats
+    doc.animation.sun = s;
+    doc.animation.duration = Math.max(doc.animation.duration, end);
+    return { sun: s, at_start: SUN.sunAt(doc, start), at_end: SUN.sunAt(doc, end) };
+  }, true);
+
+  def('view', 'set_effects', 'Post effects on the view, screenshots and videos: ambient occlusion (ao 0–1), bloom (0–1, glow of bright and emissive things), outline (profiles), depth of field (dof with focus distance m and aperture f-number), exposure, vignette (0–1).', obj({ ao: num('0–1'), bloom: num('0–1'), outline: bool(''), dof: bool(''), focus: num('m (default: the camera target)'), aperture: num('f-number (default 2.8)'), exposure: num('default 1'), vignette: num('0–1') }), (a) => {
+    ctx.doc.settings.effects = LK.effectsOf(ctx.doc.settings.effects, a);
+    return ctx.doc.settings.effects;
+  }, true);
+
+  def('view', 'set_environment', 'Lighting and reflections from the surroundings: default (sky and sun), studio (soft room light, good reflections), sky, sunset, night, or hdri (an .hdr / .exr panorama from path). exposure, rotation (degrees), background (show it behind the model), intensity.', obj({ preset: str('environment', LK.ENVIRONMENTS), path: str('absolute .hdr or .exr path (preset hdri)'), exposure: num('default 1'), rotation: num('degrees'), background: bool('show it behind the model'), intensity: num('default 1') }), async (a) => {
+    const env = { ...(ctx.doc.settings.environment || { preset: 'default' }) };
+    if (a.path) (env.asset = await fileBytes(a.path, 'HDRI')), (env.preset = 'hdri');
+    else if (a.preset) env.preset = a.preset;
+    if (env.preset === 'hdri' && !env.asset) throw new Error('preset hdri needs path (an .hdr or .exr file).');
+    for (const k of ['exposure', 'rotation', 'background', 'intensity']) if (a[k] !== undefined) env[k] = a[k];
+    ctx.doc.settings.environment = env;
+    return env;
+  }, true);
+
+  def('create', 'create_light', 'A light: point (a bulb), spot (aimed at target, cone angle) or area (a panel facing target), with colour and intensity; animate it (position, colour, visibility; opacity dims it) for night scenes.', obj({ kind: str('point | spot | area', LK.LIGHT_KINDS), position: v3('where it is'), target: v3('what a spot or panel points at'), color: str('#rrggbb (default warm white)'), intensity: num('candela-like (point 20, spot 60, area 8)'), distance: num('m it reaches (0: no limit)'), angle: num('spot cone, degrees'), penumbra: num('spot soft edge 0–1'), width: num('area, m'), height: num('area, m'), shadows: bool('cast shadows (point, spot)'), name: common.name, tag: common.tag }), (a) => {
+    const doc = ctx.doc;
+    const light = LK.lightOf(a);
+    const e = D.addEntity(doc, { type: 'light', name: a.name || D.uniqueName(doc, `${light.kind[0].toUpperCase()}${light.kind.slice(1)} light`), light, position: a.position || [0, 2.5, 0], tag: a.tag, material: { color: light.color } });
+    ctx.selection.set([e.id]);
+    return { ...summary(doc, e), light };
+  }, true);
+
+  def('edit', 'set_light', 'Change a light: colour, intensity, reach, cone, size, aim, shadows.', obj({ id, color: str('#rrggbb'), intensity: num(''), distance: num('m'), angle: num('degrees'), penumbra: num('0–1'), width: num('m'), height: num('m'), target: v3('aim point'), shadows: bool('') }, ['id']), (a) => {
+    const e = D.resolve(ctx.doc, a.id)[0];
+    if (!e.light) throw new Error(`${e.name} is not a light.`);
+    e.light = LK.lightOf({ ...e.light, ...Object.fromEntries(Object.entries(a).filter(([k, v]) => k !== 'id' && v !== undefined)) });
+    e.material.color = e.light.color;
+    return { ...summary(ctx.doc, e), light: e.light };
+  }, true);
+
+  def('edit', 'set_texture', 'An image on shapes, at real size: path to a PNG / JPG (or asset from generate_texture), projection box (each face from its side), planar (top, front or side) or cylindrical; size [w, h] m of one tile; offset [u, v] tiles; rotation degrees. "none" takes it off.', obj({ ids, path: str('absolute image path, or "none"'), asset: str('an image already in the model (generate_texture returns one)'), projection: str('box | planar | cylindrical', LK.PROJECTIONS), size: { type: 'array', items: { type: 'number' }, description: '[w, h] m of one tile (default [1, 1])' }, offset: { type: 'array', items: { type: 'number' }, description: '[u, v] in tiles' }, rotation: num('degrees'), plane: str('planar: top | front | side', ['top', 'front', 'side']), tint: str('#rrggbb multiplied in (default white)') }), async (a) => {
+    const doc = ctx.doc;
+    const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(doc, e.id)]).filter((e) => e.mesh);
+    if (!ents.length) throw new Error('No shapes to texture.');
+    if (a.path === 'none') {
+      for (const e of ents) delete e.material.texture;
+      return { updated: ents.map((e) => e.id), texture: null };
+    }
+    const asset = a.asset || (a.path ? await fileBytes(a.path, 'image') : ents[0].material.texture?.asset);
+    if (!asset) throw new Error('Give path (an image file) or asset.');
+    if (!Assets.get(asset)) throw new Error(`No image ${asset} in this model.`);
+    for (const e of ents) {
+      const t = { ...(e.material.texture || {}), asset };
+      for (const k of ['projection', 'size', 'offset', 'rotation', 'plane']) if (a[k] !== undefined) t[k] = a[k];
+      if (t.size && !(t.size.length === 2 && t.size.every((x) => x > 0))) throw new Error('size is [w, h] in m, above 0.');
+      e.material.texture = t;
+      if (a.tint || a.path || a.asset) e.material.color = a.tint || '#ffffff';
+    }
+    return { updated: ents.map((e) => e.id), texture: ents[0].material.texture };
+  }, true);
+
+  def('edit', 'set_material_maps', 'Physical material details: glass (transmission 0–1, ior, thickness m), clear coat, glow strength, and image maps (normal, roughness, ao: absolute image paths, "none" to remove; they use the shape\'s texture projection).', obj({ ids, transmission: num('0–1 (glass)'), ior: num('index of refraction (glass 1.5)'), thickness: num('m'), clearcoat: num('0–1'), clearcoat_roughness: num('0–1'), emissive_intensity: num('glow strength (default 1)'), normal_map: str('path or "none"'), roughness_map: str('path or "none"'), ao_map: str('path or "none"'), normal_scale: num('bumpiness (default 1)') }), async (a) => {
+    const doc = ctx.doc;
+    const ents = targets(ctx, a).flatMap((e) => [e, ...D.descendants(doc, e.id)]).filter((e) => e.mesh);
+    const maps = {};
+    for (const k of ['normal', 'roughness', 'ao']) if (a[`${k}_map`] !== undefined) maps[k] = a[`${k}_map`] === 'none' ? null : await fileBytes(a[`${k}_map`], 'map');
+    for (const e of ents) {
+      for (const k of ['transmission', 'ior', 'thickness', 'clearcoat', 'clearcoat_roughness', 'emissive_intensity', 'normal_scale']) if (a[k] !== undefined) e.material[k] = a[k];
+      if (Object.keys(maps).length) e.material.maps = Object.fromEntries(Object.entries({ ...(e.material.maps || {}), ...maps }).filter(([, v]) => v));
+    }
+    return { updated: ents.map((e) => e.id) };
+  }, true);
+
+  def('view', 'render_image', 'A photoreal still: the view path-traced (true reflections, soft shadows, glass) over a number of samples, saved as PNG. Takes from seconds to minutes.', obj({ path: str('absolute .png path'), width: num('px (default 1920)'), height: num('px (default 1080)'), samples: num('default 128 (more: cleaner, slower)'), bounces: num('default 5') }), async (a) => {
+    if (!ctx.view?.pathTrace) throw new Error('Path tracing needs the desktop app.');
+    const path = a.path || (await ctx.io?.pick?.('png', true, 'Render.png'));
+    if (!path) return { cancelled: true };
+    const r = await ctx.view.pathTrace({ width: a.width || 1920, height: a.height || 1080, samples: a.samples || 128, bounces: a.bounces || 5 });
+    await ctx.io.writeBinary(path, r.bytes);
+    return { path, width: r.width, height: r.height, samples: r.samples, seconds: r.seconds };
+  });
+
+  def('ai', 'ai_render', 'AI render: the view redrawn by an image model (a local ComfyUI or an OpenAI-compatible images API, set in AI settings) from a prompt, keeping its shapes: materials, planting, sky, people, mood. strength 0–1: how far it may move from the view.', obj({ prompt: str('what it should look like: "brick and timber, spring evening, people walking"'), negative: str('what to avoid'), strength: num('0–1 (default 0.55)'), path: str('absolute .png path to save (default: just shown)') }, ['prompt']), async (a) => {
+    if (!ctx.io?.aiImage || !ctx.view) throw new Error('AI render needs the desktop app.');
+    const shot = await ctx.view.screenshot({ width: 1024 });
+    const r = await ctx.io.aiImage({ prompt: IG.renderPrompt(a.prompt), negative: a.negative, image: shot.split(',')[1], strength: a.strength ?? 0.55 });
+    if (a.path) await ctx.io.writeBinary(a.path, Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0)));
+    return { image: `data:image/png;base64,${r.b64}`, ...(a.path ? { path: a.path } : {}) };
+  });
+
+  def('ai', 'generate_texture', 'AI material: a seamless texture made by the image model from a prompt ("weathered red brick", "oak floor boards"), kept in the model; size m of one tile; applied to ids (or the selection) when given.', obj({ prompt: str('the material'), size: num('m of one tile (default 1)'), apply: bool('put it on the selection (default true when something is selected)'), ids }, ['prompt']), async (a) => {
+    if (!ctx.io?.aiImage || !ctx.view?.seamless) throw new Error('AI textures need the desktop app.');
+    const r = await ctx.io.aiImage({ prompt: IG.texturePrompt(a.prompt), width: 1024, height: 1024 });
+    const png = await ctx.view.seamless(r.b64);
+    const asset = Assets.put(png, { mime: 'image/png', name: `${a.prompt.slice(0, 40)}.png` });
+    const sel = a.ids?.length ? a.ids : ctx.selection.get();
+    if (a.apply !== false && sel.length) await reg.run('set_texture', { ids: sel, asset, projection: 'box', size: [a.size || 1, a.size || 1] });
+    return { asset, applied: a.apply !== false ? sel : [], image: `data:image/png;base64,${r.b64}` };
+  }, true);
+
   // ---------------------------------------------------------------- insight: quantities, review, skills
   def('scene', 'report_quantities', 'Quantities: count, surface area (m²), volume (m³), length (m: curves and sweeps) and cost (metadata cost) per material, tag, metadata key, name or kind. "How many m³ of concrete?" format csv or a path writes a file.', obj({ group_by: { description: 'material (default) | tag | name | type | none | a metadata key (e.g. phase, or meta.phase)' }, ids: { ...ids, description: 'only these (default: the whole model)' }, include_hidden: bool('count hidden things too'), format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv or .json path to write') }), async (a) => {
     const report = quantities(ctx.doc, { by: a.group_by || 'material', ids: a.ids, hidden: !!a.include_hidden });
@@ -2358,7 +2489,9 @@ function registerCore(reg, ctx) {
   });
 
   // ---------------------------------------------------------------- view
-  def('view', 'set_camera', 'Place the camera.', obj({ position: v3('eye'), target: v3('look-at point'), fov: num('degrees') }), (a) => {
+  def('view', 'set_camera', 'Place the camera: eye position, target, field of view or lens (mm on full frame: 24 wide, 35, 50 normal, 85 portrait), projection (perspective or parallel: no vanishing points) and two_point (verticals stay vertical).', obj({ position: v3('eye'), target: v3('look-at point'), fov: num('degrees'), lens: num('mm (sets fov)'), projection: str('perspective | parallel', ['perspective', 'parallel']), two_point: bool('two-point perspective') }), (a) => {
+    if (a.lens) a = { ...a, fov: Math.round(LK.fovOfLens(a.lens) * 100) / 100 };
+    for (const k of ['projection', 'two_point']) if (a[k] !== undefined) ctx.doc.settings[k === 'projection' ? 'projection' : 'two_point'] = a[k];
     if (!ctx.view) return ctx.doc.camera;
     ctx.view.setCamera(a);
     return ctx.view.getCamera();
@@ -2371,9 +2504,9 @@ function registerCore(reg, ctx) {
     ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
     return ctx.view?.getCamera();
   });
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);
@@ -2767,6 +2900,7 @@ function registerCore(reg, ctx) {
     return { path, format: fmt.id, bytes: text.length, entities: ents.length };
   }, true);
   reg.commands.get('import').compound = true;
+  reg.commands.get('generate_texture').compound = true;
 
   // ---------------------------------------------------------------- model info, purge (#48), clipboard (#39)
   def('scene', 'model_info', 'Statistics of the model: entities by type, faces and vertices, layers, components and instances, materials, curves, survey points, underlays and the size of their files, bounds, base point, journal length.', obj({}), () => {

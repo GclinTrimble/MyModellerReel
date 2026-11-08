@@ -33,6 +33,8 @@ const FILTERS = {
   ifc: [{ name: 'IFC', extensions: ['ifc'] }],
   dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
   section: [{ name: 'SVG drawing', extensions: ['svg'] }, { name: 'DXF (R12)', extensions: ['dxf'] }],
+  texture: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  hdri: [{ name: 'HDR panoramas', extensions: ['hdr', 'exr'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
@@ -254,6 +256,11 @@ export class IO {
     await native().invoke('file:write', path, text);
     this.app.ui.toast(`Wrote ${base(path)}`);
     return path;
+  }
+
+  /** A picture from the image model in AI settings (main process: keys stay there). → { b64 } PNG. */
+  aiImage(req) {
+    return native().invoke('ai:image', req);
   }
 
   /** Write a binary file (PDF sheets). */

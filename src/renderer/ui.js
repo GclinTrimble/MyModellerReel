@@ -95,6 +95,10 @@ export class UI {
     const sel = () => app.selection;
     const form = (name, preset = {}) => () => this.commandDialog(name, typeof preset === 'function' ? preset() : preset);
     const needTwo = (fn) => () => (sel().length > 1 ? fn() : this.toast('Select at least two things.'));
+    const lightSpot = () => {
+      const t = app.viewport.controls.target;
+      return [t.x, t.y + 2.5, t.z].map((x) => Math.round(x * 100) / 100);
+    };
     const style = (k) => ({ checked: () => app.store.doc.settings[k], run: () => app.reg.run('set_style', { [k]: !app.store.doc.settings[k] }) });
     this.actions = {
       new: { label: 'New model', icon: 'file-plus', key: 'Ctrl+N', run: () => app.newModel() },
@@ -276,6 +280,31 @@ export class UI {
       sectionFill: { label: 'Section fill', icon: 'paint-bucket', checked: () => app.store.doc.settings.section_fill !== false, run: () => app.reg.run('set_style', { section_fill: app.store.doc.settings.section_fill === false }) },
       exportSection: { label: 'Export section (SVG, DXF)…', icon: 'export', run: () => app.reg.run('export_section', { preview: true }).then((r) => r?.preview && this.svgPreview(`Section saved: ${r.path.split(/[\\/]/).pop()}`, r.preview)).catch((e) => this.toast(e.message, 'danger')) },
       exportDrawing: { label: 'Export drawing sheet (PDF, SVG)…', icon: 'file-pdf', run: () => app.reg.run('export_drawing', { preview: true, title: app.store.doc.name || 'Untitled' }).then((r) => r?.preview && this.svgPreview(`Sheet saved: ${r.path.split(/[\\/]/).pop()} · ${r.scale}`, r.preview)).catch((e) => this.toast(e.message, 'danger')) },
+      geolocation: { label: 'Geolocation…', icon: 'globe-hemisphere-west', run: form('set_geolocation', () => ({ ...(app.store.doc.settings.geolocation || {}) })) },
+      sunTime: { label: 'Sun at a date and time…', icon: 'sun', run: form('set_sun_time', () => ({ date: app.store.doc.settings.sun.date || new Date().toISOString().slice(0, 10), time: app.store.doc.settings.sun.time || '12:00' })) },
+      sunStudy: { label: 'Sun study on the timeline…', icon: 'sun-horizon', run: form('animate_sun', () => ({ date: app.store.doc.settings.sun.date || new Date().toISOString().slice(0, 10), from: '06:00', to: '20:00' })) },
+      styleShaded: { label: 'Shaded', icon: 'cube', checked: () => (app.store.doc.settings.render_style || 'shaded') === 'shaded', run: run('set_style', { render_style: 'shaded' }) },
+      styleHidden: { label: 'Hidden line', icon: 'cube-transparent', checked: () => app.store.doc.settings.render_style === 'hidden_line', run: run('set_style', { render_style: 'hidden_line' }) },
+      styleMono: { label: 'Monochrome', icon: 'circle-half-tilt', checked: () => app.store.doc.settings.render_style === 'monochrome', run: run('set_style', { render_style: 'monochrome' }) },
+      styleSketchy: { label: 'Sketchy', icon: 'pencil-simple-line', checked: () => app.store.doc.settings.render_style === 'sketchy', run: run('set_style', { render_style: 'sketchy' }) },
+      parallel: { label: 'Parallel projection', icon: 'square', checked: () => app.store.doc.settings.projection === 'parallel', run: () => app.reg.run('set_camera', { projection: app.store.doc.settings.projection === 'parallel' ? 'perspective' : 'parallel' }) },
+      twoPoint: { label: 'Two-point perspective', icon: 'arrows-vertical', checked: () => !!app.store.doc.settings.two_point, run: () => app.reg.run('set_camera', { two_point: !app.store.doc.settings.two_point }) },
+      lens: { label: 'Camera lens…', icon: 'aperture', run: form('set_camera', { lens: 35 }) },
+      effects: { label: 'Effects (AO, bloom, depth of field)…', icon: 'sparkle', run: form('set_effects', () => ({ ...(app.store.doc.settings.effects || {}) })) },
+      environment: { label: 'Environment lighting…', icon: 'mountains', run: form('set_environment', () => ({ preset: app.store.doc.settings.environment?.preset || 'studio' })) },
+      lightPoint: { label: 'Point light', icon: 'lightbulb', run: () => app.reg.run('create_light', { kind: 'point', position: lightSpot() }) },
+      lightSpot: { label: 'Spot light', icon: 'flashlight', run: () => app.reg.run('create_light', { kind: 'spot', position: lightSpot(), target: app.viewport.controls.target.toArray().map((x) => Math.round(x * 100) / 100) }) },
+      lightArea: { label: 'Area light (panel)', icon: 'rectangle', run: () => app.reg.run('create_light', { kind: 'area', position: lightSpot(), target: app.viewport.controls.target.toArray().map((x) => Math.round(x * 100) / 100) }) },
+      texture: { label: 'Texture from an image…', icon: 'image-square', run: async () => {
+        if (!sel().length) return this.toast('Select the shapes first.');
+        const path = await app.io.pick('texture', false);
+        if (path) app.reg.run('set_texture', { path, size: [1, 1] }).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      textureEdit: { label: 'Texture size and projection…', icon: 'arrows-out', run: form('set_texture', () => ({ ...(app.entity(sel()[0])?.material.texture || {}), asset: undefined })) },
+      materialMaps: { label: 'Glass, coat and maps…', icon: 'drop', run: form('set_material_maps', {}) },
+      renderImage: { label: 'Render photoreal still (path traced)…', icon: 'camera', run: () => app.reg.run('render_image', { samples: 256 }).then((r) => r?.path && this.toast(`Rendered ${r.samples} samples in ${r.seconds} s`)).catch((e) => this.toast(e.message, 'danger')) },
+      aiRender: { label: 'AI render…', icon: 'magic-wand', run: () => this.commandDialog('ai_render', { prompt: 'warm evening light, landscaped garden, people walking', strength: 0.55 }).then((r) => r?.image && this.imagePreview('AI render', r.image)) },
+      aiTexture: { label: 'AI texture from a prompt…', icon: 'magic-wand', run: form('generate_texture', { prompt: 'weathered red brick', size: 1 }) },
       exportGeojson: { label: 'Export GeoJSON…', icon: 'export', run: run('export', { format: 'geojson' }) },
       exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
@@ -314,8 +343,8 @@ export class UI {
       File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportSection', 'exportDrawing', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', '-', 'clearAnim', 'exportVideo'],
       Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
@@ -709,6 +738,10 @@ export class UI {
   }
 
   /** Cross-sections (#122): one at a time, Previous / Next. */
+  /** A picture (data URL) in a dialog: AI renders. */
+  imagePreview(title, src) {
+    this.modal(title, h('img.svg-preview', { src, alt: title }));
+  }
   /** A picture of an exported sheet or section, so you see what you saved. */
   svgPreview(title, svg) {
     this.modal(title, h('img.svg-preview', { src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, alt: title }));
@@ -1080,6 +1113,11 @@ export class UI {
           ),
         ),
       h('p.small.muted', {}, 'Keys are stored on this PC and only used by the app itself; the page never sees them.'),
+      h('h3', {}, 'Image model (AI render, AI textures)'),
+      h('label.field', {}, h('span', {}, 'Provider'), h('select', { onchange: (e) => save({ ai: { image: { provider: e.target.value } } }) }, [['comfyui', 'ComfyUI on this PC (Stable Diffusion, Flux…)'], ['openai', 'OpenAI-compatible images API']].map(([v, l]) => h('option', { value: v, selected: v === ai.image.provider }, l)))),
+      ...(ai.image.provider === 'openai'
+        ? [field('Base URL', ai.image.openai.baseUrl, (e) => save({ ai: { image: { openai: { baseUrl: e.target.value } } } })), field('Model', ai.image.openai.model, (e) => save({ ai: { image: { openai: { model: e.target.value } } } })), field(`API key ${ai.image.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { image: { openai: { apiKey: e.target.value } } } }), { type: 'password' })]
+        : [field('ComfyUI URL', ai.image.comfyui.baseUrl, (e) => save({ ai: { image: { comfyui: { baseUrl: e.target.value } } } })), field('Checkpoint (a model file in ComfyUI/models/checkpoints)', ai.image.comfyui.checkpoint, (e) => save({ ai: { image: { comfyui: { checkpoint: e.target.value } } } }), { placeholder: 'sd_xl_base_1.0.safetensors' })]),
       h('h3', {}, 'API and MCP'),
       h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
       h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),

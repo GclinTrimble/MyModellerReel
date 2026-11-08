@@ -10,6 +10,7 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import * as SEC from '../core/section.js';
+import { Presentation, applyMaps, styleMaterial, sketchEdges, lightObject, seamless, defaultSky } from './presentation.js';
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry } from './underlays.js';
 import { invert as invertAffine } from '../core/underlay.js';
@@ -30,7 +31,10 @@ export function meshGeometry(mesh) {
 }
 
 export function makeMaterial(m, opts = {}) {
-  const mat = new THREE.MeshStandardMaterial({
+  const physical = m.transmission > 0 || m.clearcoat > 0;
+  const mat = new (physical ? THREE.MeshPhysicalMaterial : THREE.MeshStandardMaterial)({
+    ...(physical ? { transmission: m.transmission || 0, ior: m.ior ?? 1.5, thickness: m.thickness ?? 0.01, clearcoat: m.clearcoat || 0, clearcoatRoughness: m.clearcoat_roughness ?? 0.1 } : {}),
+    emissiveIntensity: m.emissive_intensity ?? 1,
     color: m.color,
     roughness: m.roughness ?? 0.85,
     metalness: m.metalness ?? 0,
@@ -90,7 +94,9 @@ function styledLine(doc, e, pts, clipping, fat = true) {
   return new LineSegments2(g, new LineMaterial({ color, linewidth: px, clippingPlanes: clipping }));
 }
 
-export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null, fat = false } = {}) {
+export function buildModel(doc, { edges = true, xray = false, wireframe = false, clipping = [], cache = null, underlay = null, fat = false, style = 'shaded', dirty = () => {} } = {}) {
+  const styled = style !== 'shaded' && style;
+  if (styled === 'hidden_line' || styled === 'sketchy') edges = true;
   const root = new THREE.Group();
   root.name = 'Model';
   const objs = new Map();
@@ -110,18 +116,29 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
       const drape = e.drape && underlay ? doc.entities.find((x) => x.id === e.drape.underlay && x.underlay) : null;
       o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape }));
       if (drape) (o.material.map = underlay(drape).material.map), (o.material.color.set('#ffffff')), (o.userData.draped = true);
+      else if (!styled) applyMaps(o, e.material, dirty);
+      const sm = styled && styleMaterial(styled, { clipping });
+      if (sm) (o.material.dispose(), (o.material = sm), (o.userData.styled = true));
       o.material.clippingPlanes = clipping;
       o.castShadow = o.receiveShadow = true;
       if (wireframe) o.material.visible = false;
       if (edges || wireframe) {
+        const eg = (g.edges ||= withImprints(featureEdges(o.geometry), e.mesh));
+        if (styled === 'sketchy') {
+          o.geometry.computeBoundingSphere();
+          eg.userData.sketch ||= sketchEdges(eg, Math.max(0.5, o.geometry.boundingSphere.radius));
+        }
         const lines = new THREE.LineSegments(
-          (g.edges ||= withImprints(featureEdges(o.geometry), e.mesh)),
-          new THREE.LineBasicMaterial({ color: EDGE_COLOR, clippingPlanes: clipping }),
+          styled === 'sketchy' ? eg.userData.sketch : eg,
+          new THREE.LineBasicMaterial({ color: styled ? '#1d1d1d' : EDGE_COLOR, clippingPlanes: clipping }),
         );
         lines.raycast = () => {};
         lines.userData.isEdges = true;
         o.add(lines);
       }
+    } else if (e.light) {
+      o = lightObject(e, clipping);
+      for (const c of o.children) if (c.userData.lightMarker) (c.userData.entityId = e.id), (c.geometry.userData.triFace = []);
     } else if (e.type === 'point') {
       o = new THREE.Object3D(); // drawn by the shared point cloud below; this keeps its place in the tree
       o.userData.isPoint = true;
@@ -248,7 +265,7 @@ export class Viewport {
     this.renderer.toneMapping = THREE.NeutralToneMapping;
 
     this.scene = new THREE.Scene();
-    this.scene.background = skyTexture('#cfe1e6', '#f4efe6');
+    this.scene.background = this.skyBackground = skyTexture('#cfe1e6', '#f4efe6');
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.05, 5000);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
@@ -298,6 +315,9 @@ export class Viewport {
     this.raycaster = new THREE.Raycaster();
     this.listeners = new Set();
     this.proposed = new Set(); // ids an AI proposal added or changed (tinted until accepted)
+    this.look = new Presentation(this);
+    this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 5000);
+    this.persp = this.camera;
     this.ghosts = new THREE.Group(); // what a proposal would remove
     this.scene.add(this.ghosts);
 
@@ -315,15 +335,71 @@ export class Viewport {
     if (this.rendering) return; // render_video owns the size until it is done
     const r = this.canvas.parentElement.getBoundingClientRect();
     this.renderer.setSize(r.width, r.height, false);
-    this.camera.aspect = r.width / Math.max(1, r.height);
-    this.camera.updateProjectionMatrix();
+    this.setAspect(r.width / Math.max(1, r.height));
     this.dirty = true;
+  }
+
+  /** The picture's width / height, for both cameras. */
+  setAspect(a) {
+    this.persp.aspect = a;
+    this.persp.updateProjectionMatrix();
+    if (this.camera.isOrthographicCamera) this.fitOrtho();
+  }
+  /** The parallel camera sees what the perspective one sees at the target's distance. */
+  fitOrtho() {
+    const d = this.camera.position.distanceTo(this.controls.target);
+    const h = 2 * d * Math.tan((this.persp.fov * Math.PI) / 360);
+    const aspect = this.persp.aspect || 1;
+    Object.assign(this.ortho, { left: (-h * aspect) / 2, right: (h * aspect) / 2, top: h / 2, bottom: -h / 2 });
+    this.ortho.updateProjectionMatrix();
   }
 
   render() {
     this.dirty = false;
-    this.renderer.render(this.scene, this.camera);
+    this.draw();
     for (const fn of this.listeners) fn();
+  }
+
+  /** One frame as the document wants it: projection, two-point perspective, effects; light markers not in renders. */
+  draw() {
+    const s = this.store.doc.settings;
+    this.syncProjection();
+    if (s.two_point && this.camera.isPerspectiveCamera) this.levelCamera();
+    const show = !this.rendering;
+    this.modelRoot.traverse((o) => o.userData.lightMarker && (o.visible = show));
+    this.look.draw(this.store.doc);
+  }
+
+  /** Parallel projection (#68): an orthographic camera that frames what the perspective one did. */
+  syncProjection() {
+    const want = this.store.doc.settings.projection === 'parallel';
+    if (want === this.camera.isOrthographicCamera) return;
+    const from = this.camera;
+    const to = want ? this.ortho : this.persp;
+    to.position.copy(from.position);
+    to.quaternion.copy(from.quaternion);
+    this.camera = to;
+    this.controls.object = to;
+    if (want) {
+      this.ortho.zoom = 1;
+      this.ortho.near = -5000;
+      this.ortho.far = 5000;
+      this.fitOrtho();
+    } else to.updateProjectionMatrix();
+    this.controls.update();
+  }
+
+  /** Two-point perspective (#68): the camera looks level and the picture is shifted, so verticals stay vertical. */
+  levelCamera() {
+    const c = this.camera;
+    const t = this.controls.target;
+    c.lookAt(t.x, c.position.y, t.z);
+    c.updateMatrixWorld();
+    c.updateProjectionMatrix();
+    const v = t.clone().project(c);
+    const shift = new THREE.Matrix4().makeTranslation(0, -v.y, 0);
+    c.projectionMatrix.premultiply(shift);
+    c.projectionMatrixInverse.copy(c.projectionMatrix).invert();
   }
 
   /** Rebuild everything from the document. shortcut: full rebuild per change; fine to a few thousand entities. */
@@ -335,7 +411,8 @@ export class Viewport {
     this.modelRoot.clear();
     this.geoCache ||= { map: new WeakMap(), live: new Set() };
     this.geoCache.used = new Set();
-    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e), fat: true });
+    const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e), fat: true, style: s.render_style || 'shaded', dirty: () => (this.dirty = true) });
+    this.look.sync(doc);
     // free the GPU buffers of shapes that are gone or changed
     for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose();
     this.geoCache.live = this.geoCache.used;
@@ -353,8 +430,18 @@ export class Viewport {
     this.dirty = true;
   }
 
-  updateSun() {
-    const { azimuth, elevation } = this.store.doc.settings.sun;
+  updateSun(sun = this.store.doc.settings.sun) {
+    const { azimuth, elevation } = sun;
+    // below the horizon it is night; low sun is warm and weak
+    const k = Math.max(0, Math.min(1, elevation / 12));
+    this.sun.intensity = 2.2 * k;
+    this.sun.color.set(elevation < 12 ? '#ffc58a' : '#fff4e0');
+    const env = this.store.doc.settings.environment;
+    const preset = env?.preset || 'default';
+    if (preset === 'default') this.hemi.intensity = 0.12 + 1.48 * Math.max(0, Math.min(1, (elevation + 6) / 18));
+    // the plain sky follows the sun unless the environment shows its own picture
+    const own = (preset === 'hdri' || ['sky', 'sunset', 'night'].includes(preset)) && env.background !== false;
+    if (!own && (!this.rendering || this.scene.background)) this.scene.background = defaultSky(elevation, this.skyBackground);
     const box = new THREE.Box3().setFromObject(this.modelRoot);
     const size = box.isEmpty() ? 10 : Math.max(10, box.getSize(new THREE.Vector3()).length());
     const c = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
@@ -384,7 +471,11 @@ export class Viewport {
       o.scale.fromArray(p.scale || e.scale);
       const tagOn = doc.tags.find((t) => t.name === e.tag)?.visible !== false;
       o.visible = (p.visible ?? e.visible) && tagOn;
-      if (o.isMesh && !o.userData.underlay && !o.userData.isCurve) {
+      if (o.userData.light) {
+        o.userData.light.color.set(p.color || e.light.color);
+        o.userData.light.intensity = o.userData.light.userData.base * (p.opacity ?? 1);
+      }
+      if (o.isMesh && !o.userData.underlay && !o.userData.isCurve && !o.userData.styled) {
         const op = p.opacity ?? e.material.opacity;
         o.material.opacity = doc.settings.xray ? Math.min(op, 0.45) : op;
         o.material.transparent = op < 1 || doc.settings.xray;
@@ -395,6 +486,7 @@ export class Viewport {
     }
     const cam = pose?.camera;
     if (moveCamera && cam) this.setCamera({ position: cam.position, target: cam.target, fov: cam.fov });
+    this.updateSun(pose?.sun || doc.settings.sun);
     this.dirty = true;
   }
 
@@ -413,7 +505,7 @@ export class Viewport {
     for (const [id, o] of this.objs) {
       if (o.userData.isCurve) o.material.color.set(lit.has(id) ? '#e8bc5e' : this.proposed.has(id) ? PROPOSAL_COLOR : L.colorOf(doc, doc.entities.find((e) => e.id === id)) || '#2f6f86');
       if (o.userData.underlay) o.material.color.set(lit.has(id) ? '#f3dfb0' : '#ffffff');
-      if (!o.isMesh || o.userData.underlay || o.userData.isCurve) continue;
+      if (!o.isMesh || o.userData.underlay || o.userData.isCurve || !o.material.emissive) continue;
       const on = lit.has(id);
       const proposed = this.proposed.has(id);
       o.material.emissive.set(on ? '#2f6f86' : proposed ? PROPOSAL_COLOR : doc.entities.find((e) => e.id === id)?.material.emissive || '#000000');
@@ -451,16 +543,20 @@ export class Viewport {
     return {
       position: D.round3(this.camera.position.toArray()),
       target: D.round3(this.controls.target.toArray()),
-      fov: this.camera.fov,
+      fov: this.persp.fov,
+      projection: this.store.doc.settings.projection || 'perspective',
+      two_point: !!this.store.doc.settings.two_point,
     };
   }
   setCamera({ position, target, fov }) {
     if (position) this.camera.position.fromArray(position);
     if (target) this.controls.target.fromArray(target);
     if (fov) {
-      this.camera.fov = fov;
-      this.camera.updateProjectionMatrix();
+      this.persp.fov = fov;
+      this.persp.updateProjectionMatrix();
     }
+    this.syncProjection();
+    if (this.camera.isOrthographicCamera) (this.ortho.zoom = 1), this.fitOrtho();
     this.camera.lookAt(this.controls.target);
     this.controls.update();
     this.dirty = true;
@@ -520,7 +616,7 @@ export class Viewport {
     const c = box.getCenter(new THREE.Vector3());
     const r = box.getBoundingSphere(new THREE.Sphere()).radius;
     const d = dir || this.camera.position.clone().sub(this.controls.target).normalize();
-    const dist = r / Math.sin((this.camera.fov * D2R) / 2) * 1.05;
+    const dist = r / Math.sin((this.persp.fov * D2R) / 2) * 1.05;
     this.setCamera({ position: c.clone().add(d.multiplyScalar(dist)).toArray(), target: c.toArray() });
   }
   setView(preset) {
@@ -632,6 +728,15 @@ export class Viewport {
       this.setCamera(cam);
     }
     return shots;
+  }
+
+  /** A path-traced still (#63) at the given size: PNG bytes. */
+  pathTrace(opts) {
+    return this.look.pathTrace(opts, stage, (n, of) => this.onStatus?.(`Path tracing: ${n} of ${of} samples…`));
+  }
+  /** A seamless version of an image (base64 PNG) for AI textures (#65): PNG bytes. */
+  seamless(b64) {
+    return seamless(b64);
   }
 
   /**

@@ -1,5 +1,7 @@
 // File bytes the document refers to (PDFs, images), kept out of the document JSON so undo snapshots stay small.
 // The document holds only the asset id; files save the bytes next to it (io.js), and opening puts them back here.
+import { lookAssets } from './look.js';
+
 const store = new Map();
 
 /** Keep bytes; the same bytes give the same id (an underlay imported twice shares one copy). */
@@ -23,7 +25,7 @@ export const ids = () => [...store.keys()];
 
 /** For saving: the assets a document uses, as base64. */
 export function pack(doc) {
-  const used = new Set(doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset));
+  const used = new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...lookAssets(doc)]);
   const out = {};
   for (const id of used) {
     const a = store.get(id);

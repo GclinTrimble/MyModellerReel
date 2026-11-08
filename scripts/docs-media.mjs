@@ -447,6 +447,87 @@ const PAGES = {
     await clean();
     await run('section', { enabled: false });
   },
+  async 'present-a-design'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('set_camera', { position: [14, 7, 16], target: [0, 1.5, 0], lens: 35 });
+    await none();
+    await shot('The house, shaded');
+    await run('set_style', { render_style: 'sketchy' });
+    await none();
+    await shot('View › Style › Sketchy: a hand-drawn concept');
+    await run('set_style', { render_style: 'hidden_line' });
+    await run('set_camera', { position: [9, 1.6, 11], target: [0, 2.6, 0], lens: 24, two_point: true });
+    await none();
+    await shot('Hidden line, a 24 mm lens, two-point perspective: walls stay upright');
+    await run('set_style', { render_style: 'shaded' });
+    await run('set_camera', { position: [14, 7, 16], target: [0, 1.5, 0], lens: 35, two_point: false });
+    await run('set_environment', { preset: 'studio' });
+    await run('set_effects', { ao: 0.8, vignette: 0.35 });
+    await none();
+    await shot('Studio environment, ambient occlusion and a vignette');
+    const png = path.join(os.tmpdir(), 'mmr-docs-still.png').replace(/\\/g, '/');
+    await run('set_effects', { ao: 0, vignette: 0 });
+    await run('render_image', { path: png, width: 1280, height: 720, samples: 160 });
+    await js(`window.mmr.app.ui.imagePreview('Render photoreal still: 160 samples', 'data:image/png;base64,${fs.readFileSync(png).toString('base64')}'); return 1;`);
+    await shot('');
+    await clean();
+    await run('set_environment', { preset: 'default' });
+  },
+  async 'textures-and-materials'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('set_camera', { position: [13, 6, 15], target: [0, 1.5, 0], lens: 35 });
+    await run('set_texture', { ids: ['North wall', 'South wall', 'East wall', 'West wall'], path: `${SAMPLES}/brick.png`, size: [0.9, 0.6] });
+    await none();
+    await shot('Texture from an image: brick at its real size on the walls');
+    await run('set_texture', { ids: ['Ground slab'], path: `${SAMPLES}/paving.png`, projection: 'planar', size: [1.2, 1.2], rotation: 45 });
+    await run('set_texture', { ids: ['North wall', 'South wall', 'East wall', 'West wall'], size: [0.6, 0.4] });
+    await none();
+    await shot('Planar paving turned 45°; smaller bricks: change the size');
+    await run('create_box', { width: 2.4, height: 1, depth: 0.05, position: [2.5, 0, 5.4], name: 'Balustrade', color: '#cfe8f2' });
+    await run('set_material_maps', { ids: ['Balustrade'], transmission: 1, ior: 1.5, thickness: 0.05 });
+    await run('set_material', { ids: ['Balustrade'], roughness: 0.05 });
+    await run('create_box', { width: 1.8, height: 0.9, depth: 0.9, position: [-3.5, 0, 6.2], name: 'Bench', color: '#7a1f1f' });
+    await run('set_material', { ids: ['Bench'], metalness: 0.5, roughness: 0.35 });
+    await run('set_material_maps', { ids: ['Bench'], clearcoat: 1 });
+    await run('set_environment', { preset: 'studio' });
+    await none();
+    await shot('Glass, coat and maps: a glass balustrade, a lacquered bench');
+    await run('set_environment', { preset: 'default' });
+  },
+  async 'sun-study-and-night-lights'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('set_geolocation', { latitude: 45.76, longitude: 4.84, utc_offset: 2, place: 'Lyon' });
+    await run('set_camera', { position: [15, 11, 17], target: [0, 1, 0], lens: 35 });
+    await run('set_sun_time', { date: '2026-06-21', time: '09:00' });
+    await none();
+    await shot('Lyon, 21 June, 9:00: the real sun');
+    await run('animate_sun', { date: '2026-06-21', from: '06:00', to: '22:30', start: 0, end: 6 });
+    await run('playback', { action: 'seek', time: 3.6 });
+    await shot('Sun study on the timeline: 16:00');
+    await run('render_video', { path: path.join(dir, 'sun-study-and-night-lights.mp4'), width: 960, height: 540, fps: 24 });
+    await run('playback', { action: 'seek', time: 5.2 });
+    await shot('20:30: long evening shadows');
+    await run('animate_sun', { off: true });
+    await run('set_sun_time', { date: '2026-12-21', time: '19:00' });
+    await run('create_light', { kind: 'spot', position: [-1.6, 3.2, 6], target: [-2.2, 0.8, 4.3], intensity: 90, color: '#ffd9a0' });
+    await run('create_light', { kind: 'spot', position: [2.6, 3.2, 6], target: [2.2, 0.8, 4.3], intensity: 90, color: '#ffd9a0' });
+    await run('create_light', { kind: 'point', position: [0, 1.6, 0], intensity: 25, color: '#ffc27a' });
+    await run('set_camera', { position: [11, 4, 15], target: [0, 1.4, 1], lens: 35 });
+    await none();
+    await shot('After sunset: two spot lights on the front, a warm light inside');
+    await run('set_sun_time', { date: '2026-06-21', time: '12:00' });
+  },
+  async 'ai-render'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await run('set_camera', { position: [14, 7, 16], target: [0, 1.5, 0], lens: 35 });
+    await none();
+    await js("window.mmr.app.ui.commandDialog('ai_render', { prompt: 'warm summer evening, landscaped garden, people walking', strength: 0.55 }); return 1;");
+    await shot('');
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

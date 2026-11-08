@@ -11,6 +11,7 @@ export const TOOLSETS = {
   view: { categories: ['view'], names: ['screenshot'] },
   files: { categories: ['file'], names: ['report_quantities'] },
   insight: { categories: [], names: ['report_quantities', 'review_model', 'check_clashes', 'section_cut', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
+  look: { categories: [], names: ['set_style', 'set_camera', 'set_effects', 'set_environment', 'create_light', 'set_light', 'set_texture', 'set_material', 'set_material_maps', 'set_geolocation', 'set_sun_time', 'animate_sun', 'render_image', 'ai_render', 'generate_texture', 'get_scene', 'select_where'] },
   annotate: { categories: ['annotate'], names: ['get_scene', 'get_entity', 'select_where', 'measure', 'create_text', 'section', 'export_section', 'export_drawing'] },
   ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
   drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
@@ -94,6 +95,20 @@ const SYNONYMS = {
   sheet: ['export_drawing'],
   plan: ['export_drawing', 'section'],
   dashed: ['line_type', 'properties'],
+  render: ['render_image', 'ai_render', 'effects', 'environment'],
+  photoreal: ['render_image', 'environment'],
+  texture: ['set_texture', 'generate_texture'],
+  brick: ['set_texture', 'generate_texture'],
+  glass: ['set_material_maps'],
+  light: ['create_light', 'set_light'],
+  lights: ['create_light'],
+  lamp: ['create_light'],
+  night: ['create_light', 'set_sun_time'],
+  sun: ['set_sun_time', 'animate_sun', 'set_geolocation'],
+  shadow: ['set_sun_time', 'animate_sun'],
+  shadows: ['set_sun_time', 'animate_sun'],
+  sketch: ['set_style'],
+  lens: ['set_camera'],
 };
 
 const STOP = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'it', 'is', 'with', 'for', 'by', 'me', 'my', 'please', 'make', 'this', 'that', 'them']);

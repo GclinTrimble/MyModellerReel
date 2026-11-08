@@ -18,7 +18,7 @@ export function stage(vp, w, h, transparent) {
     vis: [vp.grid, vp.axes, vp.overlay, vp.ghosts].map((o) => o.visible),
     selection: vp.selection,
     proposed: vp.proposed,
-    aspect: vp.camera.aspect,
+    aspect: vp.persp.aspect,
   };
   for (const o of [vp.grid, vp.axes, vp.overlay, vp.ghosts]) o.visible = false;
   vp.proposed = new Set();
@@ -29,8 +29,7 @@ export function stage(vp, w, h, transparent) {
   }
   r.setPixelRatio(1);
   r.setSize(w, h, false);
-  vp.camera.aspect = w / h;
-  vp.camera.updateProjectionMatrix();
+  vp.setAspect(w / h);
   vp.rendering = true; // the viewport's own loop must not redraw at the wrong size meanwhile
   return () => {
     vp.rendering = false;
@@ -40,7 +39,7 @@ export function stage(vp, w, h, transparent) {
     vp.proposed = saved.proposed;
     vp.highlight(saved.selection);
     r.setPixelRatio(saved.ratio);
-    vp.camera.aspect = saved.aspect;
+    vp.persp.aspect = saved.aspect;
     vp.resize();
   };
 }
@@ -75,7 +74,7 @@ export async function renderVideo(app, opts, write) {
   const draw = (i) => {
     const t = from + i / fps;
     tl.seek(t);
-    vp.renderer.render(vp.scene, vp.camera);
+    vp.draw();
     g.clearRect(0, 0, w, h);
     g.drawImage(vp.canvas, 0, 0, w, h);
     drawCaptions(g, doc.animation.captions, t, w, h);

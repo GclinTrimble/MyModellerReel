@@ -47,6 +47,11 @@ Electron's binary download is an install script; if your npm blocks install scri
   keep their text up to date, construction guides, 3D text for signs and titles, line types and weights on screen
   (ByLayer), a clash check on the real shapes, filled section cuts exported to SVG or DXF, and drawing sheets (PDF or
   SVG) with views to scale, overall dimensions and a title block.
+- **Rendering and presentation**: styles (hidden line, monochrome, sketchy), camera lenses, parallel projection and
+  two-point perspective, post effects (ambient occlusion, bloom, depth of field, vignette), environment lighting
+  (studio, sky, sunset, night, HDRI), point / spot / area lights for night scenes, image textures at real size and
+  physical materials (glass, clear coat, maps), the real sun from a geolocation, date and time with sun studies on
+  the timeline, path-traced photoreal stills, and AI render / AI textures through a local ComfyUI or an images API.
 - **Help by intent**: Help › How do I… (F1): a page per goal ("Put a PDF site plan in place", "Work out cut and fill
   for a pad"…) with step pictures, GIFs and videos, "Do it" buttons, a copilot prompt and the commands. Also in
   [docs/how-to](docs/how-to/README.md) and as MCP resources.

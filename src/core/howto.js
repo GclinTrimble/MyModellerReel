@@ -1,6 +1,6 @@
 // Help by intent (#158): one page per goal, written as what the person wants to do. The pages are Markdown in
 // docs/how-to/<id>.md with their media in docs/how-to/media/<id>/ (made by scripts/docs-media.mjs from the app).
-export const AREAS = ['Modelling', 'Animation', 'Terrain and survey', 'Drawings', 'Files', 'AI and insight'];
+export const AREAS = ['Modelling', 'Animation', 'Terrain and survey', 'Drawings', 'Presentation', 'Files', 'AI and insight'];
 
 export const HOWTOS = [
   { id: 'push-pull-and-components', area: 'Modelling', title: 'Model a shape with push / pull, then copy it as a component', intent: 'draw rectangle extrude push pull window recess component copies instances edit once', commands: ['create_box', 'imprint', 'push_pull', 'make_component', 'duplicate', 'set_material'], tools: ['rectangle', 'pushpull'] },
@@ -24,6 +24,10 @@ export const HOWTOS = [
   { id: 'dimension-and-label', area: 'Modelling', title: 'Dimension, label and sign a design', intent: 'dimension dimensions measure annotate label leader text area name sign 3d text letters guide guides construction line dashed line type weight', commands: ['add_dimension', 'add_label', 'edit_annotation', 'create_text', 'add_guide', 'clear_guides', 'define_line_type', 'set_properties'], tools: ['dimension', 'label', 'tape'] },
   { id: 'drawing-sheets-and-sections', area: 'Files', title: 'Make a drawing sheet and a section', intent: 'drawing sheet pdf plan elevation views orthographic title block scale print section cut fill hatch export svg dxf layout', commands: ['export_drawing', 'section', 'section_cut', 'export_section', 'set_style'], tools: ['section'] },
   { id: 'check-for-clashes', area: 'AI and insight', title: 'Check a design for clashes', intent: 'clash clashes collision overlap interference coordination pipes beams intersect check', commands: ['check_clashes', 'review_model'], tools: [] },
+  { id: 'present-a-design', area: 'Presentation', title: 'Present a design: styles, lenses, effects and a photoreal still', intent: 'presentation render style hidden line sketch monochrome lens 35mm 50mm parallel projection two point perspective ambient occlusion bloom depth of field environment studio hdri photoreal path tracing still image', commands: ['set_style', 'set_camera', 'set_effects', 'set_environment', 'render_image'], tools: [] },
+  { id: 'textures-and-materials', area: 'Presentation', title: 'Textures, glass and AI materials', intent: 'texture image brick wood tiles uv mapping projection box planar cylindrical scale material glass transparent transmission clear coat normal map roughness map pbr ai texture generate material from prompt seamless', commands: ['set_texture', 'set_material_maps', 'set_material', 'generate_texture'], tools: [] },
+  { id: 'sun-study-and-night-lights', area: 'Presentation', title: 'A sun study and night lighting', intent: 'sun study shadow study shadows date time geolocation latitude longitude true north solstice equinox day animation night lights lamp spot light point light area light evening scene', commands: ['set_geolocation', 'set_sun_time', 'animate_sun', 'create_light', 'set_light', 'render_video'], tools: [], video: true },
+  { id: 'ai-render', area: 'AI and insight', title: 'AI render: the view redrawn by an image model', intent: 'ai render diffusion stable diffusion comfyui image model photoreal visualisation mood concept prompt render style redraw view', commands: ['ai_render'], tools: [] },
 ];
 
 /** Pages ranked by how well their words match a question ("how do I georeference a pdf"). */

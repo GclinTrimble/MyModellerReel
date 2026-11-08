@@ -378,3 +378,31 @@ test('annotate and document: the Dimension tool, text, section caps and a PDF sh
   assert.equal(r.views.length, 2);
   assert.equal(fs.readFileSync(pdf).subarray(0, 5).toString(), '%PDF-');
 });
+
+test('looks: styles, lights, effects, parallel projection, a path-traced still, a sun study frame', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 2, height: 2, depth: 2, name: 'Cube' });
+  await ok('set_style', { render_style: 'hidden_line' });
+  assert.equal(await w.evaluate(() => window.mmr.app.viewport.objs.get(window.mmr.doc.entities[0].id).material.type), 'MeshBasicMaterial');
+  await ok('set_style', { render_style: 'shaded' });
+  await ok('create_light', { kind: 'spot', position: [2, 3, 2], target: [0, 0, 0] });
+  assert.ok(await w.evaluate(() => { let n = 0; window.mmr.app.viewport.modelRoot.traverse((o) => o.isSpotLight && n++); return n; }) === 1);
+  await ok('set_effects', { ao: 0.5, bloom: 0.3 });
+  await w.evaluate(() => window.mmr.app.viewport.render());
+  assert.ok(await w.evaluate(() => !!window.mmr.app.viewport.look.composer));
+  await ok('set_effects', { ao: 0, bloom: 0 });
+  await ok('set_camera', { projection: 'parallel' });
+  await w.evaluate(() => window.mmr.app.viewport.render());
+  assert.ok(await w.evaluate(() => window.mmr.app.viewport.camera.isOrthographicCamera));
+  await ok('set_camera', { projection: 'perspective', lens: 50 });
+  await w.evaluate(() => window.mmr.app.viewport.render());
+  assert.ok(Math.abs((await w.evaluate(() => window.mmr.app.viewport.camera.fov)) - 26.99) < 0.01);
+  const png = path.join(home, 'still.png');
+  const r = await ok('render_image', { path: png, width: 320, height: 180, samples: 4 });
+  assert.ok(r.samples >= 4);
+  assert.equal(fs.readFileSync(png).subarray(1, 4).toString(), 'PNG');
+  await ok('set_geolocation', { latitude: 48.85, longitude: 2.35, utc_offset: 2 });
+  await ok('animate_sun', { date: '2026-06-21', from: '06:00', to: '22:00', start: 0, end: 4 });
+  await w.evaluate(() => window.mmr.app.timeline.seek(4));
+  assert.ok(await w.evaluate(() => window.mmr.app.viewport.sun.intensity) < 0.5, 'late evening: a weak sun');
+});
