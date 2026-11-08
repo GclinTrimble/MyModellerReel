@@ -52,6 +52,10 @@ Electron's binary download is an install script; if your npm blocks install scri
   editing, 3-point rectangles, turned drawing axes with grid snap, SVG / DXF floor plans to faces, grid and path
   arrays, a component library (starter trees, people, cars, benches, street lights; drop in your own GLBs),
   selection sets, layer folders and colour by layer.
+- **Scans, sharing and your way of working**: point clouds (PLY, LAS, XYZ) with a ground surface from them, scanned
+  drawings vectorised, drawings read for their scale and title, snapping to PDFs, versions and autosaves inside the
+  file, document tabs, a one-file web viewer, USDZ for phone AR, 3MF for printing, GLB compression, free CC0 assets
+  from Poly Haven, text to 3D, drag handles, a walk mode, your own shortcuts, voice to the copilot, and French menus.
 - **Animation depth**: reusable clips, a dope sheet (multi-select, drag, copy / paste, retime) and an easing curve
   editor, attach / follow / look-at constraints (a crane picking a beam), rigid-body physics baked to keys, camera
   shots with cuts, music and voiceover mixed into the render, an animated section reveal, and 4D sequences from a

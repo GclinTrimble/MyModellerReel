@@ -12,7 +12,8 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import * as SEC from '../core/section.js';
 import { Presentation, applyMaps, styleMaterial, sketchEdges, lightObject, seamless, defaultSky } from './presentation.js';
 import * as L from '../core/layers.js';
-import { textureFor, underlayGeometry } from './underlays.js';
+import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
+import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
 import { invert as invertAffine } from '../core/underlay.js';
 
 const D2R = Math.PI / 180;
@@ -27,7 +28,7 @@ export function meshGeometry(mesh) {
   g.setAttribute('normal', new THREE.BufferAttribute(b.normal, 3));
   if (b.color) g.setAttribute('color', new THREE.BufferAttribute(b.color, 3)); // sRGB-ish face colours, shown as given
   g.userData.triFace = b.triFace;
-  return g;
+  return bvh(g);
 }
 
 export function makeMaterial(m, opts = {}) {
@@ -137,6 +138,8 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
         lines.userData.isEdges = true;
         o.add(lines);
       }
+    } else if (e.pointcloud) {
+      o = cloudObject(e);
     } else if (e.light) {
       o = lightObject(e, clipping);
       for (const c of o.children) if (c.userData.lightMarker) (c.userData.entityId = e.id), (c.geometry.userData.triFace = []);
@@ -272,6 +275,7 @@ export class Viewport {
     this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = true;
+    this.controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE }; // one finger draws or selects, two orbit and zoom (#113)
     this.controls.addEventListener('change', () => (this.dirty = true));
     this.controls.addEventListener('end', () => this.pushView()); // after the user orbits, pans or zooms
     this.views = [];
@@ -357,6 +361,9 @@ export class Viewport {
 
   render() {
     this.dirty = false;
+    const now = performance.now();
+    if (this.lastFrame) this.fps = 0.9 * (this.fps || 60) + 0.1 * (1000 / Math.max(1, now - this.lastFrame));
+    this.lastFrame = now;
     this.draw();
     for (const fn of this.listeners) fn();
   }
@@ -523,12 +530,22 @@ export class Viewport {
     for (const o of this.modelRoot.children) if (o.userData.caps) o.visible = !sec?.point;
   }
 
+  /** The on-canvas handles (#67) on the one selected entity, when the gizmo is on. */
+  syncGizmo() {
+    const mode = this.store.doc.settings.gizmo;
+    if (!mode && !this.gizmo) return;
+    this.gizmo ||= new Gizmo(this, (id, t) => this.onGizmo?.(id, t));
+    const o = mode && this.selection.length === 1 ? this.objs.get(this.selection[0]) : null;
+    this.gizmo.sync(mode, o && !o.userData.underlay ? o : null);
+  }
+
   highlight(ids) {
     this.selection = ids;
+    queueMicrotask(() => this.syncGizmo());
     const doc = this.store.doc;
     const lit = new Set();
     for (const id of ids) for (const d of [id, ...D.descendants(doc, id).map((x) => x.id)]) lit.add(d);
-    const cloud = this.modelRoot.children.find((o) => o.isPoints);
+    const cloud = this.modelRoot.children.find((o) => o.isPoints && !o.userData.pointcloud);
     if (cloud) {
       const col = cloud.geometry.attributes.color;
       col.array.set(cloud.userData.colors);
@@ -680,7 +697,7 @@ export class Viewport {
   }
   /** The survey point under the mouse, using the ray pick() just set. */
   pickPoint() {
-    const cloud = this.modelRoot.children.find((o) => o.isPoints);
+    const cloud = this.modelRoot.children.find((o) => o.isPoints && !o.userData.pointcloud);
     if (!cloud) return null;
     this.raycaster.params.Points.threshold = 0.01 * this.camera.position.distanceTo(this.controls.target);
     const h = this.raycaster.intersectObject(cloud, false)[0];
@@ -740,6 +757,11 @@ export class Viewport {
         const w = e.curve.points.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
         w.forEach((p, k) => (pts.push({ p, kind: 'Endpoint' }), k && e.curve.kind === 'polyline' && pts.push({ p: p.clone().lerp(w[k - 1], 0.5), kind: 'Midpoint' })));
       }
+      if (e?.pointcloud && o.visible) pts.push(...cloudSnaps(o));
+      if (e?.underlay && o.visible && this.store.doc.settings.snap_underlays && e.underlay.kind === 'pdf') {
+        const s = underlaySnaps(this.store.doc, e, () => (this.vertexCache = null));
+        if (s) pts.push(...s);
+      }
       if (!e?.mesh || !o.visible || e.mesh.v.length > 5000) continue;
       const w = e.mesh.v.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
       for (const p of w) pts.push({ p, kind: 'Endpoint' });
@@ -761,6 +783,38 @@ export class Viewport {
       this.setCamera(cam);
     }
     return shots;
+  }
+
+  /** Draw statistics (#111): calls and triangles of the last frame, and frames per second. */
+  stats() {
+    const i = this.renderer.info.render;
+    return { draw_calls: i.calls, rendered_triangles: i.triangles, fps: this.fps ? Math.round(this.fps) : null };
+  }
+  /** Stand at eye height over what is under a point, looking towards another (#69). */
+  walkTo(position, lookAt, eye = 1.6) {
+    const p = new THREE.Vector3(...position);
+    p.y = floorAt(this, p.setY(1e4), 0) + eye; // the top surface under the spot, at any height
+    const t = lookAt ? new THREE.Vector3(...lookAt) : p.clone().add(new THREE.Vector3(0, 0, -5));
+    if (Math.abs(t.y - p.y) < 1e-6 && lookAt === undefined) t.y = p.y;
+    this.setCamera({ position: p.toArray(), target: t.toArray(), fov: 60 });
+    return { position: p.toArray().map((x) => Math.round(x * 1000) / 1000), eye };
+  }
+  /** An underlay's picture as grey pixels (#150) and as an image (#151). */
+  async underlayPixels(e, maxSide = 2000) {
+    const { canvas } = await rasterOf(e.underlay, maxSide);
+    const c = Object.assign(document.createElement('canvas'), { width: canvas.width, height: canvas.height });
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const gray = new Uint8Array(c.width * c.height);
+    for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11) | 0;
+    return { gray, w: c.width, h: c.height };
+  }
+  async underlayImage(e, maxSide = 1400) {
+    const { canvas } = await rasterOf(e.underlay, maxSide);
+    return canvas.toDataURL('image/jpeg', 0.85);
   }
 
   /** A path-traced still (#63) at the given size: PNG bytes. */

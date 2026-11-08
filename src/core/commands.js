@@ -20,6 +20,12 @@ import * as SQ from './sequencing.js';
 import * as PH from './physics.js';
 import * as MD from './modeling.js';
 import * as SVG from './svg.js';
+import * as PC from './pointcloud.js';
+import * as RS from './raster.js';
+import * as DC from './drawingclues.js';
+import * as IO2 from './interop.js';
+import * as SC from './shortcuts.js';
+import * as I18N from './i18n.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import * as Comp from './components.js';
@@ -2941,6 +2947,260 @@ function registerCore(reg, ctx) {
     return { sets: Object.keys(sets) };
   }, true);
 
+
+  // ---------------------------------------------------------------- interop, scale and input (Phase 15)
+  const pcPositions = (e) => new Float32Array(Assets.bytes(e.pointcloud.asset).slice().buffer, 0, e.pointcloud.count * 3);
+
+  def('file', 'import_point_cloud', 'A scan or drone point cloud as a reference to model over: PLY, LAS (uncompressed) or XYZ / PTS / CSV text, thinned to max_points, in project coordinates (the base point, or set from the cloud). Snap to it; classify_ground makes a terrain from it.', obj({ path: str('absolute .ply / .las / .xyz / .pts / .csv path'), max_points: num('default 300000'), name: common.name }, ['path']), async (a) => {
+    if (!ctx.io?.readBinary) throw new Error('Point clouds need the desktop app.');
+    const doc = ctx.doc;
+    const pc = PC.parsePointCloud(await ctx.io.readBinary(a.path), a.path);
+    const keep = PC.thin(pc, a.max_points || 300000);
+    const g = S.geo(doc);
+    let base = g.base;
+    if (!base) {
+      // no base point yet: the cloud's lowest corner becomes it (big coordinates), or at least its floor level
+      const [mx, my, mz] = PC.bounds(pc);
+      const big = Math.abs(mx) > 1e4 || Math.abs(my) > 1e4;
+      base = big ? [Math.round(mx), Math.round(my), Math.floor(mz)] : [0, 0, Math.floor(mz)];
+      if (base.some((x) => x)) g.base = base;
+    }
+    const pos = new Float32Array(keep.length * 3);
+    const col = pc.r ? new Uint8Array(keep.length * 3) : null;
+    keep.forEach((i, k) => {
+      pos[k * 3] = pc.x[i] - base[0];
+      pos[k * 3 + 1] = pc.z[i] - base[2];
+      pos[k * 3 + 2] = -(pc.y[i] - base[1]);
+      if (col) (col[k * 3] = pc.r[i]), (col[k * 3 + 1] = pc.g[i]), (col[k * 3 + 2] = pc.b[i]);
+    });
+    const bytes = new Uint8Array(pos.byteLength + (col ? col.byteLength : 0));
+    bytes.set(new Uint8Array(pos.buffer), 0);
+    if (col) bytes.set(col, pos.byteLength);
+    const asset = Assets.put(bytes, { mime: 'application/x-mmr-points', name: a.path.split(/[\\/]/).pop() });
+    const e = D.addEntity(doc, { type: 'pointcloud', name: a.name || a.path.split(/[\\/]/).pop().replace(/\.\w+$/, ''), pointcloud: { asset, count: keep.length, colors: !!col, format: pc.format, of: pc.count }, material: { color: '#7a8a96' } });
+    ctx.selection.set([e.id]);
+    return { id: e.id, name: e.name, points: keep.length, in_file: pc.count, format: pc.format, colors: !!col, base };
+  }, true);
+
+  def('terrain', 'classify_ground', 'A terrain surface from a point cloud: the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), name: common.name }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const [pcE] = D.resolve(doc, a.id);
+    if (!pcE.pointcloud) throw new Error(`${pcE.name} is not a point cloud.`);
+    const p = pcPositions(pcE);
+    const n = pcE.pointcloud.count;
+    const pc = { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), count: n };
+    for (let i = 0; i < n; i++) (pc.x[i] = p[i * 3]), (pc.y[i] = -p[i * 3 + 2]), (pc.z[i] = p[i * 3 + 1]);
+    const idx = PC.classifyGround(pc, { cell: a.cell || 1, tolerance: a.tolerance ?? 0.25, slope: a.slope ?? 0.3, window: a.window || 20 });
+    if (idx.length < 3) throw new Error('Too few ground points: try a bigger cell or tolerance.');
+    const pts = idx.map((i) => [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]].map((x) => Math.round(x * 1000) / 1000));
+    const { faces } = TR.triangulate(pts, { maxEdge: Math.max((a.cell || 1) * 8, a.window || 20) }); // bridges the footprints
+    const { mesh, origin } = G.recenter({ v: pts, f: faces });
+    const e = D.addEntity(doc, { name: a.name || `${pcE.name} ground`, mesh, position: D.round3(origin), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true, source: pcE.name } });
+    return { ...summary(doc, e), ground_points: pts.length, of: n };
+  }, true);
+
+  def('drawings', 'vectorise_underlay', 'Scanned drawing to linework: the image (or PDF page) thresholded, thinned and traced into curves on the drawing, simplified; by window. min_length and simplify in pixels of the scan.', obj({ id, window: WINDOW, threshold: num('0–255, darker is ink (default 128)'), min_length: num('pixels (default 12)'), simplify: num('pixels (default 1.5)'), resolution: num('longest side traced, pixels (default 2000)'), layer: str('layer (default "Scan")') }, ['id']), async (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    if (!ctx.view?.underlayPixels) throw new Error('Vectorising needs the desktop app.');
+    const { gray, w, h } = await ctx.view.underlayPixels(e, a.resolution || 2000);
+    const [W, H] = e.underlay.size;
+    let lines = RS.vectorise(gray, w, h, { threshold: a.threshold ?? 128, minLength: a.min_length ?? 12, tolerance: a.simplify ?? 1.5 }).map((l) => ({ pts: l.map(([x, y]) => [(x / w) * W, (y / h) * H]), color: '#1d262c', layer: 'scan' }));
+    const win = winOf(e, a.window);
+    if (win) lines = DW.filterPaths(lines, { window: win }).kept;
+    const clean = DW.cleanLines(lines, e.underlay.affine, { tol: 0.01, join: true });
+    const f = DW.frame(doc, e);
+    const layer = a.layer || 'Scan';
+    L.ensureLayer(doc, layer);
+    const made = clean.map((l) => {
+      const { mesh, origin } = G.recenter({ v: l.pts.map((q) => D.round3(f.planToWorld(q))), f: [] });
+      return D.addEntity(doc, { type: 'curve', name: D.uniqueName(doc, 'Scan line'), curve: { kind: 'polyline', points: mesh.v, closed: l.closed }, position: D.round3(origin), tag: layer, material: { color: '#1d262c' } });
+    });
+    if (!made.length) throw new Error('No lines found: try another threshold or window.');
+    ctx.selection.set(made.map((x) => x.id));
+    return { curves: made.length, traced_at: [w, h] };
+  }, true);
+
+  def('drawings', 'read_drawing', 'The copilot\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
+    const doc = ctx.doc;
+    const e = underlayOf(a.id);
+    let texts = [];
+    let size = e.underlay.size;
+    if (e.underlay.kind === 'pdf') {
+      const c = await pdfContent(e);
+      texts = c.texts.map((t) => ({ str: t.str, at: t.at, size: t.size }));
+      size = c.size || size;
+    }
+    let clues = DC.readClues(texts, size);
+    if (a.use_ai !== false && ctx.ai?.vision && ctx.view?.underlayImage) {
+      try {
+        const image = await ctx.view.underlayImage(e, 1400);
+        const reply = await ctx.ai.vision({ system: DC.READ_PROMPT, text: `Sheet size ${size.map(Math.round).join(' × ')} units. Text on it: ${JSON.stringify(texts.slice(0, 300).map((t) => [t.str, t.at.map(Math.round)]))}`, images: [image] });
+        clues = DC.mergeClues(clues, DC.jsonIn(reply));
+        clues.ai = true;
+      } catch (err) {
+        clues.ai_error = err.message;
+      }
+    }
+    const applied = [];
+    if (a.apply) {
+      if (clues.scale?.ratio && !clues.control.length) await reg.run('calibrate_underlay', { id: e.id, drawing_scale: `1:${clues.scale.ratio}` }), applied.push(`scale 1:${clues.scale.ratio}`);
+      if (clues.control.length >= 2) {
+        for (const c of clues.control) await reg.run('add_control_pair', { id: e.id, from: { u: c.u, v: c.v }, to: { n: c.n, e: c.e } });
+        await reg.run('georeference_underlay', { id: e.id });
+        applied.push(`georeferenced from ${clues.control.length} grid crossings`);
+      }
+      if (clues.title) (e.name = clues.title.slice(0, 80)), applied.push(`named "${e.name}"`);
+    }
+    return { ...clues, applied };
+  }, true);
+
+  def('scene', 'save_version', 'Save a named version of the model inside the file (restore or compare it later).', obj({ name: str('version name (default: the date and time)') }), (a) => {
+    const doc = ctx.doc;
+    const v = IO2.snapshot(doc, a.name || new Date().toISOString().slice(0, 16).replace('T', ' '));
+    doc.versions = [...(doc.versions || []).filter((x) => x.name !== v.name), v];
+    return { saved: v.name, versions: doc.versions.map((x) => ({ name: x.name, time: x.time })) };
+  }, true);
+  def('scene', 'list_versions', 'The named versions saved in this file.', obj({}), () => (ctx.doc.versions || []).map((v) => ({ name: v.name, time: v.time, entities: v.doc.entities.length })));
+  const versionOf = (name) => {
+    const v = (ctx.doc.versions || []).find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+    if (!v) throw new Error(`No version "${name}". Versions: ${(ctx.doc.versions || []).map((x) => x.name).join(', ') || 'none (save_version makes one)'}.`);
+    return v;
+  };
+  def('scene', 'restore_version', 'Go back to a saved version (the versions stay; undo brings the current model back).', obj({ name: str('version name') }, ['name']), (a) => {
+    const v = versionOf(a.name);
+    const keep = ctx.doc.versions;
+    ctx.store.doc = { ...JSON.parse(JSON.stringify(v.doc)), versions: keep };
+    return { restored: v.name, entities: ctx.store.doc.entities.length };
+  }, true);
+  def('scene', 'compare_versions', 'What changed between a version and another one (or the model now): shapes added, changed and removed, by name.', obj({ from: str('version name'), to: str('version name (default: now)') }, ['from']), (a) => {
+    const A0 = versionOf(a.from).doc;
+    const B0 = a.to ? versionOf(a.to).doc : ctx.doc;
+    const d = D.diffDocs(A0, B0);
+    const name = (doc, id) => doc.entities.find((e) => e.id === id)?.name || id;
+    return { added: d.added.map((id) => name(B0, id)), changed: d.changed.map((id) => name(B0, id)), removed: d.removed.map((id) => name(A0, id)) };
+  });
+  def('scene', 'delete_version', 'Forget a saved version.', obj({ name: str('version name') }, ['name']), (a) => {
+    const v = versionOf(a.name);
+    ctx.doc.versions = ctx.doc.versions.filter((x) => x !== v);
+    return { versions: ctx.doc.versions.map((x) => x.name) };
+  }, true);
+
+  const docsApi = () => {
+    if (!ctx.docs) throw new Error('Several documents need the desktop app.');
+    return ctx.docs;
+  };
+  def('scene', 'list_documents', 'The documents open in tabs.', obj({}), () => docsApi().list());
+  def('scene', 'new_document', 'Open a new empty document in a tab (copy / paste works between tabs).', obj({ name: common.name }), (a) => docsApi().create(a.name));
+  def('scene', 'switch_document', 'Show another open document (by name or tab number from 1).', obj({ name: str('document name or number') }, ['name']), (a) => docsApi().switch(a.name));
+  def('scene', 'close_document', 'Close a document tab (the current one by default); unsaved changes are lost unless saved first.', obj({ name: str('document name or number') }), (a) => docsApi().close(a.name));
+
+  def('scene', 'set_shortcut', 'A keyboard shortcut of your own for a menu action, a tool or any command: key like "Ctrl+Shift+F" or "G". Saved in the settings; "none" removes it.', obj({ key: str('the keys'), action: str('a menu action name, tool:<id>, or a command name') }, ['key', 'action']), async (a) => {
+    if (!ctx.io?.setSettings) throw new Error('Shortcuts need the desktop app.');
+    const key = SC.normalise(a.key);
+    const s = { ...(ctx.io.settings?.().shortcuts || {}) };
+    if (a.action === 'none') delete s[key];
+    else s[key] = a.action;
+    await ctx.io.setSettings({ shortcuts: s });
+    return { shortcuts: s };
+  });
+  def('scene', 'list_shortcuts', 'Your keyboard shortcuts (on top of the built-in ones).', obj({}), () => ctx.io?.settings?.().shortcuts || {});
+  def('scene', 'set_language', 'The language of the menus and panels: en (English) or fr (Français).', obj({ lang: str('en | fr', Object.keys(I18N.LANGUAGES)) }, ['lang']), async (a) => {
+    if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
+    await ctx.io.setSettings({ language: a.lang });
+    return { language: a.lang };
+  });
+
+  def('file', 'export_web_viewer', 'A web page of the model to send to anyone: one HTML file with the model, its animation and orbit controls, three.js inside (no app, no network).', obj({ path: str('absolute .html path'), title: str('the page title') }), async (a) => {
+    if (!ctx.io?.webViewerParts) throw new Error('Needs the desktop app.');
+    const path = a.path || (await ctx.io.pick('html', true, `${ctx.doc.name || 'Model'}.html`));
+    if (!path) return { cancelled: true };
+    const parts = await ctx.io.webViewerParts();
+    const html = IO2.webViewerHtml({ title: a.title || ctx.doc.name || 'Model', ...parts });
+    await ctx.io.writeText(path, html);
+    return { path, kb: Math.round(html.length / 1024) };
+  });
+
+  def('file', 'compress_glb', 'Make a GLB file smaller: meshopt (fast, lossless for positions) or draco (smallest geometry). Writes it back in place, or to out.', obj({ path: str('absolute .glb path'), method: str('meshopt | draco (default meshopt)', ['meshopt', 'draco']), out: str('absolute .glb path for the result') }, ['path']), async (a) => {
+    if (!ctx.io?.compressGlb) throw new Error('Needs the desktop app.');
+    return ctx.io.compressGlb(a.path, a.method || 'meshopt', a.out);
+  });
+
+  def('file', 'search_assets', 'Free CC0 models, textures and HDRIs from Poly Haven: a search; import_asset brings one in.', obj({ query: str('words'), type: str('models | textures | hdris (default models)', ['models', 'textures', 'hdris']), limit: num('default 12') }), async (a) => {
+    if (!ctx.io?.netJson) throw new Error('Needs the desktop app.');
+    return IO2.polyhavenSearch(await ctx.io.netJson(IO2.polyhavenList(a.type || 'models')), a.query, a.limit || 12);
+  });
+  def('file', 'import_asset', 'Bring in a Poly Haven asset by id: a model (glTF), a texture (onto the selection) or an HDRI (as the environment). The licence (CC0) goes into the metadata.', obj({ id: str('asset id from search_assets'), type: str('models | textures | hdris', ['models', 'textures', 'hdris']), resolution: str('1k | 2k | 4k (default 1k)'), size: num('textures: m of one tile (default 2)') }, ['id', 'type']), async (a) => {
+    if (!ctx.io?.netDownload) throw new Error('Needs the desktop app.');
+    const plan = IO2.polyhavenDownload(await ctx.io.netJson(IO2.polyhavenFiles(a.id)), a.type, a.resolution || '1k');
+    const local = await ctx.io.netDownload(plan.files);
+    if (plan.kind === 'hdri') return reg.run('set_environment', { path: local[0], background: true });
+    if (plan.kind === 'texture') return reg.run('set_texture', { path: local[0], size: [a.size || 2, a.size || 2] });
+    const before = new Set(ctx.doc.entities.map((e) => e.id));
+    await reg.run('import', { path: local[0] });
+    const made = ctx.doc.entities.find((e) => !before.has(e.id) && !e.parent);
+    if (made) made.meta = { ...(made.meta || {}), source: `Poly Haven ${a.id}`, licence: 'CC0' };
+    return made ? summary(ctx.doc, made) : { imported: a.id };
+  }, true);
+
+  def('create', 'generate_mesh', 'Text or image to 3D: a prop or a piece of furniture made by a 3D model service (Tripo, or a local server in AI settings) from words or a picture, brought in as a shape.', obj({ prompt: str('what to make: "a wooden garden chair"'), image: str('or an absolute image path'), position: v3('where'), height: num('scale it to this height, m') }), async (a) => {
+    if (!ctx.io?.generateMesh) throw new Error('Needs the desktop app.');
+    const path = await ctx.io.generateMesh({ prompt: a.prompt, image: a.image });
+    const before = new Set(ctx.doc.entities.map((e) => e.id));
+    await reg.run('import', { path });
+    const e = ctx.doc.entities.find((x) => !before.has(x.id) && !x.parent);
+    if (!e) return { path };
+    if (a.height) {
+      const b = D.worldBox(ctx.doc, e);
+      const k = a.height / Math.max(1e-6, b.max[1] - b.min[1]);
+      e.scale = e.scale.map((x) => x * k);
+    }
+    if (a.position) e.position = D.round3(a.position);
+    e.name = (a.prompt || 'Generated').slice(0, 40);
+    e.meta = { ...(e.meta || {}), source: 'generated', prompt: a.prompt || a.image };
+    return summary(ctx.doc, e);
+  }, true);
+
+  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to the copilot.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
+    if (!ctx.io?.transcribe) throw new Error('Needs the desktop app.');
+    return ctx.io.transcribe(a.path, a.lang);
+  });
+
+  def('view', 'walk_to', 'Stand somewhere at eye height (1.6 m above what is under it) and look towards a point: a walk-through view. The Walk tool moves on from there (arrow keys or WASD, drag to look).', obj({ position: v3('where to stand (x, z; y is found)'), look_at: v3('what to look at'), eye: num('eye height, m (default 1.6)') }, ['position']), (a) => {
+    if (!ctx.view?.walkTo) throw new Error('Needs the desktop app.');
+    return ctx.view.walkTo(a.position, a.look_at, a.eye ?? 1.6);
+  });
+
+  def('view', 'set_gizmo', 'On-canvas handles on the selection: drag arrows (move), rings (rotate) or boxes (scale). off hides them.', obj({ mode: str('move | rotate | scale | off', ['move', 'rotate', 'scale', 'off']) }, ['mode']), (a) => {
+    ctx.doc.settings.gizmo = a.mode === 'off' ? null : a.mode;
+    return { gizmo: ctx.doc.settings.gizmo };
+  }, true);
+
+  def('scene', 'list_autosaves', 'The automatic copies kept while you work (every five minutes, the last 20), newest first.', obj({}), async () => {
+    if (!ctx.io?.autosaves) throw new Error('Needs the desktop app.');
+    return ctx.io.autosaves();
+  });
+  def('scene', 'restore_autosave', 'Bring back an automatic copy (by name from list_autosaves); undo returns to now.', obj({ name: str('autosave name') }, ['name']), async (a) => {
+    if (!ctx.io?.readAutosave) throw new Error('Needs the desktop app.');
+    const saved = JSON.parse(await ctx.io.readAutosave(a.name));
+    Assets.unpack(saved.assets);
+    ctx.store.doc = saved.doc;
+    return { restored: a.name, entities: saved.doc.entities.length };
+  }, true);
+
+  def('scene', 'performance_report', 'How heavy the model is to draw: shapes, triangles, draw calls, frames per second, and what would help.', obj({}), () => {
+    const doc = ctx.doc;
+    let tris = 0;
+    for (const e of doc.entities) if (e.mesh) for (const f of e.mesh.f) tris += Math.max(1, f.length - 2);
+    const pts = doc.entities.reduce((s, e) => s + (e.pointcloud?.count || 0), 0);
+    const v = ctx.view?.stats?.() || {};
+    const tips = [];
+    if (tris > 2e6) tips.push('Over 2 million triangles: simplify_mesh on the heaviest imports.');
+    if (pts > 2e6) tips.push('A very big point cloud: import it again with a lower max_points.');
+    if ((v.calls || 0) > 3000) tips.push('Many separate shapes: make repeated ones components (they share geometry).');
+    return { entities: doc.entities.length, triangles: tris, points: pts, ...v, tips };
+  });
+
   // ---------------------------------------------------------------- insight: quantities, review, skills
   def('scene', 'report_quantities', 'Quantities: count, surface area (m²), volume (m³), length (m: curves and sweeps) and cost (metadata cost) per material, tag, metadata key, name or kind. "How many m³ of concrete?" format csv or a path writes a file.', obj({ group_by: { description: 'material (default) | tag | name | type | none | a metadata key (e.g. phase, or meta.phase)' }, ids: { ...ids, description: 'only these (default: the whole model)' }, include_hidden: bool('count hidden things too'), format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv or .json path to write') }), async (a) => {
     const report = quantities(ctx.doc, { by: a.group_by || 'material', ids: a.ids, hidden: !!a.include_hidden });
@@ -3009,9 +3269,9 @@ function registerCore(reg, ctx) {
     ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
     return ctx.view?.getCamera();
   });
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by', 'snap_underlays']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     return s;
   }, true);
@@ -3353,7 +3613,7 @@ function registerCore(reg, ctx) {
   def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
   def('file', 'open', 'Open a .glb/.gltf (MyModellerReel files reopen fully editable).', obj({ path: str('absolute path') }), (a) => needIO().open(a.path));
   // ---------------------------------------------------------------- files: models and exchange formats (#152)
-  const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'png', 'video'];
+  const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'usdz', 'png', 'video'];
   def('file', 'list_formats', 'File formats this app reads and writes, with their options (LandXML, IFC, DXF and models).', obj({}), () => [...F.listFormats(), { id: 'glb / gltf / obj / stl / fbx', label: '3D models (insert)', import: true, export: true }]);
   def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), Trimble JobXML (points) and FXL (feature library), GeoJSON and Shapefile (features with attributes), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | jxl | fxl | geojson | shp | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)') }), async (a) => {
     const doc = ctx.doc;
@@ -3406,7 +3666,7 @@ function registerCore(reg, ctx) {
   }, true);
   reg.commands.get('import').compound = true;
   reg.commands.get('generate_texture').compound = true;
-  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset']) reg.commands.get(n).compound = true;
+  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh']) reg.commands.get(n).compound = true;
   // symmetry while editing (#27): the mirror-image push_pull / move_elements across the shape's middle
   const mirrorOf = (e, axis) => {
     const k = { x: 0, y: 1, z: 2 }[axis];

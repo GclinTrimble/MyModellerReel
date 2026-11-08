@@ -490,3 +490,54 @@ test('power tools: the 3-point rectangle tool, the component library, the image-
   const r = await run('ai_render', { prompt: 'test' });
   assert.ok(!r.ok && !/Unknown channel/.test(r.error), `reaches the main process: ${r.error}`);
 });
+
+test('interop and scale: a scan and its ground, gizmo drag, tabs, web viewer, versions, compression, new channels', async () => {
+  await ok('new_model');
+  const samples = path.resolve('docs/how-to/samples');
+  const pc = await ok('import_point_cloud', { path: path.join(samples, 'site-scan.ply') });
+  assert.ok(pc.points > 30000);
+  const g = await ok('classify_ground', { id: pc.id });
+  assert.ok(g.size[1] < 4, `the roof is not ground: ${g.size[1]} m of relief`);
+  const walk = await ok('walk_to', { position: [10, 0, -5], look_at: [40, 2, -20] });
+  assert.ok(walk.position[1] > 2, `eye height above the ground: ${walk.position[1]}`);
+  // the move handle: drag the red arrow, one set_transform
+  await ok('new_model');
+  await ok('create_box', { width: 2, height: 2, depth: 2, name: 'Crate' });
+  await ok('set_camera', { position: [6, 5, 7], target: [0, 1, 0] });
+  await ok('select', { ids: ['Crate'] });
+  await ok('set_gizmo', { mode: 'move' });
+  await w.waitForTimeout(300);
+  const [a, b] = await w.evaluate(() => [[0.9, 0, 0], [3, 0, 0]].map((p) => window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p))).map((s) => [s.x, s.y]));
+  await w.mouse.move(...a);
+  await w.mouse.down();
+  await w.mouse.move((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+  await w.mouse.move(...b);
+  await w.mouse.up();
+  const x = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'Crate').position[0]);
+  assert.ok(x > 0.5, `dragged along x: ${x}`);
+  await ok('set_gizmo', { mode: 'off' });
+  // versions, tabs
+  await ok('save_version', { name: 'A' });
+  await ok('create_box', { width: 1, height: 1, depth: 1, name: 'Shed', position: [4, 0, 0] });
+  assert.deepEqual((await ok('compare_versions', { from: 'A' })).added, ['Shed']);
+  await ok('new_document', { name: 'Two' });
+  assert.equal(await w.locator('.doc-tabs button').count(), 2);
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.length), 0);
+  await ok('switch_document', { name: '1' });
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.length), 2);
+  await ok('close_document', { name: 'Two' });
+  // the web viewer page, a compressed GLB
+  const html = path.join(home, 'crate.html');
+  await ok('export_web_viewer', { path: html });
+  assert.ok(fs.statSync(html).size > 300000 && /OrbitControls/.test(fs.readFileSync(html, 'utf8')), 'three.js and the model inside');
+  const glb = path.join(home, 'crate.glb');
+  await ok('export', { format: 'glb', path: glb });
+  const c = await ok('compress_glb', { path: glb, method: 'meshopt' });
+  assert.ok(c.after > 0, 'compressed');
+  // the main-process channels added in this phase answer (no "Unknown channel")
+  for (const [name, args] of [['transcribe_audio', { path: path.join(samples, 'theme.wav') }], ['list_autosaves', {}]]) {
+    const r = await run(name, args);
+    assert.ok(r.ok || !/Unknown channel/.test(r.error), `${name}: ${r.error}`);
+  }
+  assert.ok(!fs.existsSync(path.join(samples, 'theme.wav.txt')), 'no transcript left beside the recording');
+});

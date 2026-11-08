@@ -8,6 +8,9 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as G from '../core/geometry.js';
 import * as D from '../core/document.js';
 import * as A from '../core/animation.js';
@@ -20,6 +23,19 @@ import { tiffInfo, demRead } from './underlays.js';
 const D2R = Math.PI / 180;
 const native = () => window.native;
 const base = (p) => p.split(/[\\/]/).pop();
+/** The mean of a texture's pixels as [r, g, b] 0–1 (sRGB), or null without an image. */
+function avgOf(tex) {
+  const img = tex?.image;
+  if (!img?.width) return null;
+  const c = document.createElement('canvas');
+  c.width = c.height = 16;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(img, 0, 0, 16, 16);
+  const d = g.getImageData(0, 0, 16, 16).data;
+  const s = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) s[k] += d[i + k];
+  return s.map((x) => x / 256 / 255);
+}
 const FILTERS = {
   glb: [{ name: 'GLB 3D model', extensions: ['glb'] }],
   gltf: [{ name: 'glTF (JSON)', extensions: ['gltf'] }],
@@ -38,6 +54,10 @@ const FILTERS = {
   audio: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
   schedule: [{ name: 'Schedules', extensions: ['csv', 'xml', 'xer', 'txt'] }],
   drawing2d: [{ name: '2D drawings', extensions: ['svg', 'dxf'] }],
+  cloud: [{ name: 'Point clouds', extensions: ['ply', 'las', 'xyz', 'pts', 'csv', 'txt'] }],
+  html: [{ name: 'Web page', extensions: ['html'] }],
+  usdz: [{ name: 'USDZ (AR Quick Look)', extensions: ['usdz'] }],
+  '3mf': [{ name: '3MF', extensions: ['3mf'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
@@ -127,7 +147,13 @@ export class IO {
   async load(path) {
     const buf = await native().invoke('file:read', path);
     const ext = path.split('.').pop().toLowerCase();
-    if (ext === 'glb' || ext === 'gltf') return new GLTFLoader().parseAsync(ext === 'gltf' ? new TextDecoder().decode(buf) : buf, '');
+    if (ext === 'glb' || ext === 'gltf') {
+      // compressed GLBs (#104) read back: meshopt and draco
+      const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+      this.draco ||= new DRACOLoader().setDecoderPath(new URL('../../node_modules/three/examples/jsm/libs/draco/gltf/', import.meta.url).href);
+      loader.setDRACOLoader(this.draco);
+      return loader.parseAsync(ext === 'gltf' ? new TextDecoder().decode(buf) : buf, '');
+    }
     if (ext === 'obj') return { scene: new OBJLoader().parse(new TextDecoder().decode(buf)) };
     if (ext === 'stl') return { scene: new THREE.Mesh(new STLLoader().parse(buf), new THREE.MeshStandardMaterial({ color: D.DEFAULT_COLOR })) };
     if (ext === 'fbx') return { scene: new FBXLoader().parse(buf, '') };
@@ -178,12 +204,18 @@ export class IO {
       if (!raw.f.length) return;
       const { mesh, origin } = G.recenter(raw);
       const m = [].concat(o.material)[0] || {};
+      // shortcut: texture maps are not kept (no UVs on our meshes); their average colour stands in for them
+      const color = m.color?.clone();
+      const avg = avgOf(m.map);
+      if (color && avg) color.multiply(new THREE.Color().setRGB(...avg, THREE.SRGBColorSpace));
+      const metal = avgOf(m.metalnessMap);
+      const rough = avgOf(m.roughnessMap);
       D.addEntity(doc, {
         name: o.name || `Part ${++count}`,
         parent: group.id,
         mesh,
         position: D.round3(origin),
-        material: { color: m.color ? `#${m.color.getHexString()}` : D.DEFAULT_COLOR, opacity: m.opacity ?? 1, metalness: m.metalness ?? 0, roughness: m.roughness ?? 0.85 },
+        material: { color: color ? `#${color.getHexString()}` : D.DEFAULT_COLOR, opacity: m.opacity ?? 1, metalness: +((m.metalness ?? 0) * (metal ? metal[2] : 1)).toFixed(2), roughness: +((m.roughness ?? 0.85) * (rough ? rough[1] : 1)).toFixed(2) },
       });
       count++;
     });
@@ -203,6 +235,11 @@ export class IO {
       const { root } = buildModel(this.app.store.doc, { edges: false });
       root.updateMatrixWorld(true);
       data = format === 'obj' ? new OBJExporter().parse(root) : new STLExporter().parse(root, { binary: true }).buffer;
+    } else if (format === 'usdz') {
+      // iPhone / iPad AR Quick Look (#101)
+      const { root } = buildModel(this.app.store.doc, { edges: false });
+      root.updateMatrixWorld(true);
+      data = (await new USDZExporter().parseAsync(root)).buffer;
     } else if (format === 'png') {
       const url = await this.app.viewport.screenshot({ width: 3840 });
       data = Uint8Array.from(atob(url.split(',')[1]), (c) => c.charCodeAt(0)).buffer;
@@ -292,6 +329,46 @@ export class IO {
     })();
     this.thumbs.set(name, job);
     return job;
+  }
+
+  // ---------------------------------------------------------------- Phase 15
+  compressGlb(path, method, out) {
+    return native().invoke('glb:compress', path, method, out);
+  }
+  netJson(url) {
+    return native().invoke('net:json', url);
+  }
+  netDownload(files) {
+    return native().invoke('net:download', files);
+  }
+  generateMesh(req) {
+    return native().invoke('mesh:generate', req);
+  }
+  transcribe(input, lang) {
+    return native().invoke('voice:transcribe', input, lang);
+  }
+  settings() {
+    return this.app.settings;
+  }
+  async setSettings(patch) {
+    this.app.settings = await native().invoke('settings:set', patch);
+    this.app.applySettings?.();
+    return this.app.settings;
+  }
+  autosaves() {
+    return native().invoke('autosave:list');
+  }
+  readAutosave(name) {
+    return native().invoke('autosave:read', name);
+  }
+  /** The web viewer's parts (#105): the model as GLB (with its animation) and three.js's own module sources. */
+  async webViewerParts() {
+    const bytes = new Uint8Array(await this.toGLTF(true, false));
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const src = async (p) => (await fetch(new URL(`../../node_modules/three/${p}`, import.meta.url))).text();
+    const [three, core, gltf, utils, skel, orbit] = await Promise.all(['build/three.module.js', 'build/three.core.js', 'examples/jsm/loaders/GLTFLoader.js', 'examples/jsm/utils/BufferGeometryUtils.js', 'examples/jsm/utils/SkeletonUtils.js', 'examples/jsm/controls/OrbitControls.js'].map(src));
+    return { glb64: btoa(s), three, core, addons: { 'GLTFLoader.js': gltf, 'BufferGeometryUtils.js': utils, 'SkeletonUtils.js': skel, 'OrbitControls.js': orbit } };
   }
 
   /** A picture from the image model in AI settings (main process: keys stay there). → { b64 } PNG. */

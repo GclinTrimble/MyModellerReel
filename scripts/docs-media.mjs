@@ -701,6 +701,121 @@ const PAGES = {
     await shot('Layer folders, and colour by layer');
     await run('set_style', { color_by: 'material' });
   },
+  async 'scan-to-ground'() {
+    await fresh();
+    await run('import_point_cloud', { path: `${SAMPLES}/site-scan.ply` });
+    await camera([78, 40, 38], [30, 2, -20]);
+    await none();
+    await shot('Import a point cloud: 38,130 coloured scan points');
+    await run('classify_ground', { id: 'site-scan' });
+    await none();
+    await shot('Ground surface from the cloud: the building and the trees are left out');
+    await run('set_properties', { ids: ['site-scan'], visible: false });
+    await shot('The ground alone, ready for contours, pads and cut and fill');
+    await run('set_properties', { ids: ['site-scan'], visible: true });
+    await run('walk_to', { position: [10, 0, -5], look_at: [40, 2, -20] });
+    await shot('Walk to: stand at eye height in the scan (Walk tool: arrows / WASD)');
+  },
+  async 'scanned-drawings-and-reading'() {
+    await fresh();
+    await run('import_image', { path: `${SAMPLES}/scanned-plan.jpg`, scale: '1:100' });
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('A scanned plan as an underlay (Drawings › Import image)');
+    const scan = (await run('get_scene')).entities.find((e) => e.type === 'underlay').id;
+    const v = await run('vectorise_underlay', { id: scan });
+    await run('set_properties', { ids: [scan], visible: false });
+    await none();
+    await shot(`Vectorise: the ink becomes ${v.curves} lines on the layer Scan`);
+    await fresh();
+    const pdf = (await run('import_pdf', { path: `${SAMPLES}/site-plan.pdf`, name: 'Site plan' })).underlays[0].id;
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    const r = await run('read_drawing', { id: pdf, use_ai: false });
+    await js(`window.mmr.app.ui.readDrawingDialog('${pdf}', ${JSON.stringify(r)}); return 1;`);
+    await shot('Read the drawing: its scale, title and north, from its text');
+    await clean();
+    await run('read_drawing', { id: pdf, use_ai: false, apply: true });
+    await run('set_style', { snap_underlays: true });
+    await run('zoom_extents', { ids: [pdf] });
+    await none();
+    await js("window.mmr.app.tools.set('line'); return 1;");
+    // the Line tool from one corner of the drawing to the next, with the snap marker showing
+    const [a, b] = await js("const v = window.mmr.app.viewport; const V = window.mmr.THREE.Vector3; v.vertexCache = null; v.snapPoints(); await new Promise((r) => setTimeout(r, 2500)); v.vertexCache = null; const ends = v.snapPoints().filter((s) => s.kind === 'Drawing end').map((s) => s.p); const c = new window.mmr.THREE.Box3().setFromPoints(ends).getCenter(new V()); const near = (q, not) => ends.filter((p) => !not || p.distanceTo(not) > 4).reduce((m, p) => (p.distanceTo(q) < m.distanceTo(q) ? p : m)); const a = near(c); const b = near(a.clone().add(new V(15, 0, 0)), a); return [a, b].map((p) => v.toScreen(p));");
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x: a.x, y: a.y }, { type: 'wait', ms: 200 }, { type: 'mouseDown', x: a.x, y: a.y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x: a.x, y: a.y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 200 }, { type: 'mouseMove', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, { type: 'wait', ms: 100 }, { type: 'mouseMove', x: b.x, y: b.y }] });
+    await shot('Applied: true size at 1:500; the Line tool snaps to the drawing\'s corners');
+    await req('POST', '/api/input', { events: [{ type: 'keyDown', keyCode: 'Escape' }, { type: 'keyUp', keyCode: 'Escape' }] });
+    await js("window.mmr.app.tools.set('select'); return 1;");
+  },
+  async 'share-viewer-ar-print'() {
+    await fresh();
+    await run('create_box', { width: 8, height: 3, depth: 6, name: 'House', color: '#e9e4d8' });
+    await run('create_box', { width: 8.6, height: 0.3, depth: 6.6, position: [0, 3, 0], name: 'Roof slab', color: '#5e6b73' });
+    await run('save_version', { name: 'Scheme A' });
+    await run('create_box', { width: 4, height: 2.6, depth: 5, position: [6.5, 0, 0.5], name: 'Garage', color: '#c9c2b4' });
+    await run('move', { ids: ['House'], by: [-0.5, 0, 0] });
+    await camera([14, 9, 16], [1.5, 1.5, 0]);
+    await none();
+    await js('window.mmr.app.ui.versionsDialog(); return 1;');
+    await shot('File › Versions: saved inside the file');
+    await clean();
+    const d = await run('compare_versions', { from: 'Scheme A' });
+    await js(`window.mmr.app.ui.infoDialog('Scheme A → now', ${JSON.stringify(`Added: ${d.added.join(', ') || '—'}\nChanged: ${d.changed.join(', ') || '—'}\nRemoved: ${d.removed.join(', ') || '—'}`)}); return 1;`);
+    await shot('Compare: what was added, changed and removed');
+    await clean();
+    const html = path.join(dir, 'viewer.html');
+    await run('export_web_viewer', { path: html });
+    await js(`const f = document.createElement('iframe'); f.id = 'doc-viewer'; f.src = ${JSON.stringify(`file:///${html.replace(/\\/g, '/')}`)}; const r = document.querySelector('.viewport-wrap').getBoundingClientRect(); Object.assign(f.style, { position: 'fixed', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', border: '0', zIndex: 50, background: '#fff' }); document.body.append(f); return 1;`);
+    await wait(3000);
+    await shot('Export a web viewer: one HTML file anyone can open and orbit');
+    await js("document.getElementById('doc-viewer')?.remove(); return 1;");
+    fs.rmSync(html, { force: true });
+  },
+  async 'free-assets-and-models'() {
+    await fresh();
+    await run('create_box', { width: 5, height: 0.12, depth: 4, name: 'Deck', color: '#d9d4c7' });
+    await camera([4.5, 3.2, 5.5], [0, 0.4, 0]);
+    await none();
+    await js("window.mmr.app.ui.assetsDialog(); const i = document.querySelector('#modal input'); i.value = 'picnic'; document.querySelector('#modal .btn.primary').click(); return 1;");
+    await wait(4000);
+    await shot('File › Free assets: search Poly Haven (CC0)');
+    await clean();
+    await run('import_asset', { id: 'wooden_picnic_table', type: 'models' });
+    await run('select', { ids: ['Deck'] });
+    await run('import_asset', { id: 'laminate_floor_02', type: 'textures' });
+    await none();
+    await shot('A model and a texture brought in, with their licence in the metadata');
+    await run('import_asset', { id: 'kloofendal_48d_partly_cloudy_puresky', type: 'hdris' }).catch(() => {});
+    await run('set_style', { grid: false });
+    await none();
+    await shot('An HDRI sky as the environment');
+    await run('set_style', { grid: true });
+    await run('set_environment', { preset: 'default' }).catch(() => {});
+  },
+  async 'tabs-handles-walk-and-language'() {
+    await fresh();
+    await run('create_box', { width: 4, height: 3, depth: 4, name: 'Pavilion', color: '#e9e4d8' });
+    await run('create_cylinder', { radius: 0.4, height: 3, position: [4, 0, 0], name: 'Column', color: '#b9b2a3' });
+    await camera([9, 6, 10], [1.5, 1.2, 0]);
+    await run('select', { ids: ['Pavilion'] });
+    await run('set_gizmo', { mode: 'move' });
+    await shot('Handles: drag an arrow to move (rings rotate, boxes scale)');
+    await run('set_gizmo', { mode: 'off' });
+    await run('new_document', { name: 'Option B' });
+    await run('create_cylinder', { radius: 3, height: 4, name: 'Rotunda', color: '#d9cdb8' });
+    await camera([9, 6, 10], [0, 1.5, 0]);
+    await none();
+    await shot('Document tabs: two models open, copy and paste between them');
+    await run('close_document', { name: 'Option B' });
+    await run('set_shortcut', { key: 'Ctrl+Shift+F', action: 'fillet_edges' });
+    await run('set_language', { lang: 'fr' });
+    await panel('settings');
+    await js("[...document.querySelectorAll('h3')].find((x) => /Langue|Language/.test(x.textContent))?.scrollIntoView(); return 1;");
+    await shot('Settings: menus in French, and your own keyboard shortcuts');
+    await run('set_language', { lang: 'en' });
+    await run('set_shortcut', { key: 'Ctrl+Shift+F', action: 'none' });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

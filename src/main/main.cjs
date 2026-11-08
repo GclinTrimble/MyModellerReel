@@ -26,7 +26,11 @@ const DEFAULTS = {
     toolset: 'auto', // tools for local models: auto (routed per request) | all | a toolset name
     // image models for AI render and AI textures (#64, #65): a local ComfyUI, or an OpenAI-compatible images API
     image: { provider: 'comfyui', comfyui: { baseUrl: 'http://127.0.0.1:8188', checkpoint: '' }, openai: { baseUrl: 'https://api.openai.com/v1', apiKey: '', model: 'gpt-image-1' } },
+    // text / image to 3D (#95): Tripo's API, or a local server that takes { prompt } or an image and answers a GLB
+    mesh: { provider: 'tripo', tripo: { apiKey: '' }, local: { url: 'http://127.0.0.1:8081/generate' } },
   },
+  shortcuts: {},
+  language: 'en',
   api: { port: 7717 },
   startup: { defaultApplied: false }, // Start with Windows was turned on once, at the first start of the installed app
 };
@@ -52,12 +56,14 @@ function publicSettings() {
   }
   s.ai.image.openai.hasKey = !!s.ai.image.openai.apiKey;
   delete s.ai.image.openai.apiKey;
+  s.ai.mesh.tripo.hasKey = !!s.ai.mesh.tripo.apiKey;
+  delete s.ai.mesh.tripo.apiKey;
   return s;
 }
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
 
 let win;
 function createWindow(page) {
@@ -106,6 +112,8 @@ ipcMain.handle('settings:get', () => publicSettings());
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
   if (patch?.ai?.image?.openai && !patch.ai.image.openai.apiKey) delete patch.ai.image.openai.apiKey;
+  if (patch?.ai?.mesh?.tripo && !patch.ai.mesh.tripo.apiKey) delete patch.ai.mesh.tripo.apiKey;
+  if (patch?.shortcuts) settings.shortcuts = {}; // replaced whole, so removed shortcuts go
   settings = merge(settings, patch);
   saveSettings();
   return publicSettings();
@@ -150,7 +158,7 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio and IFC files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ply|las|laz|e57|xyz|pts|csv|txt|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio and IFC files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
@@ -308,6 +316,124 @@ ipcMain.handle('ai:image', async (_, req) => {
   }
   throw new Error('ComfyUI took more than 10 minutes.');
 });
+
+// ---------------------------------------------------------------- Phase 15: compression, CC0 assets, text to 3D, voice, autosave history
+const TEMP_DIR = path.join(app.getPath('temp'), 'MyModellerReel');
+fs.mkdirSync(TEMP_DIR, { recursive: true });
+/** gltf-transform with every extension and the meshopt / draco codecs (loaded once, on first use). */
+let gltfIO = null;
+async function gltfTools() {
+  if (gltfIO) return gltfIO;
+  const [{ NodeIO }, { ALL_EXTENSIONS }, fns, { MeshoptEncoder, MeshoptDecoder }, draco] = await Promise.all([import('@gltf-transform/core'), import('@gltf-transform/extensions'), import('@gltf-transform/functions'), import('meshoptimizer'), import('draco3dgltf')]);
+  await MeshoptEncoder.ready;
+  await MeshoptDecoder.ready;
+  const d = draco.default || draco;
+  const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.encoder': MeshoptEncoder, 'meshopt.decoder': MeshoptDecoder, 'draco3d.encoder': await d.createEncoderModule(), 'draco3d.decoder': await d.createDecoderModule() });
+  return (gltfIO = { io, fns, MeshoptEncoder });
+}
+// GLB compression (#104): meshopt or draco, written back (or to out)
+ipcMain.handle('glb:compress', async (_, file, method = 'meshopt', out) => {
+  if (!/\.glb$/i.test(file) || (out && !/\.glb$/i.test(out))) throw new Error('compress_glb works on .glb files.');
+  const { io, fns, MeshoptEncoder } = await gltfTools();
+  const before = fs.statSync(file).size;
+  const doc = await io.read(file);
+  await doc.transform(fns.dedup(), fns.weld(), method === 'draco' ? fns.draco() : fns.meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+  await io.write(out || file, doc);
+  const after = fs.statSync(out || file).size;
+  return { path: out || file, method, before, after, saved: `${Math.round((1 - after / before) * 100)} %` };
+});
+// CC0 asset sources (#106): only these hosts, GET only
+const ASSET_HOST = /^https:\/\/(api\.polyhaven\.com|dl\.polyhaven\.org|cdn\.polyhaven\.com)\//;
+ipcMain.handle('net:json', async (_, url) => {
+  if (!ASSET_HOST.test(url)) throw new Error('That address is not an allowed asset source.');
+  const r = await fetch(url, { headers: { 'user-agent': 'MyModellerReel' }, signal: AbortSignal.timeout(60000) });
+  if (!r.ok) throw new Error(`The asset source answered ${r.status}.`);
+  return r.json();
+});
+ipcMain.handle('net:download', async (_, files) => {
+  const dir = path.join(TEMP_DIR, `asset-${Date.now()}`);
+  for (const f of files) {
+    if (!ASSET_HOST.test(f.url)) throw new Error('That address is not an allowed asset source.');
+    const rel = path.normalize(String(f.path)).replace(/^(\.\.[\\/])+/, '');
+    const dest = path.join(dir, rel);
+    if (!dest.startsWith(dir)) throw new Error('A file path outside the download folder.');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const r = await fetch(f.url, { headers: { 'user-agent': 'MyModellerReel' }, signal: AbortSignal.timeout(300000) });
+    if (!r.ok) throw new Error(`Download failed (${r.status}): ${path.basename(rel)}`);
+    fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
+  }
+  const first = path.join(dir, files[0].path);
+  // a glTF with its buffers and textures becomes one GLB, so the importer reads a single file
+  if (/\.gltf$/i.test(first)) {
+    const { io } = await gltfTools();
+    const glb = first.replace(/\.gltf$/i, '.glb');
+    await io.write(glb, await io.read(first));
+    return [glb];
+  }
+  return [first];
+});
+// text / image to 3D (#95): a GLB in the temp folder
+ipcMain.handle('mesh:generate', async (_, req) => {
+  const cfg = settings.ai.mesh;
+  const out = path.join(TEMP_DIR, `generated-${Date.now()}.glb`);
+  const IOm = await import('../core/interop.js');
+  if (cfg.provider === 'local') {
+    const body = req.image ? fs.readFileSync(req.image) : JSON.stringify({ prompt: req.prompt });
+    const r = await fetch(cfg.local.url, { method: 'POST', headers: { 'content-type': req.image ? 'application/octet-stream' : 'application/json' }, body, signal: AbortSignal.timeout(900000) }).catch((e) => { throw new Error(`The local 3D server at ${cfg.local.url} did not answer (${e.message}).`); });
+    if (!r.ok) throw new Error(`The local 3D server answered ${r.status}.`);
+    fs.writeFileSync(out, Buffer.from(await r.arrayBuffer()));
+    return out;
+  }
+  if (!cfg.tripo.apiKey) throw new Error('Add a Tripo API key in AI settings (or choose a local 3D server).');
+  const H = { authorization: `Bearer ${cfg.tripo.apiKey}` };
+  let token = null;
+  if (req.image) {
+    const form = new FormData();
+    form.append('file', new Blob([fs.readFileSync(req.image)], { type: 'image/png' }), path.basename(req.image));
+    token = (await (await fetch('https://api.tripo3d.ai/v2/openapi/upload', { method: 'POST', headers: H, body: form })).json()).data?.image_token;
+  }
+  const task = await (await fetch('https://api.tripo3d.ai/v2/openapi/task', { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify(IOm.meshTask({ prompt: req.prompt, imageToken: token })) })).json();
+  const id = task.data?.task_id;
+  if (!id) throw new Error(`The 3D service refused the task: ${task.message || JSON.stringify(task).slice(0, 200)}`);
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const url = IOm.meshResult(await (await fetch(`https://api.tripo3d.ai/v2/openapi/task/${id}`, { headers: H })).json());
+    if (url) {
+      fs.writeFileSync(out, Buffer.from(await (await fetch(url)).arrayBuffer()));
+      return out;
+    }
+  }
+  throw new Error('The 3D service took more than 15 minutes.');
+});
+// voice (#98): MyVoiceReel's command line engine, on this PC
+function voiceCli() {
+  const c = [path.join(process.env.LOCALAPPDATA || '', 'MyVoiceReel', 'myvoicereel-cli.exe'), path.join(process.env.ProgramFiles || '', 'MyVoiceReel', 'myvoicereel-cli.exe')];
+  return c.find((p) => fs.existsSync(p));
+}
+ipcMain.handle('voice:transcribe', async (_, input, lang) => {
+  const exe = voiceCli();
+  if (!exe) throw new Error('Voice needs MyVoiceReel installed (its speech engine runs on this PC).');
+  const audio = typeof input === 'string' ? input : path.join(TEMP_DIR, `voice-${Date.now()}.wav`);
+  if (typeof input !== 'string') fs.writeFileSync(audio, Buffer.from(input));
+  const txt = path.join(TEMP_DIR, `transcript-${Date.now()}.txt`); // never beside the user's recording
+  await new Promise((res, rej) => require('node:child_process').execFile(exe, ['transcribe', audio, '--txt', txt, ...(lang ? ['--lang', lang] : [])], { timeout: 120000, windowsHide: true }, (err, _o, se) => (err ? rej(new Error(`Speech engine: ${se || err.message}`)) : res())));
+  const text = fs.readFileSync(txt, 'utf8').trim();
+  fs.rmSync(txt, { force: true });
+  if (typeof input !== 'string') fs.rmSync(audio, { force: true });
+  return { text };
+});
+// autosave history (#107): a snapshot every few minutes, the last 20 kept
+const AUTOSAVES = path.join(USER, 'autosave');
+fs.mkdirSync(AUTOSAVES, { recursive: true });
+ipcMain.handle('autosave:write', (_, json) => {
+  const f = path.join(AUTOSAVES, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+  fs.writeFileSync(f, json);
+  const all = fs.readdirSync(AUTOSAVES).filter((x) => x.endsWith('.json')).sort();
+  for (const old of all.slice(0, Math.max(0, all.length - 20))) fs.rmSync(path.join(AUTOSAVES, old), { force: true });
+  return f;
+});
+ipcMain.handle('autosave:list', () => fs.readdirSync(AUTOSAVES).filter((x) => x.endsWith('.json')).sort().reverse().map((x) => ({ name: x.replace(/\.json$/, ''), size: fs.statSync(path.join(AUTOSAVES, x)).size })));
+ipcMain.handle('autosave:read', (_, name) => fs.readFileSync(path.join(AUTOSAVES, `${path.basename(String(name))}.json`), 'utf8'));
 
 // ---------------------------------------------------------------- local HTTP API (used by the MCP server and scripts)
 function startApi() {

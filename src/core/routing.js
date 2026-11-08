@@ -47,6 +47,12 @@ export const EXAMPLES = {
   animate: { target: 'Door', property: 'rotation', by: [0, 90, 0], start: 0, end: 2 },
   build_sequence: { ids: ['e1', 'e2', 'e3'], effect: 'rise', order: 'bottom-up' },
   turntable: { duration: 8 },
+  import_point_cloud: { path: 'C:/scans/site.las' },
+  classify_ground: { id: 'site', cell: 1 },
+  read_drawing: { id: 'Site plan', apply: true },
+  save_version: { name: 'Scheme A' },
+  import_asset: { id: 'wooden_picnic_table', type: 'models' },
+  walk_to: { position: [0, 0, 8], look_at: [0, 1.5, 0] },
   run_script: { code: 'for (let i = 0; i < 4; i++) await api.create_box({ width: 1, height: 1, depth: 1, position: [i * 2, 0, 0] });' },
 };
 
@@ -138,6 +144,18 @@ const SYNONYMS = {
   shadows: ['set_sun_time', 'animate_sun'],
   sketch: ['set_style'],
   lens: ['set_camera'],
+  scan: ['import_point_cloud', 'classify_ground', 'vectorise_underlay'],
+  lidar: ['import_point_cloud', 'classify_ground'],
+  cloud: ['import_point_cloud', 'classify_ground'],
+  scanned: ['vectorise_underlay', 'import_image'],
+  share: ['export_web_viewer', 'export'],
+  print: ['export', 'compress_glb'],
+  version: ['save_version', 'restore_version', 'compare_versions'],
+  versions: ['save_version', 'list_versions', 'compare_versions'],
+  tab: ['new_document', 'switch_document'],
+  free: ['search_assets', 'import_asset'],
+  walk: ['walk_to'],
+  french: ['set_language'],
 };
 
 const STOP = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'it', 'is', 'with', 'for', 'by', 'me', 'my', 'please', 'make', 'this', 'that', 'them']);

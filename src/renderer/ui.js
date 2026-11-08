@@ -6,6 +6,8 @@ export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, fmt } from './tools.js';
+import { t, LANGUAGES } from '../core/i18n.js';
+const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
 /** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
 export function h(sel, attrs = {}, ...kids) {
@@ -343,6 +345,37 @@ export class UI {
       arrayGrid: { label: 'Grid array…', icon: 'grid-four', run: form('array_grid', { nx: 3, ny: 1, nz: 2 }) },
       arrayPath: { label: 'Array along a curve…', icon: 'path', run: form('array_path', () => ({ path: sel().map((x) => app.entity(x)).find((e) => e?.curve)?.name || '', count: 10 })) },
       saveSelection: { label: 'Save the selection as a set…', icon: 'selection-plus', run: () => (sel().length ? this.commandDialog('save_selection', { name: `Set ${Object.keys(app.store.doc.selection_sets || {}).length + 1}` }) : this.toast('Select something first.')) },
+      importCloud: { label: 'Import a point cloud (PLY, LAS, XYZ)…', icon: 'dots-nine', run: async () => {
+        const path = await app.io.pick('cloud', false);
+        if (path) app.reg.run('import_point_cloud', { path }).then((r) => this.toast(`${r.points.toLocaleString()} points (of ${r.in_file.toLocaleString()})`)).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      groundFromCloud: { label: 'Ground surface from a point cloud', icon: 'mountains', run: () => {
+        const id = sel().find((x) => app.entity(x)?.pointcloud) || app.store.doc.entities.find((e) => e.pointcloud)?.id;
+        if (!id) return this.toast('Import or select a point cloud first.');
+        app.reg.run('classify_ground', { id }).then((r) => this.toast(`Ground: ${r.ground_points.toLocaleString()} points`)).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      vectorise: { label: 'Vectorise a scanned drawing', icon: 'scan', run: () => (sel().some((x) => app.entity(x)?.underlay) ? app.reg.run('vectorise_underlay', { id: sel().find((x) => app.entity(x)?.underlay) }).then((r) => this.toast(`${r.curves} lines traced`)).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select a drawing (underlay) first.')) },
+      readDrawing: { label: 'Read the drawing (scale, grid, title)…', icon: 'magnifying-glass', run: () => {
+        const id = sel().find((x) => app.entity(x)?.underlay);
+        if (!id) return this.toast('Select a drawing (underlay) first.');
+        app.reg.run('read_drawing', { id }).then((r) => this.readDrawingDialog(id, r)).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      snapDrawings: { label: 'Snap to drawings (without extracting)', icon: 'magnet', checked: () => !!app.store.doc.settings.snap_underlays, run: () => app.reg.run('set_style', { snap_underlays: !app.store.doc.settings.snap_underlays }) },
+      gizmoMove: { label: 'Handles: move', icon: 'arrows-out-cardinal', checked: () => app.store.doc.settings.gizmo === 'move', run: () => app.reg.run('set_gizmo', { mode: app.store.doc.settings.gizmo === 'move' ? 'off' : 'move' }) },
+      gizmoRotate: { label: 'Handles: rotate', icon: 'arrow-clockwise', checked: () => app.store.doc.settings.gizmo === 'rotate', run: () => app.reg.run('set_gizmo', { mode: app.store.doc.settings.gizmo === 'rotate' ? 'off' : 'rotate' }) },
+      gizmoScale: { label: 'Handles: scale', icon: 'arrows-out', checked: () => app.store.doc.settings.gizmo === 'scale', run: () => app.reg.run('set_gizmo', { mode: app.store.doc.settings.gizmo === 'scale' ? 'off' : 'scale' }) },
+      newTab: { label: 'New document tab', icon: 'browsers', key: 'Ctrl+Shift+N', run: run('new_document', {}) },
+      versions: { label: 'Versions…', icon: 'clock-counter-clockwise', run: () => this.versionsDialog() },
+      webViewer: { label: 'Export a web viewer (HTML)…', icon: 'globe', run: run('export_web_viewer', {}) },
+      exportUsdz: { label: 'Export USDZ (iPhone AR)…', icon: 'device-mobile', run: run('export', { format: 'usdz' }) },
+      export3mf: { label: 'Export 3MF (3D printing)…', icon: 'printer', run: run('export', { format: '3mf' }) },
+      compress: { label: 'Compress a GLB…', icon: 'file-zip', run: async () => {
+        const path = await app.io.pick('glb', false);
+        if (path) app.reg.run('compress_glb', { path }).then((r) => this.toast(`${r.method}: ${Math.round(r.before / 1024)} → ${Math.round(r.after / 1024)} KB (${r.saved} smaller)`)).catch((e) => this.toast(e.message, 'danger'));
+      } },
+      freeAssets: { label: 'Free assets (Poly Haven, CC0)…', icon: 'download-simple', run: () => this.assetsDialog() },
+      generateMesh: { label: 'Generate a 3D model from words…', icon: 'magic-wand', run: form('generate_mesh', { prompt: 'a wooden garden chair', height: 0.9 }) },
+      perf: { label: 'Performance report', icon: 'gauge', run: () => app.reg.run('performance_report', {}).then((r) => this.infoDialog('Performance', r)) },
       exportGeojson: { label: 'Export GeoJSON…', icon: 'export', run: run('export', { format: 'geojson' }) },
       exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
@@ -378,20 +411,20 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'startScreen', 'open', 'save', 'saveAs', '-', 'import', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportSection', 'exportDrawing', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', 'Export', 'exportGlb', 'exportGltf', 'exportObj', 'exportStl', 'exportLandxml', 'exportIfc', 'exportDxf', 'exportGeojson', 'exportShp', 'exportSection', 'exportDrawing', 'exportUsdz', 'export3mf', 'webViewer', 'compress', 'exportPng', 'exportVideo', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', '-', 'iso', 'top', 'front', 'right', 'left', 'back', '-', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'sectionFill', 'unsection', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'perf', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'timeline', 'theme'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
-      Drawings: ['importPdf', 'importImage', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
+      Site: ['survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'alignment', 'corridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Drawings: ['importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
       Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
     for (const name of Object.keys(this.menus)) {
-      const b = h('button', { 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: () => this.openMenu(name, b), onmouseenter: () => this.openName && this.openName !== name && this.openMenu(name, b) }, name);
+      const b = h('button', { 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: () => this.openMenu(name, b), onmouseenter: () => this.openName && this.openName !== name && this.openMenu(name, b) }, t(name));
       bar.append(b);
     }
     document.addEventListener('pointerdown', (e) => !e.target.closest('.menu-pop, .menubar') && this.closeMenu());
@@ -406,9 +439,9 @@ export class UI {
       ...this.menus[name].map((id) => {
         if (id === '-') return h('hr');
         const a = this.actions[id];
-        if (!a) return h('div.overline', {}, id);
+        if (!a) return h('div.overline', {}, t(id));
         const on = a.checked?.();
-        return h('button', { role: 'menuitem', onclick: () => (this.closeMenu(), a.run()) }, on ? icon('check') : icon(a.icon || 'dot-outline'), a.label, a.key ? h('span.key', {}, a.key) : null);
+        return h('button', { role: 'menuitem', onclick: () => (this.closeMenu(), a.run()) }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
       }),
     );
     const r = btn.getBoundingClientRect();
@@ -427,7 +460,7 @@ export class UI {
     for (const t of TOOLS) {
       if (group && t.group !== group) bar.append(h('hr'));
       group = t.group;
-      const b = iconBtn(t.icon, `${t.label} (${t.key})`, () => this.app.tools.set(t.id), false);
+      const b = iconBtn(t.icon, `${tr(t.label)}${t.key ? ` (${t.key})` : ''}`, () => this.app.tools.set(t.id), false);
       b.dataset.tool = t.id;
       bar.append(b);
     }
@@ -475,7 +508,7 @@ export class UI {
       ['help', 'Help', 'question'],
     ];
     this.$('dock-tabs').replaceChildren(
-      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id } }, icon(ic), label)),
+      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id }, 'aria-label': t(label) }, icon(ic), t(label))),
     );
   }
   show(tab, focus = false) {
@@ -785,6 +818,33 @@ export class UI {
   }
 
   /** Cross-sections (#122): one at a time, Previous / Next. */
+  /** What read_drawing found, with Apply. */
+  async readDrawingDialog(id, r) {
+    const rows = [['Scale', r.scale ? `1:${r.scale.ratio}` : '—'], ['Title', r.title || '—'], ['Date', r.date || '—'], ['North', r.north_angle !== undefined ? `${r.north_angle}°` : r.north ? 'a north mark' : '—'], ['Grid crossings', r.control.length ? r.control.map((c) => `E ${c.e} N ${c.n}`).join(' · ') : '—'], ['Read by', r.ai ? 'the text and the copilot' : r.ai_error ? `the text (copilot: ${r.ai_error})` : 'the text']];
+    const body = h('div', {}, ...rows.map(([k, v]) => h('div.legend-row', {}, h('strong', {}, `${k}: `), h('span', {}, v))));
+    if ((await this.modal('What the drawing says', body, [['Apply', 'ok'], ['Close', null]])) === 'ok') this.app.reg.run('read_drawing', { id, use_ai: false, apply: true }).then((x) => this.toast(x.applied.join(', ') || 'Nothing to apply.')).catch((e) => this.toast(e.message, 'danger'));
+  }
+  /** Poly Haven: search and bring one in. */
+  assetsDialog() {
+    const app = this.app;
+    const q = h('input', { placeholder: 'brick, oak, chair, sky…', value: '' });
+    const type = h('select', {}, ['models', 'textures', 'hdris'].map((v) => h('option', { value: v }, v)));
+    const list = h('div.asset-results', {}, h('p.small.muted', {}, 'Free CC0 assets from Poly Haven: models, textures (onto the selection) and HDRI skies.'));
+    const go = () => {
+      list.replaceChildren(h('p.small.muted', {}, 'Searching…'));
+      app.reg.run('search_assets', { query: q.value, type: type.value }).then((r) => list.replaceChildren(...(r.length ? r.map((x) => h('div.legend-row', {}, h('span.grow', {}, `${x.name} `, h('span.small.muted', {}, x.categories.slice(0, 3).join(', '))), h('button.btn.sm', { onclick: () => (this.closeModal(), app.reg.run('import_asset', { id: x.id, type: type.value }).then(() => this.toast(`${x.name} imported (CC0)`)).catch((e) => this.toast(e.message, 'danger'))) }, 'Import'))) : [h('p.small.muted', {}, 'Nothing found.')]))).catch((e) => list.replaceChildren(h('p.small', {}, e.message)));
+    };
+    q.onkeydown = (e) => e.key === 'Enter' && go();
+    this.modal('Free assets', h('div', {}, h('div.row', {}, q, type, h('button.btn.primary.sm', { onclick: go }, 'Search')), list));
+  }
+  /** Versions saved in the file: save, restore, compare. */
+  async versionsDialog() {
+    const app = this.app;
+    const vs = await app.reg.run('list_versions', {});
+    const rows = vs.map((v) => h('div.legend-row', {}, h('span.grow', {}, `${v.name} `, h('span.small.muted', {}, `${new Date(v.time).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${v.entities} shapes`)), h('button.btn.sm', { onclick: () => app.reg.run('compare_versions', { from: v.name }).then((d) => this.infoDialog(`${v.name} → now`, `Added: ${d.added.join(', ') || '—'}\nChanged: ${d.changed.join(', ') || '—'}\nRemoved: ${d.removed.join(', ') || '—'}`)) }, 'Compare'), h('button.btn.sm', { onclick: () => (this.closeModal(), app.reg.run('restore_version', { name: v.name })) }, 'Restore')));
+    const name = h('input', { placeholder: 'Version name', value: `Version ${vs.length + 1}` });
+    this.modal('Versions', h('div', {}, h('div.row', {}, name, h('button.btn.primary.sm', { onclick: () => (this.closeModal(), app.reg.run('save_version', { name: name.value }).then(() => this.toast(`Saved "${name.value}"`))) }, 'Save this version')), ...(rows.length ? rows : [h('p.small.muted', {}, 'No versions yet.')])));
+  }
   /** A picture (data URL) in a dialog: AI renders. */
   imagePreview(title, src) {
     this.modal(title, h('img.svg-preview', { src, alt: title }));
@@ -1184,7 +1244,12 @@ export class UI {
       h('h3', {}, 'API and MCP'),
       h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
       h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),
-      h('h3', {}, 'Appearance'),
+      h('h3', {}, t('Language')),
+      h('label.field', {}, h('span', {}, `${t('Language')} (menus and panels)`), h('select', { onchange: (e) => app.reg.run('set_language', { lang: e.target.value }) }, Object.entries(LANGUAGES).map(([v, l]) => h('option', { value: v, selected: v === (s.language || 'en') }, l)))),
+      h('h3', {}, t('Keyboard shortcuts')),
+      h('p.small.muted', {}, Object.keys(s.shortcuts || {}).length ? Object.entries(s.shortcuts).map(([k, v]) => `${k} → ${v}`).join(' · ') : 'None of your own yet.'),
+      h('div.row', {}, h('button.btn.sm', { onclick: () => this.commandDialog('set_shortcut', { key: 'Ctrl+Shift+F', action: 'filletEdges' }) }, icon('keyboard'), 'Add a shortcut…')),
+      h('h3', {}, t('Appearance')),
       h('label.row', {}, h('input', { type: 'checkbox', checked: document.documentElement.classList.contains('dark'), onchange: () => app.toggleTheme() }), 'Dark theme'),
       app.startup.supported &&
         h(

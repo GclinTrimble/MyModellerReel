@@ -58,7 +58,7 @@ export async function tiffInfo(bytes) {
   return { width: img.getWidth(), height: img.getHeight(), tags };
 }
 
-async function rasterOf(u, maxSide) {
+export async function rasterOf(u, maxSide) {
   const key = `${u.asset}|${u.page || 0}|${(u.hidden_layers || []).join(',')}`;
   if (!rasters.has(key)) rasters.set(key, draw(u, maxSide).catch((e) => (rasters.delete(key), Promise.reject(e))));
   return { key, canvas: await rasters.get(key) };

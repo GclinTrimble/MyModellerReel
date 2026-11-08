@@ -17,6 +17,10 @@ import { Assistant } from './ai.js';
 import { IO } from './io.js';
 import { drawLabels } from './labels.js';
 import { registerFont } from '../core/font.js';
+import { setLanguage } from '../core/i18n.js';
+import { comboOf } from '../core/shortcuts.js';
+import * as Assets from '../core/assets.js';
+import { newDoc as freshDoc } from '../core/document.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -26,6 +30,7 @@ app.info = await native.invoke('app:info');
 app.settings = await native.invoke('settings:get');
 app.account = await native.invoke('account:status');
 app.startup = await native.invoke('startup:get');
+setLanguage(app.settings.language || 'en');
 native.onAccount((s) => {
   app.account = s;
   if (app.ui.tab === 'settings') app.ui.renderDock();
@@ -87,7 +92,18 @@ app.ctx = {
     app.ai?.renderHead();
   },
   // The design review's vision half: four views + the checks, to the configured model (#100).
+  // several documents in tabs (#112): the one store swaps what it holds
+  docs: {
+    list: () => app.docTabs.map((d, i) => ({ n: i + 1, name: d.name, current: i === app.docAt, file: d.file || null })),
+    create: (name) => app.openDocTab(name),
+    switch: (ref) => app.switchDocTab(ref),
+    close: (ref) => app.closeDocTab(ref),
+  },
   ai: {
+    async vision({ system, text, images }) {
+      const protocol = protocolOf(app.settings.ai.provider);
+      return parseReply(protocol, await app.chat(visionRequest(protocol, { system, text, images }))).text;
+    },
     async review({ images, issues, stats }) {
       const protocol = protocolOf(app.settings.ai.provider);
       const text = `Scene: ${JSON.stringify(stats)}\nAutomatic checks found: ${issues.length ? issues.map((i) => `- ${i.message}`).join('\n') : 'nothing'}\nThe views are iso, front, top, right.`;
@@ -137,10 +153,84 @@ app.setContext = (id) => {
   app.select([]);
   app.ui.refresh();
 };
+// ---------------------------------------------------------------- document tabs (#112)
+app.docTabs = [{ name: 'Untitled', file: null }];
+app.docAt = 0;
+const tabStrip = document.createElement('div');
+tabStrip.className = 'doc-tabs';
+tabStrip.setAttribute('role', 'tablist');
+document.querySelector('.stage').prepend(tabStrip);
+app.renderDocTabs = () => {
+  tabStrip.hidden = app.docTabs.length < 2;
+  tabStrip.replaceChildren(
+    ...app.docTabs.map((d, i) => {
+      const b = document.createElement('button');
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', String(i === app.docAt));
+      b.textContent = i === app.docAt ? (app.file ? app.file.split(/[\\/]/).pop() : d.name) : d.name;
+      b.onclick = () => app.switchDocTab(i + 1);
+      const x = document.createElement('span');
+      x.className = 'x';
+      x.textContent = '×';
+      x.title = 'Close';
+      x.onclick = (e) => (e.stopPropagation(), app.closeDocTab(i + 1));
+      b.append(x);
+      return b;
+    }),
+  );
+};
+const parkDoc = () => Object.assign(app.docTabs[app.docAt], { doc: store.doc, undo: store.undoStack, redo: store.redoStack, file: app.file, dirty: app.dirty, name: app.file ? app.file.split(/[\\/]/).pop() : app.docTabs[app.docAt].name });
+const showDoc = (i) => {
+  const d = app.docTabs[i];
+  app.docAt = i;
+  store.doc = d.doc || freshDoc();
+  store.undoStack = d.undo || [];
+  store.redoStack = d.redo || [];
+  store.changed(); // rebuild the view first: the old tab's objects are not in this document
+  app.select([]);
+  app.setFile(d.file || null, !!d.dirty);
+  app.viewport.setCamera(store.doc.camera);
+  app.renderDocTabs();
+};
+const tabIndex = (ref) => {
+  if (ref === undefined || ref === null || ref === '') return app.docAt;
+  const n = Number(ref);
+  const i = Number.isInteger(n) && n >= 1 && n <= app.docTabs.length ? n - 1 : app.docTabs.findIndex((d) => d.name.toLowerCase() === String(ref).toLowerCase());
+  if (i < 0) throw new Error(`No open document "${ref}". Open: ${app.docTabs.map((d) => d.name).join(', ')}.`);
+  return i;
+};
+app.openDocTab = (name) => {
+  parkDoc();
+  app.docTabs.push({ name: name || `Untitled ${app.docTabs.length + 1}`, file: null });
+  showDoc(app.docTabs.length - 1);
+  return { documents: app.ctx.docs.list() };
+};
+app.switchDocTab = (ref) => {
+  const i = tabIndex(ref);
+  if (i !== app.docAt) parkDoc(), showDoc(i);
+  return { current: app.docTabs[i].name };
+};
+app.closeDocTab = (ref) => {
+  const i = tabIndex(ref);
+  if (app.docTabs.length === 1) throw new Error('This is the only document: use New model instead.');
+  if (i === app.docAt) {
+    app.docTabs.splice(i, 1);
+    showDoc(Math.min(i, app.docTabs.length - 1));
+  } else {
+    app.docTabs.splice(i, 1);
+    if (i < app.docAt) app.docAt--;
+    app.renderDocTabs();
+  }
+  return { documents: app.ctx.docs.list() };
+};
+app.renderDocTabs();
+
 app.setFile = (path, dirty) => {
   app.file = path;
   app.dirty = dirty;
-  const name = path ? path.split(/[\\/]/).pop() : 'Untitled';
+  app.docTabs && (app.docTabs[app.docAt].file = path);
+  queueMicrotask(() => app.renderDocTabs?.());
+  const name = path ? path.split(/[\\/]/).pop() : app.docTabs?.[app.docAt]?.name || 'Untitled';
   document.getElementById('doc-title').textContent = `${name}${dirty ? ' •' : ''}`;
   native.invoke('window:title', `${name} - MyModellerReel`);
 };
@@ -290,6 +380,15 @@ window.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.target.closest('input, textarea, select, [contenteditable]')) return;
+  // your own shortcuts (#110) win over the built-in ones
+  const mine = app.settings.shortcuts?.[comboOf(ev)];
+  if (mine) {
+    ev.preventDefault();
+    if (mine.startsWith('tool:')) return app.tools.set(mine.slice(5));
+    if (app.ui.actions[mine]) return app.ui.actions[mine].run();
+    return app.reg.run(mine, {}).catch((e) => app.ui.toast(e.message, 'danger'));
+  }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'm' && !ev.repeat) return ev.preventDefault(), app.ai.listen(); // hold to talk (#98)
   if (app.timeline.active && (app.timeline.selKeys.size || app.timeline.clipboard) && app.timeline.handleKey(ev)) return; // keyframes first
   const A_ = app.ui.actions;
   const combos = {
@@ -360,3 +459,35 @@ canvas.addEventListener('drop', (e) => {
   const p = hit ? hit.point : app.viewport.ray(e).intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
   app.reg.run('insert_asset', { name, ...(p ? { position: p.toArray().map((x) => Math.round(x * 100) / 100) } : {}) }).catch((err) => app.ui.toast(err.message, 'danger'));
 });
+
+// Ctrl+M released: stop listening and transcribe (#98)
+window.addEventListener('keyup', (ev) => (ev.key.toLowerCase() === 'm' || ev.key === 'Control') && app.ai.recorder && app.ai.hear());
+// the gizmo's drags become one set_transform each (#67)
+app.viewport.onGizmo = (id, t) => id && app.reg.run('set_transform', { id, ...t }).catch((e) => app.ui.toast(e.message, 'danger'));
+// language and shortcuts changed in Settings or by a command
+app.applySettings = () => {
+  setLanguage(app.settings.language || 'en');
+  for (const id of ['menubar', 'toolbar']) document.getElementById(id).replaceChildren();
+  app.ui.buildMenus();
+  app.ui.buildToolbar();
+  app.ui.buildTabs();
+  app.ui.renderDock();
+  app.ui.onTool?.(app.tools.id);
+};
+// autosave history (#107): a copy every five minutes while the model changes
+let lastHistory = '';
+setInterval(() => {
+  const json = JSON.stringify({ doc: store.doc, file: app.file });
+  if (json === lastHistory || !store.doc.entities.length) return;
+  lastHistory = json;
+  native.invoke('autosave:write', JSON.stringify({ doc: store.doc, file: app.file, assets: Assets.pack(store.doc) })).catch(() => {});
+}, 5 * 60 * 1000);
+// the local autosave holds no file bytes (scans, PDFs, audio): take them from the newest copy on disk
+if (store.doc.entities.length)
+  native
+    .invoke('autosave:list')
+    .then(async (l) => {
+      const s = l[0] && JSON.parse(await native.invoke('autosave:read', l[0].name));
+      if (s?.assets && Object.keys(s.assets).length) Assets.unpack(s.assets), app.viewport.rebuild();
+    })
+    .catch(() => {});

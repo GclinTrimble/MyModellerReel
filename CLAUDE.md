@@ -33,8 +33,11 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   chamfer cutters, mesh intersections), `svg.js` (SVG linework for import_2d), `sequencing.js` (easing curves, clips, constraints, shots, schedules, key editing), `physics.js` (cannon-es
   rigid bodies baked to keys), `sun.js` (solar position, sun studies), `look.js` (texture projection, light / effect / environment
   defaults), `imagegen.js` (ComfyUI and OpenAI-compatible image requests), `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
-  pages' catalogue; the pages are `docs/how-to/*.md`).
-- Entities: `type` mesh | group | curve | point | linework | underlay. A mesh may carry `derived` (its recipe): edits that change the mesh by hand
+  pages' catalogue; the pages are `docs/how-to/*.md`), `pointcloud.js` (PLY / LAS / XYZ reading, thinning, ground
+  classification), `raster.js` (scan to centre lines), `drawingclues.js` (scale, title, north and grid read from a
+  drawing's text), `interop.js` (3MF, the web viewer page, versions, Poly Haven and text-to-3D requests),
+  `shortcuts.js`, `i18n.js` (the French dictionary: `t()` on menus and panels).
+- Entities: `type` mesh | group | curve | point | linework | underlay | pointcloud (its points are an asset, like a PDF). A mesh may carry `derived` (its recipe): edits that change the mesh by hand
   must `R.bake(e)` first. Commands are atomic (`Store.rollback` on error) and journaled into `doc.journal`.
   A command that calls other commands (scripts, recipes, plugin commands) sets `compound: true`: its inner calls are
   one undo step and one journal entry with it, and it is rolled back whole even inside an AI turn.
@@ -48,7 +51,8 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 - `src/renderer/` `app.js` bootstrap and `window.mmr`, `viewport.js`, `tools.js`, `ui.js`, `timeline.js`, `ai.js`, `io.js`,
   `render.js` (frame-by-frame video: mediabunny for MP4/WebM, gifenc for GIF), `labels.js` (point and station labels), `help.js` (the Help panel and its Markdown), `underlays.js` (PDF pages and images as textures), `audio.js` (timeline audio and the render mix), `presentation.js` (textures, lights, environment, post effects, styles, the path tracer,
   seamless AI textures), `captions.js` (2D caption drawing shared
-  by the live overlay and the render). New browser modules need an entry in the importmap in `index.html`.
+  by the live overlay and the render), `scale.js` (BVH raycasting, point cloud drawing and snaps, PDF snaps, the
+  transform gizmo, walking). New browser modules need an entry in the importmap in `index.html`.
 - `src/main/stream.cjs` streams AI replies (text to the page as it arrives, the same reply object at the end).
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 

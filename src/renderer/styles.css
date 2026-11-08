@@ -100,7 +100,9 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .icon-btn.sm { width: var(--my-control-sm); height: var(--my-control-sm); }
 .icon-btn.sm .ph { font-size: var(--my-icon-sm); }
 
-.stage { display: grid; grid-template-rows: 1fr auto; min-width: 0; min-height: 0; }
+.stage { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
+.stage > .viewport-wrap { grid-row: 2; }
+.stage > .timeline { grid-row: 3; }
 .viewport-wrap { position: relative; min-height: 0; overflow: hidden; }
 #viewport { width: 100%; height: 100%; display: block; outline: none; cursor: default; }
 #viewport[data-tool='line'], #viewport[data-tool='rectangle'], #viewport[data-tool='circle'], #viewport[data-tool='polygon'],
@@ -436,3 +438,11 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .chips .chip-x { border: 0; background: none; padding: 2px 6px 2px 0; color: var(--my-text-muted); cursor: pointer; line-height: 1; }
 .chips .chip-x:hover { color: var(--my-danger, #c8553d); }
 .layer-folder { font-weight: 600; color: var(--my-text-muted); gap: var(--my-space-1); }
+.chat-input .rec { background: var(--my-danger, #c8553d); color: #fff; }
+/* document tabs (#112) */
+.doc-tabs { display: flex; gap: 2px; padding: 4px 8px 0; background: var(--my-surface-2); border-bottom: 1px solid var(--my-border); overflow-x: auto; }
+.doc-tabs[hidden] { display: none; }
+.doc-tabs button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--my-border); border-bottom: 0; border-radius: var(--my-radius-sm) var(--my-radius-sm) 0 0; background: var(--my-surface); padding: 4px 10px; font: inherit; font-size: var(--my-text-xs); color: var(--my-text-muted); cursor: pointer; }
+.doc-tabs button[aria-selected="true"] { color: var(--my-text); font-weight: 600; box-shadow: inset 0 2px 0 var(--my-accent); }
+.doc-tabs .x { color: var(--my-text-muted); padding: 0 2px; }
+.doc-tabs .x:hover { color: var(--my-danger, #c8553d); }

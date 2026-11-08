@@ -18,14 +18,14 @@ export function put(bytes, { mime = 'application/octet-stream', name = '' } = {}
 export const get = (id) => store.get(id);
 export function bytes(id) {
   const a = store.get(id);
-  if (!a) throw new Error(`The file of this underlay is missing (asset ${id}): import it again.`);
+  if (!a) throw new Error(`A file this model uses is missing (asset ${id}): import it again.`);
   return a.bytes;
 }
 export const ids = () => [...store.keys()];
 
 /** For saving: the assets a document uses, as base64. */
 export function pack(doc) {
-  const used = new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...lookAssets(doc)]);
+  const used = new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...doc.entities.filter((e) => e.pointcloud).map((e) => e.pointcloud.asset), ...(doc.animation?.audio || []).map((c) => c.asset), ...lookAssets(doc)]);
   const out = {};
   for (const id of used) {
     const a = store.get(id);

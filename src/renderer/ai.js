@@ -41,7 +41,9 @@ export class Assistant {
       }
     };
     this.sendBtn = h('button.btn.primary', { onclick: () => (this.busy ? this.stop() : this.send()), title: 'Send (Enter)' }, icon('paper-plane-right'));
-    const el = h('div.chat', {}, this.head, this.log, h('div.chat-input', {}, this.input, this.sendBtn));
+    // voice (#98): hold to talk; MyVoiceReel's engine turns it into text on this PC
+    this.micBtn = h('button.btn.icon-only', { title: 'Hold to talk (or hold Ctrl+M)', 'aria-label': 'Hold to talk', onpointerdown: (e) => (e.preventDefault(), this.listen()), onpointerup: () => this.hear(), onpointerleave: () => this.recorder && this.hear() }, icon('microphone'));
+    const el = h('div.chat', {}, this.head, this.log, h('div.chat-input', {}, this.input, this.micBtn, this.sendBtn));
     this.renderHead();
     this.empty();
     return el;
@@ -106,6 +108,43 @@ export class Assistant {
     this.log.append(node);
     this.log.scrollTop = this.log.scrollHeight;
     return node;
+  }
+
+  /** Start recording from the microphone (hold to talk). */
+  async listen() {
+    if (this.recorder) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks = [];
+      this.recorder = new MediaRecorder(stream);
+      this.recorder.ondataavailable = (e) => chunks.push(e.data);
+      this.recorder.onstop = async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        this.micBtn.classList.remove('rec');
+        if (!chunks.length) return;
+        try {
+          this.app.ui.setStatus('Listening… turning speech into text');
+          const wav = await toWav16k(new Blob(chunks));
+          const r = await this.app.io.transcribe(wav);
+          if (r.text) this.input.value = `${this.input.value ? `${this.input.value} ` : ''}${r.text}`;
+          this.input.focus();
+          this.app.ui.setStatus('');
+        } catch (e) {
+          this.app.ui.toast(e.message, 'danger');
+        }
+      };
+      this.recorder.start();
+      this.micBtn.classList.add('rec');
+    } catch (e) {
+      this.recorder = null;
+      this.app.ui.toast(`Microphone: ${e.message}`, 'danger');
+    }
+  }
+  /** Stop recording and transcribe. */
+  hear() {
+    const r = this.recorder;
+    this.recorder = null;
+    if (r && r.state !== 'inactive') r.stop();
   }
 
   async send() {
@@ -205,4 +244,35 @@ export class Assistant {
       this.sendBtn.title = 'Send (Enter)';
     }
   }
+}
+
+/** A recording → 16 kHz mono 16-bit WAV bytes (what the speech engine reads best). */
+export async function toWav16k(blob) {
+  const raw = await blob.arrayBuffer();
+  const ctx = new AudioContext();
+  const buf = await ctx.decodeAudioData(raw);
+  ctx.close();
+  const rate = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(buf.duration * rate)), rate);
+  const src = off.createBufferSource();
+  src.buffer = buf;
+  src.connect(off.destination);
+  src.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF');
+  out.setUint32(4, 36 + pcm.length * 2, true);
+  str(8, 'WAVEfmt ');
+  out.setUint32(16, 16, true);
+  out.setUint16(20, 1, true);
+  out.setUint16(22, 1, true);
+  out.setUint32(24, rate, true);
+  out.setUint32(28, rate * 2, true);
+  out.setUint16(32, 2, true);
+  out.setUint16(34, 16, true);
+  str(36, 'data');
+  out.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Uint8Array(out.buffer);
 }

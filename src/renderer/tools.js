@@ -8,6 +8,7 @@ import { arcThrough } from '../core/curves.js';
 import * as L from '../core/layers.js';
 import { formatLength } from '../core/units.js';
 import * as MD from '../core/modeling.js';
+import { floorAt, blocked } from './scale.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -57,6 +58,7 @@ export const TOOLS = [
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
   { id: 'orbit', label: 'Orbit (middle mouse)', key: 'O', icon: 'globe-simple', group: 'camera' },
+  { id: 'walk', label: 'Walk (arrows or WASD, drag to look)', key: '', icon: 'person-simple-walk', group: 'camera' },
   { id: 'zoomwin', label: 'Zoom window (drag a box)', key: 'Z', icon: 'magnifying-glass-plus', group: 'camera' },
   { id: 'pan', label: 'Pan (right mouse)', key: 'H', icon: 'hand', group: 'camera' },
 ];
@@ -95,9 +97,20 @@ export class Tools {
     this.label = document.getElementById('snap-label');
     this.box = document.getElementById('select-box');
     const c = this.vp.canvas;
-    c.addEventListener('pointerdown', (e) => e.button === 0 && this.guard(() => this.tool.down?.(e)));
-    c.addEventListener('pointermove', (e) => this.guard(() => this.tool.move?.(e)));
-    c.addEventListener('pointerup', (e) => e.button === 0 && this.guard(() => this.tool.up?.(e)));
+    // two fingers orbit and zoom (#113); the gizmo's handles (#67) win over the tool under them
+    this.touches = new Set();
+    const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging;
+    c.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') this.touches.add(e.pointerId);
+      if (e.button === 0 && !elsewhere()) this.guard(() => this.tool.down?.(e));
+    });
+    c.addEventListener('pointermove', (e) => !elsewhere() && this.guard(() => this.tool.move?.(e)));
+    c.addEventListener('pointerup', (e) => {
+      const multi = elsewhere();
+      this.touches.delete(e.pointerId);
+      if (e.button === 0 && !multi) this.guard(() => this.tool.up?.(e));
+    });
+    c.addEventListener('pointercancel', (e) => this.touches.delete(e.pointerId));
     c.addEventListener('dblclick', (e) => this.guard(() => this.tool.dbl?.(e)));
     c.addEventListener('pointerleave', () => (this.label.hidden = true));
     this.set('select');
@@ -114,6 +127,7 @@ export class Tools {
 
   set(id) {
     this.tool?.cancel?.();
+    this.tool?.leave?.();
     this.clear();
     this.lock = null;
     this.id = id;
@@ -880,6 +894,82 @@ class CameraTool {
   }
 }
 
+/** Walk (#69): at eye height, arrows or WASD to walk (Shift runs), drag to look; floors and steps followed, walls stop you. */
+class WalkTool {
+  hint = 'Walk: arrows or W A S D (Shift runs), drag to look around. Steps up to 45 cm are climbed; walls stop you.';
+  constructor(t) {
+    this.t = t;
+    this.eye = 1.6;
+    this.keys = new Set();
+    const vp = t.vp;
+    const cam = vp.camera.position;
+    const floor = floorAt(vp, cam.clone(), 0.5);
+    if (Math.abs(cam.y - floor - this.eye) > 0.3) vp.walkTo(cam.toArray(), vp.controls.target.toArray(), this.eye);
+    const dir = vp.controls.target.clone().sub(vp.camera.position);
+    this.yaw = Math.atan2(dir.x, dir.z);
+    this.pitch = Math.asin(Math.max(-0.99, Math.min(0.99, dir.normalize().y)));
+    this.down_ = (e) => {
+      const k = e.key.toLowerCase();
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd', 'shift'].includes(k) && !e.target.closest('input, textarea')) this.keys.add(k), e.preventDefault(), e.stopPropagation();
+    };
+    this.up_ = (e) => this.keys.delete(e.key.toLowerCase());
+    window.addEventListener('keydown', this.down_, true);
+    window.addEventListener('keyup', this.up_, true);
+    let last = performance.now();
+    const tick = (now) => {
+      if (this.gone) return;
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      this.step(dt);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+  look() {
+    const vp = this.t.vp;
+    const p = vp.camera.position;
+    const d = V(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch));
+    vp.controls.target.copy(p).add(d);
+    vp.camera.lookAt(vp.controls.target);
+    vp.dirty = true;
+  }
+  step(dt) {
+    const k = this.keys;
+    const f = (k.has('w') || k.has('arrowup') ? 1 : 0) - (k.has('s') || k.has('arrowdown') ? 1 : 0);
+    const s = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
+    if (!f && !s) return;
+    const vp = this.t.vp;
+    const speed = (k.has('shift') ? 4 : 1.4) * dt;
+    const fwd = V(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    const right = V(-Math.cos(this.yaw), 0, Math.sin(this.yaw));
+    const d = fwd.multiplyScalar(f * speed).addScaledVector(right, s * speed);
+    const p = vp.camera.position;
+    if (blocked(vp, p, d, this.eye)) return this.t.status('Something is in the way.');
+    const next = p.clone().add(d);
+    next.y = floorAt(vp, V(next.x, p.y - this.eye, next.z), 0.5) + this.eye;
+    p.copy(next);
+    this.look();
+  }
+  down(ev) {
+    this.drag = [ev.clientX, ev.clientY];
+  }
+  move(ev) {
+    if (!this.drag || !(ev.buttons & 1)) return;
+    this.yaw -= (ev.clientX - this.drag[0]) * 0.004;
+    this.pitch = Math.max(-1.3, Math.min(1.3, this.pitch - (ev.clientY - this.drag[1]) * 0.004));
+    this.drag = [ev.clientX, ev.clientY];
+    this.look();
+  }
+  up() {
+    this.drag = null;
+  }
+  leave() {
+    this.gone = true;
+    window.removeEventListener('keydown', this.down_, true);
+    window.removeEventListener('keyup', this.up_, true);
+  }
+}
+
 /** Survey point: click to add one (snapped), with the code typed in the Measurements box last. */
 class PointTool {
   hint = 'Click to add a survey point (it snaps to faces, ends and surfaces). Type a code first (e.g. GND, KERB B) to code the next points.';
@@ -1295,5 +1385,6 @@ const IMPL = {
   eraser: EraserTool,
   section: SectionTool,
   orbit: CameraTool,
+  walk: WalkTool,
   pan: CameraTool,
 };
