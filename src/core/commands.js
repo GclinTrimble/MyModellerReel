@@ -54,6 +54,7 @@ import * as D from './document.js';
 import * as A from './animation.js';
 import * as Q from './query.js';
 import { validate } from './schema.js';
+import * as LY from './layout.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
 export const GUIDE = `MyModellerReel conventions:
@@ -3254,21 +3255,82 @@ function registerCore(reg, ctx) {
   });
 
   // ---------------------------------------------------------------- view
-  def('view', 'set_camera', 'Place the camera: eye position, target, field of view or lens (mm on full frame: 24 wide, 35, 50 normal, 85 portrait), projection (perspective or parallel: no vanishing points) and two_point (verticals stay vertical).', obj({ position: v3('eye'), target: v3('look-at point'), fov: num('degrees'), lens: num('mm (sets fov)'), projection: str('perspective | parallel', ['perspective', 'parallel']), two_point: bool('two-point perspective') }), (a) => {
+  // multiple views (#160–#164): camera commands act on pane 1 (the main view) unless given another
+  const PANE = num('which view pane, 1–4 (default 1, the main view; see set_layout)');
+  const inPane = (n, fn) => (n && n !== 1 && ctx.view?.inPane ? ctx.view.inPane(n, fn) : fn());
+  const paneCfg = (n) => {
+    const L = LY.normalize(ctx.doc.settings.layout);
+    if (!Number.isInteger(n) || n < 1 || n > L.count) throw new Error(`There ${L.count === 1 ? 'is 1 pane' : `are ${L.count} panes`}: pane is 1 to ${L.count} (set_layout count adds panes).`);
+    return { L, cfg: L.panes[n - 1] };
+  };
+  def('view', 'set_camera', 'Place the camera: eye position, target, field of view or lens (mm on full frame: 24 wide, 35, 50 normal, 85 portrait), projection (perspective or parallel: no vanishing points) and two_point (verticals stay vertical). pane: another view pane.', obj({ position: v3('eye'), target: v3('look-at point'), fov: num('degrees'), lens: num('mm (sets fov)'), projection: str('perspective | parallel', ['perspective', 'parallel']), two_point: bool('two-point perspective (pane 1)'), pane: PANE }), (a) => {
     if (a.lens) a = { ...a, fov: Math.round(LK.fovOfLens(a.lens) * 100) / 100 };
-    for (const k of ['projection', 'two_point']) if (a[k] !== undefined) ctx.doc.settings[k === 'projection' ? 'projection' : 'two_point'] = a[k];
+    if (a.pane > 1) {
+      const { L, cfg } = paneCfg(a.pane);
+      if (a.projection) cfg.projection = a.projection;
+      ctx.doc.settings.layout = { ...ctx.doc.settings.layout, ...L };
+    } else for (const k of ['projection', 'two_point']) if (a[k] !== undefined) ctx.doc.settings[k === 'projection' ? 'projection' : 'two_point'] = a[k];
     if (!ctx.view) return ctx.doc.camera;
-    ctx.view.setCamera(a);
-    return ctx.view.getCamera();
+    return inPane(a.pane, () => (ctx.view.setCamera(a), ctx.view.getCamera()));
   });
-  def('view', 'set_view', 'Standard view: top, bottom, front, back, left, right, iso. Zooms to fit.', obj({ preset: str('view', ['top', 'bottom', 'front', 'back', 'left', 'right', 'iso']) }, ['preset']), (a) => {
-    ctx.view?.setView(a.preset);
-    return ctx.view?.getCamera();
+  def('view', 'set_view', 'Standard view: top, bottom, front, back, left, right, iso. Zooms to fit. pane: another view pane.', obj({ preset: str('view', ['top', 'bottom', 'front', 'back', 'left', 'right', 'iso']), pane: PANE }, ['preset']), (a) =>
+    inPane(a.pane, () => (ctx.view?.setView(a.preset), ctx.view?.getCamera())),
+  );
+  def('view', 'zoom_extents', 'Fit the model (or the given entities) in the view. pane: another view pane, or "all" to fit every pane.', obj({ ids, pane: { description: 'view pane 1–4, or "all"' } }), (a) => {
+    const fit = () => (ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null), ctx.view?.getCamera());
+    if (a.pane !== 'all') return inPane(a.pane, fit);
+    const n = LY.normalize(ctx.doc.settings.layout).count;
+    return Array.from({ length: n }, (_, i) => inPane(i + 1, fit));
   });
-  def('view', 'zoom_extents', 'Fit the model (or the given entities) in the view.', obj({ ids }), (a) => {
-    ctx.view?.zoomExtents(a.ids ? D.resolve(ctx.doc, a.ids).map((e) => e.id) : null);
-    return ctx.view?.getCamera();
+  def('view', 'set_layout', 'Split the view into 1 to 4 panes, each with its own camera: columns (side by side), rows (stacked), grid (2 × 2), main_left / main_right / main_top / main_bottom (one big pane, the others beside it). split: [x, y] where the bars are (fractions 0.15–0.85). max: maximise a pane (1–4), 0 restores. New panes show top, front and right (parallel). show_camera: draw the main camera in the other panes.', obj({ count: num('panes, 1–4'), arrangement: str('how they sit', LY.ARRANGEMENTS), split: { type: 'array', items: { type: 'number' }, description: '[x, y] fractions' }, max: num('maximise pane 1–4; 0 restores'), show_camera: bool('the main camera drawn in the other panes (default true)') }), (a) => {
+    const s = ctx.doc.settings;
+    const cur = LY.normalize(s.layout);
+    const next = { ...cur, show_camera: s.layout?.show_camera };
+    if (a.count !== undefined) {
+      if (a.count !== cur.count && a.arrangement === undefined) next.arrangement = undefined; // the usual arrangement for that many
+      next.count = a.count;
+      next.max = null;
+    }
+    if (a.arrangement) next.arrangement = a.arrangement;
+    if ((next.count !== cur.count || next.arrangement !== cur.arrangement) && !a.split) delete next.split; // that arrangement's own split
+    if (a.split) next.split = a.split;
+    if (a.max !== undefined) next.max = a.max > 0 ? a.max - 1 : null;
+    if (a.show_camera !== undefined) next.show_camera = a.show_camera;
+    s.layout = { ...LY.normalize(next), show_camera: next.show_camera !== false };
+    ctx.view?.syncPanes?.();
+    return ctx.view?.layoutInfo?.() ?? s.layout;
+  }, true);
+  def('view', 'set_pane', 'What one view pane shows: view perspective | top | front | back | left | right | bottom | iso (top, front… switch to parallel), or a saved scene; projection perspective | parallel; style shaded | wireframe.', obj({ pane: PANE, view: str('standard view', LY.VIEWS), scene: str('a saved scene to look from'), projection: str('perspective | parallel', ['perspective', 'parallel']), style: str('shaded | wireframe', ['shaded', 'wireframe']) }, ['pane']), (a) => {
+    const s = ctx.doc.settings;
+    const { L, cfg } = paneCfg(a.pane);
+    const scene = a.scene && ctx.doc.scenes.find((x) => x.name === a.scene);
+    if (a.scene && !scene) throw new Error(`No scene "${a.scene}". Scenes: ${ctx.doc.scenes.map((x) => x.name).join(', ') || 'none (add_scene)'}.`);
+    if (a.view) {
+      cfg.view = a.view;
+      delete cfg.scene;
+      if (a.view === 'perspective') cfg.projection = 'perspective';
+      else if (a.view !== 'iso') cfg.projection = 'parallel';
+    }
+    if (scene) Object.assign(cfg, { view: 'scene', scene: scene.name, projection: scene.camera.projection || 'perspective' });
+    if (a.projection) cfg.projection = a.projection;
+    if (a.style) cfg.style = a.style;
+    if (a.pane === 1 && (a.view || a.scene || a.projection)) s.projection = cfg.projection;
+    s.layout = { ...s.layout, ...L };
+    if (ctx.view?.syncPanes) {
+      ctx.view.syncPanes();
+      inPane(a.pane, () => {
+        if (scene) ctx.view.setCamera(scene.camera);
+        else if (a.view) ctx.view.setView(a.view === 'perspective' ? 'iso' : a.view);
+        else if (a.projection) ctx.view.setCamera({});
+      });
+    }
+    return ctx.view?.layoutInfo?.() ?? s.layout;
+  }, true);
+  def('view', 'detach_pane', 'Move a view pane (2–4) to its own window, e.g. for a second screen; detached: false docks it back (closing the window docks it too).', obj({ pane: PANE, detached: bool('default true') }, ['pane']), (a) => {
+    if (!ctx.view?.detachPane) throw new Error('Needs the desktop app.');
+    return ctx.view.detachPane(a.pane, a.detached !== false);
   });
+  def('view', 'get_layout', 'The view panes: how many, how they sit, and for each its view, projection, style, camera and whether it is in its own window.', obj({}), () => ctx.view?.layoutInfo?.() ?? LY.normalize(ctx.doc.settings.layout));
   def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
     for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by', 'snap_underlays']) if (a[k] !== undefined) s[k] = a[k];
@@ -3295,14 +3357,14 @@ function registerCore(reg, ctx) {
     if (!ctx.view?.viewForward) throw new Error('Needs the desktop app.');
     return ctx.view.viewForward();
   });
-  def('view', 'zoom_window', 'Zoom into a window of the view: corners as fractions of the view (0–1 from the left and top).', obj({ x0: num('left'), y0: num('top'), x1: num('right'), y1: num('bottom') }, ['x0', 'y0', 'x1', 'y1']), (a) => {
+  def('view', 'zoom_window', 'Zoom into a window of the view: corners as fractions of the view (0–1 from the left and top).', obj({ x0: num('left'), y0: num('top'), x1: num('right'), y1: num('bottom'), pane: PANE }, ['x0', 'y0', 'x1', 'y1']), (a) => {
     if (!ctx.view?.zoomWindow) throw new Error('Needs the desktop app.');
-    return ctx.view.zoomWindow(a.x0, a.y0, a.x1, a.y1);
+    return inPane(a.pane, () => ctx.view.zoomWindow(a.x0, a.y0, a.x1, a.y1));
   });
-  def('view', 'go_to_scene', 'Jump the camera to a saved scene.', obj({ name: str('scene name') }, ['name']), (a) => {
+  def('view', 'go_to_scene', 'Jump the camera to a saved scene.', obj({ name: str('scene name'), pane: PANE }, ['name']), (a) => {
     const s = ctx.doc.scenes.find((x) => x.name === a.name);
     if (!s) throw new Error(`No scene "${a.name}".`);
-    ctx.view?.setCamera(s.camera);
+    inPane(a.pane, () => ctx.view?.setCamera(s.camera));
     return s;
   });
 

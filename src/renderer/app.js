@@ -15,6 +15,7 @@ import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
 import { IO } from './io.js';
+import { Panes } from './panes.js';
 import { drawLabels } from './labels.js';
 import { registerFont } from '../core/font.js';
 import { setLanguage } from '../core/i18n.js';
@@ -307,6 +308,7 @@ store.on((doc) => {
   app.viewport.pose = app.timeline.active ? A.evaluate(doc, app.timeline.time) : null;
   app.viewport.rebuild();
   app.viewport.showProposal(store.proposalDiff());
+  app.panes?.sync(); // undo, open or a command changed the layout (#160)
   app.ui.refresh();
   app.timeline.render();
   app.setFile(app.file, true);
@@ -431,6 +433,8 @@ app.ai = new Assistant(app);
 app.help = new Help(app);
 app.ui.init();
 app.tools = new Tools(app);
+app.panes = new Panes(app);
+app.panes.sync();
 app.viewport.rebuild();
 app.ui.show('ai');
 app.ui.refresh();

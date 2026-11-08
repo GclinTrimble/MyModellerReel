@@ -541,3 +541,47 @@ test('interop and scale: a scan and its ground, gizmo drag, tabs, web viewer, ve
   }
   assert.ok(!fs.existsSync(path.join(samples, 'theme.wav.txt')), 'no transcript left beside the recording');
 });
+
+test('multiple views: four panes, drawing in the plan, maximise, a detached window', async () => {
+  await ok('new_model');
+  await ok('create_box', { width: 4, height: 3, depth: 6, name: 'House' });
+  const l = await ok('set_layout', { count: 4 });
+  assert.equal(l.arrangement, 'grid');
+  assert.deepEqual(l.panes.map((p) => p.view), ['perspective', 'top', 'front', 'right']);
+  assert.equal(await w.locator('.pane-canvas').count(), 3);
+  assert.equal(await w.locator('.pane-head').count(), 4);
+  await ok('zoom_extents', { pane: 'all' });
+  // a rectangle drawn with the mouse in the plan (pane 2) lands flat on the ground, in plan proportions
+  await w.evaluate(() => window.mmr.app.tools.set('rectangle'));
+  const b = await w.locator('.pane-canvas').first().boundingBox();
+  const at = (fx, fy) => [b.x + b.width * fx, b.y + b.height * fy];
+  await w.mouse.move(...at(0.2, 0.75));
+  await w.mouse.click(...at(0.2, 0.75));
+  await w.mouse.move(...at(0.4, 0.8));
+  await w.mouse.move(...at(0.6, 0.85));
+  await w.mouse.click(...at(0.6, 0.85));
+  await w.waitForTimeout(400);
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  const rect = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'Rectangle')?.mesh.v);
+  assert.ok(rect, `a rectangle was drawn in the plan pane: ${await w.evaluate(() => window.mmr.doc.entities.map((e) => e.name).join(', '))}`);
+  const xs = rect.map((v) => v[0]);
+  const zs = rect.map((v) => v[2]);
+  const ratio = (Math.max(...xs) - Math.min(...xs)) / (Math.max(...zs) - Math.min(...zs));
+  assert.ok(rect.every((v) => Math.abs(v[1]) < 1e-6), 'on the ground');
+  assert.ok(Math.abs(ratio - (0.4 * b.width) / (0.1 * b.height)) < 0.5, `plan proportions: ${ratio}`);
+  // a pane's view, maximise, undo
+  await ok('set_pane', { pane: 4, view: 'left', style: 'wireframe' });
+  await ok('set_layout', { max: 3 });
+  assert.equal(await w.locator('.pane-canvas:visible').count(), 1);
+  await ok('set_layout', { max: 0 });
+  // its own window, then docked again by closing it
+  const d = await ok('detach_pane', { pane: 2 });
+  assert.equal(d.panes[1].detached, true);
+  assert.equal(await w.locator('.pane-canvas').count(), 2);
+  await w.evaluate(() => window.mmr.app.panes.extra[0].win.close());
+  await w.waitForTimeout(500);
+  assert.equal((await ok('get_layout')).panes[1].detached, false);
+  assert.equal(await w.locator('.pane-canvas').count(), 3);
+  await ok('set_layout', { count: 1 });
+  assert.equal(await w.locator('.pane-canvas').count(), 0);
+});

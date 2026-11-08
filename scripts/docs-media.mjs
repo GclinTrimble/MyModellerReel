@@ -816,6 +816,55 @@ const PAGES = {
     await run('set_language', { lang: 'en' });
     await run('set_shortcut', { key: 'Ctrl+Shift+F', action: 'none' });
   },
+  async 'multiple-views'() {
+    await fresh();
+    await run('create_box', { width: 6, height: 3, depth: 4, name: 'Studio', color: '#e9e4d8' });
+    await run('create_box', { width: 2, height: 5, depth: 2, position: [4.5, 0, -1], name: 'Tower', color: '#b9b2a3' });
+    await run('create_cylinder', { radius: 0.8, height: 2.5, position: [-5, 0, 2], name: 'Tank', color: '#9aa3ab' });
+    await camera([12, 8, 13], [0, 1.5, 0]);
+    await none();
+    await shot('One view: the model in 3D');
+    await run('set_layout', { count: 4, arrangement: 'grid' });
+    await run('zoom_extents', { pane: 'all' });
+    await shot('View › Four views: 3D, plan, front and right side, each with its own camera');
+    // draw a rectangle in the plan (pane 2) with real clicks
+    const r = await js("window.mmr.app.tools.set('rectangle'); const b = window.mmr.app.panes.extra[0].canvas.getBoundingClientRect(); return [b.left, b.top, b.width, b.height];");
+    const at = (fx, fy) => [Math.round(r[0] + r[2] * fx), Math.round(r[1] + r[3] * fy)];
+    const [x0, y0] = at(0.18, 0.72);
+    const [x1, y1] = at(0.5, 0.88);
+    await req('POST', '/api/input', { events: [
+      { type: 'mouseMove', x: x0, y: y0 }, { type: 'wait', ms: 150 },
+      { type: 'mouseDown', x: x0, y: y0, button: 'left', clickCount: 1 }, { type: 'mouseUp', x: x0, y: y0, button: 'left', clickCount: 1 }, { type: 'wait', ms: 150 },
+      { type: 'mouseMove', x: (x0 + x1) >> 1, y: (y0 + y1) >> 1 }, { type: 'wait', ms: 100 }, { type: 'mouseMove', x: x1, y: y1 }, { type: 'wait', ms: 150 },
+      { type: 'mouseDown', x: x1, y: y1, button: 'left', clickCount: 1 }, { type: 'mouseUp', x: x1, y: y1, button: 'left', clickCount: 1 }, { type: 'wait', ms: 300 },
+    ] });
+    await js("window.mmr.app.tools.set('select'); return 1;");
+    await none();
+    await shot('Draw in the plan: the rectangle shows in every view');
+    await run('set_layout', { count: 3, arrangement: 'main_left', split: [0.66, 0.5] });
+    await run('set_pane', { pane: 3, view: 'iso', projection: 'perspective', style: 'wireframe' });
+    await run('zoom_extents', { pane: 'all' });
+    await shot('Three views: each pane chooses its view and style; drag the bar to resize');
+    await run('set_layout', { max: 2 });
+    await run('zoom_extents', { pane: 2 });
+    await shot('Double-click a title to maximise a pane, again to restore');
+    await run('set_layout', { max: 0 });
+    await run('detach_pane', { pane: 2 });
+    await run('zoom_extents', { pane: 2 });
+    const file = await shot('Pane 2 in its own window (bottom right): put it on a second screen');
+    const det = await req('GET', '/api/window-screenshot?title=View%202');
+    if (ffmpeg && det.subarray(1, 4).toString() === 'PNG') {
+      // the two real windows in one frame: the detached one in the corner, as on a second screen
+      const tmp = path.join(dir, 'detached.png');
+      const out = path.join(dir, 'pip.png');
+      fs.writeFileSync(tmp, det);
+      execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', file, '-i', tmp, '-filter_complex', '[1]scale=iw*0.42:-1,pad=iw+6:ih+6:3:3:color=0x1d262c[d];[0][d]overlay=W-w-60:H-h-70', out]);
+      fs.renameSync(out, file);
+      fs.rmSync(tmp);
+    }
+    await run('detach_pane', { pane: 2, detached: false });
+    await run('set_layout', { count: 1 });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

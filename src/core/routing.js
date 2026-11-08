@@ -53,6 +53,9 @@ export const EXAMPLES = {
   save_version: { name: 'Scheme A' },
   import_asset: { id: 'wooden_picnic_table', type: 'models' },
   walk_to: { position: [0, 0, 8], look_at: [0, 1.5, 0] },
+  set_layout: { count: 4, arrangement: 'grid' },
+  set_pane: { pane: 2, view: 'top' },
+  detach_pane: { pane: 2 },
   run_script: { code: 'for (let i = 0; i < 4; i++) await api.create_box({ width: 1, height: 1, depth: 1, position: [i * 2, 0, 0] });' },
 };
 
@@ -156,6 +159,14 @@ const SYNONYMS = {
   free: ['search_assets', 'import_asset'],
   walk: ['walk_to'],
   french: ['set_language'],
+  split: ['set_layout', 'set_pane'],
+  pane: ['set_layout', 'set_pane', 'detach_pane'],
+  panes: ['set_layout', 'set_pane', 'get_layout'],
+  quad: ['set_layout'],
+  views: ['set_layout', 'set_pane'],
+  detach: ['detach_pane'],
+  screen: ['detach_pane'],
+  monitor: ['detach_pane'],
 };
 
 const STOP = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'it', 'is', 'with', 'for', 'by', 'me', 'my', 'please', 'make', 'this', 'that', 'them']);

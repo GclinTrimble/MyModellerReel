@@ -15,6 +15,7 @@ import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
 import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
 import { invert as invertAffine } from '../core/underlay.js';
+import { viewDirection } from '../core/layout.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -258,7 +259,9 @@ export function skyTexture(top, bottom) {
 export class Viewport {
   constructor(canvas, store) {
     this.canvas = canvas;
+    this.input = canvas; // the canvas of the pane being worked in (#162): picking and screen maths use it
     this.store = store;
+    this.extra = []; // the other panes (#160), drawn after this one; see panes.js
     // alpha: render_video can leave the background transparent
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -327,7 +330,7 @@ export class Viewport {
     this.scene.add(this.ghosts);
 
     this.setCamera(store.doc.camera);
-    new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+    new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
     const loop = () => {
       requestAnimationFrame(loop);
@@ -338,7 +341,7 @@ export class Viewport {
 
   resize() {
     if (this.rendering) return; // render_video owns the size until it is done
-    const r = this.canvas.parentElement.getBoundingClientRect();
+    const r = { width: this.canvas.clientWidth, height: this.canvas.clientHeight };
     this.renderer.setSize(r.width, r.height, false);
     this.setAspect(r.width / Math.max(1, r.height));
     this.dirty = true;
@@ -366,6 +369,24 @@ export class Viewport {
     this.lastFrame = now;
     this.draw();
     for (const fn of this.listeners) fn();
+    for (const p of this.extra) if (p.visible) this.withPane(p, () => p.draw());
+  }
+
+  /**
+   * Run fn as if another pane were this one (#162): its camera, controls and canvas, so tools, picking and camera
+   * commands work there. The pane keeps whichever camera (perspective or parallel) fn left it with.
+   */
+  withPane(p, fn) {
+    if (!p || p.main) return fn();
+    const keep = { camera: this.camera, controls: this.controls, persp: this.persp, ortho: this.ortho, input: this.input, paneNow: this.paneNow, mainState: this.mainState };
+    if (!this.paneNow) this.mainState = keep;
+    Object.assign(this, { camera: p.camera, controls: p.controls, persp: p.persp, ortho: p.ortho, input: p.canvas, paneNow: p });
+    try {
+      return fn();
+    } finally {
+      p.camera = this.camera;
+      Object.assign(this, keep);
+    }
   }
 
   /** One frame as the document wants it: projection, two-point perspective, effects; light markers not in renders. */
@@ -378,9 +399,17 @@ export class Viewport {
     this.look.draw(this.store.doc);
   }
 
+  /** The main pane's camera and target, even while another pane is being worked in. */
+  mainCam() {
+    return this.paneNow ? this.mainState.camera : this.camera;
+  }
+  mainTarget() {
+    return (this.paneNow ? this.mainState.controls : this.controls).target;
+  }
+
   /** Parallel projection (#68): an orthographic camera that frames what the perspective one did. */
   syncProjection() {
-    const want = this.store.doc.settings.projection === 'parallel';
+    const want = (this.paneNow ? this.paneNow.cfg.projection : this.store.doc.settings.projection) === 'parallel';
     if (want === this.camera.isOrthographicCamera) return;
     const from = this.camera;
     const to = want ? this.ortho : this.persp;
@@ -594,8 +623,8 @@ export class Viewport {
       position: D.round3(this.camera.position.toArray()),
       target: D.round3(this.controls.target.toArray()),
       fov: this.persp.fov,
-      projection: this.store.doc.settings.projection || 'perspective',
-      two_point: !!this.store.doc.settings.two_point,
+      projection: (this.paneNow ? this.paneNow.cfg.projection : this.store.doc.settings.projection) || 'perspective',
+      two_point: !this.paneNow && !!this.store.doc.settings.two_point,
     };
   }
   setCamera({ position, target, fov }) {
@@ -670,13 +699,12 @@ export class Viewport {
     this.setCamera({ position: c.clone().add(d.multiplyScalar(dist)).toArray(), target: c.toArray() });
   }
   setView(preset) {
-    const dirs = { top: [0, 1, 0.0001], bottom: [0, -1, 0.0001], front: [0, 0, 1], back: [0, 0, -1], left: [-1, 0, 0], right: [1, 0, 0], iso: [1, 0.8, 1] };
-    this.zoomExtents(null, new THREE.Vector3(...(dirs[preset] || dirs.iso)).normalize());
+    this.zoomExtents(null, new THREE.Vector3(...(viewDirection(preset) || viewDirection('iso'))).normalize());
   }
 
   // ---------------------------------------------------------------- picking & projection
   ndc(ev) {
-    const r = this.canvas.getBoundingClientRect();
+    const r = this.input.getBoundingClientRect();
     return new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   }
   ray(ev) {
@@ -737,13 +765,13 @@ export class Viewport {
 
   /** pick() at a viewport point given as fractions (0..1 from the left and top). */
   pickAt(x, y) {
-    const r = this.canvas.getBoundingClientRect();
+    const r = this.input.getBoundingClientRect();
     this.modelRoot.updateMatrixWorld(true);
     return this.pick({ clientX: r.left + x * r.width, clientY: r.top + y * r.height });
   }
   toScreen(p) {
     const v = p.clone().project(this.camera);
-    const r = this.canvas.getBoundingClientRect();
+    const r = this.input.getBoundingClientRect();
     return { x: ((v.x + 1) / 2) * r.width + r.left, y: ((1 - v.y) / 2) * r.height + r.top, behind: v.z > 1 };
   }
   /** World-space vertices and edge midpoints of visible shapes, for inference snapping. */

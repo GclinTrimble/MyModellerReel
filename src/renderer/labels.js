@@ -8,9 +8,10 @@ export function drawLabels(app) {
   const c = document.getElementById('label-layer');
   if (!c) return;
   const vp = app.viewport;
-  const r = c.getBoundingClientRect();
+  const lr = c.getBoundingClientRect();
+  const r = vp.canvas.getBoundingClientRect(); // the main pane (#160): the layer covers the whole view area
   const dpr = window.devicePixelRatio || 1;
-  if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)) (c.width = Math.round(r.width * dpr)), (c.height = Math.round(r.height * dpr));
+  if (c.width !== Math.round(lr.width * dpr) || c.height !== Math.round(lr.height * dpr)) (c.width = Math.round(lr.width * dpr)), (c.height = Math.round(lr.height * dpr));
   const g = c.getContext('2d');
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, c.width, c.height);
@@ -18,6 +19,10 @@ export function drawLabels(app) {
   const doc = app.store.doc;
   const mode = doc.settings.point_labels ?? 'name';
   g.scale(dpr, dpr);
+  g.translate(r.left - lr.left, r.top - lr.top);
+  g.beginPath();
+  g.rect(0, 0, r.width, r.height);
+  g.clip();
   g.font = '600 11px "Open Sans", system-ui, sans-serif';
   g.textBaseline = 'middle';
   const taken = new Set();

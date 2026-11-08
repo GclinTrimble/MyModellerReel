@@ -96,24 +96,30 @@ export class Tools {
     this.paint = { color: '#c8553d', opacity: 1, metalness: 0, roughness: 0.8 };
     this.label = document.getElementById('snap-label');
     this.box = document.getElementById('select-box');
-    const c = this.vp.canvas;
-    // two fingers orbit and zoom (#113); the gizmo's handles (#67) win over the tool under them
+    // two fingers orbit and zoom (#113)
     this.touches = new Set();
+    this.bind(this.vp.canvas, null);
+    this.set('select');
+  }
+
+  /** The tools work on a pane's canvas (#162): each event runs with that pane's camera. */
+  bind(c, pane) {
+    // the gizmo's handles (#67) win over the tool under them
     const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging;
+    const inPane = (fn) => this.guard(() => this.vp.withPane(pane, fn));
     c.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') this.touches.add(e.pointerId);
-      if (e.button === 0 && !elsewhere()) this.guard(() => this.tool.down?.(e));
+      if (e.button === 0 && !elsewhere()) inPane(() => this.tool.down?.(e));
     });
-    c.addEventListener('pointermove', (e) => !elsewhere() && this.guard(() => this.tool.move?.(e)));
+    c.addEventListener('pointermove', (e) => !elsewhere() && inPane(() => this.tool.move?.(e)));
     c.addEventListener('pointerup', (e) => {
       const multi = elsewhere();
       this.touches.delete(e.pointerId);
-      if (e.button === 0 && !multi) this.guard(() => this.tool.up?.(e));
+      if (e.button === 0 && !multi) inPane(() => this.tool.up?.(e));
     });
     c.addEventListener('pointercancel', (e) => this.touches.delete(e.pointerId));
-    c.addEventListener('dblclick', (e) => this.guard(() => this.tool.dbl?.(e)));
+    c.addEventListener('dblclick', (e) => inPane(() => this.tool.dbl?.(e)));
     c.addEventListener('pointerleave', () => (this.label.hidden = true));
-    this.set('select');
   }
 
   guard(fn) {
@@ -132,8 +138,10 @@ export class Tools {
     this.lock = null;
     this.id = id;
     this.tool = new IMPL[id](this);
-    this.vp.controls.mouseButtons.LEFT = id === 'orbit' ? THREE.MOUSE.ROTATE : id === 'pan' ? THREE.MOUSE.PAN : null;
+    const left = id === 'orbit' ? THREE.MOUSE.ROTATE : id === 'pan' ? THREE.MOUSE.PAN : null;
+    this.vp.controls.mouseButtons.LEFT = left;
     this.vp.canvas.dataset.tool = id;
+    for (const p of this.vp.extra || []) (p.controls.mouseButtons.LEFT = left), (p.canvas.dataset.tool = id);
     this.app.ui.onTool(id);
     this.status(this.tool.hint);
   }
@@ -209,7 +217,8 @@ export class Tools {
 
   showSnap(r) {
     const s = this.vp.toScreen(r.point);
-    const wrap = this.vp.canvas.getBoundingClientRect();
+    const wrap = this.vp.canvas.parentElement.getBoundingClientRect(); // the view area: every docked pane is inside it
+    if (this.vp.input.ownerDocument !== document) return void (this.label.hidden = true); // a detached pane
     Object.assign(this.label.style, { left: `${s.x - wrap.left}px`, top: `${s.y - wrap.top}px` });
     this.label.textContent = r.kind;
     this.label.dataset.kind = r.axis || r.kind.split(' ')[0].toLowerCase();
@@ -286,7 +295,7 @@ class SelectTool {
   }
   move(ev) {
     if (!this.start) return this.readout(ev);
-    const r = this.t.vp.canvas.getBoundingClientRect();
+    const r = this.t.vp.canvas.parentElement.getBoundingClientRect();
     const [x0, x1] = [this.start.x, ev.clientX].sort((a, b) => a - b);
     const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
     Object.assign(this.t.box.style, { left: `${x0 - r.left}px`, top: `${y0 - r.top}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
@@ -1233,7 +1242,7 @@ class ZoomWindowTool {
   }
   move(ev) {
     if (!this.start) return;
-    const r = this.t.vp.canvas.getBoundingClientRect();
+    const r = this.t.vp.canvas.parentElement.getBoundingClientRect();
     const [x0, x1] = [this.start.x, ev.clientX].sort((a, b) => a - b);
     const [y0, y1] = [this.start.y, ev.clientY].sort((a, b) => a - b);
     Object.assign(this.t.box.style, { left: `${x0 - r.left}px`, top: `${y0 - r.top}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
@@ -1244,9 +1253,10 @@ class ZoomWindowTool {
     this.start = null;
     this.t.box.hidden = true;
     if (!s) return;
-    const r = this.t.vp.canvas.getBoundingClientRect();
+    const r = this.t.vp.input.getBoundingClientRect();
     const f = (x, y) => [(x - r.left) / r.width, (y - r.top) / r.height];
-    await this.t.run('zoom_window', Object.fromEntries([...f(s.x, s.y), ...f(ev.clientX, ev.clientY)].map((v, i) => [['x0', 'y0', 'x1', 'y1'][i], v])));
+    const pane = this.t.vp.paneNow ? { pane: this.t.vp.paneNow.i + 1 } : {};
+    await this.t.run('zoom_window', { ...Object.fromEntries([...f(s.x, s.y), ...f(ev.clientX, ev.clientY)].map((v, i) => [['x0', 'y0', 'x1', 'y1'][i], v])), ...pane });
   }
 }
 

@@ -1,5 +1,7 @@
 // MyModellerReel main process: the window, settings, file access, the AI provider proxy and the local HTTP API.
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+// tests drive the window while it sits behind others: keep it painting (screenshots, render loop)
+if (process.env.MMR_TEST) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -77,7 +79,7 @@ function createWindow(page) {
     backgroundColor: '#22382b',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: '#f3e9d7', height: 44 },
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.MMR_TEST },
   });
   win.loadFile(path.join(ROOT, 'src', 'renderer', page));
   // Page errors go to a log file in the data folder, so they can be read without DevTools.
@@ -480,7 +482,16 @@ function startApi() {
         }
         return send(200, { ok: true });
       }
-      if (req.method === 'GET' && url.pathname === '/api/window-screenshot') return send(200, (await win.webContents.capturePage()).toPNG(), 'image/png');
+      if (req.method === 'GET' && url.pathname === '/api/window-screenshot') {
+        // ?title=…: another window of the app (a detached view, #163); a window behind others may not have painted its
+        // WebGL panes lately, so ask for a fresh frame first
+        const title = url.searchParams.get('title');
+        const w = title ? BrowserWindow.getAllWindows().find((x) => x.getTitle().includes(title)) : win;
+        if (!w) return send(404, { ok: false, error: `No window titled "${title}".` });
+        w.webContents.invalidate();
+        await new Promise((r) => setTimeout(r, 300));
+        return send(200, (await w.webContents.capturePage(undefined, { stayAwake: true })).toPNG(), 'image/png');
+      }
       if (req.method === 'GET' && url.pathname === '/api/screenshot') {
         const r = await runInApp('screenshot', { width: Number(url.searchParams.get('width')) || 1024 });
         if (!r.ok) return send(500, r);
