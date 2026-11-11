@@ -13,7 +13,7 @@ const SNAP = 0.25; // m: a pick this close to a named point uses its name
 /** "line_weight" → "Line weight"; a few words people use instead of the API's. */
 export function human(k) {
   const words = { id: 'Which one', ids: 'Which ones', epsg: 'EPSG code', crs: 'Coordinate system', fov: 'Field of view', ior: 'Index of refraction', vcb: 'Value', dof: 'Depth of field', ao: 'Ambient occlusion', n: 'Northing', e: 'Easting', z: 'Elevation', dz: 'Height difference' };
-  return words[k] || k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  return words[k] || k.replace(/_/g, ' ').replace(/(\D)(\d)$/, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 }
 /** The unit at the start of a description ("m", "mm", "%", "degrees", "H:V"…), shown after a number. */
 export function unitOf(desc = '') {
@@ -49,9 +49,10 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   const snapName = (p) => pts.find((q) => Math.hypot(q.position[0] - p[0], q.position[1] - p[1], q.position[2] - p[2]) < SNAP)?.name || r3(p);
   const posOf = (name) => r3(pts.find((q) => q.name === name).position);
   const modes = c.params.ui?.modes || [];
-  let mode = Math.max(0, modes.findIndex((m) => m.fields.some((k) => preset[k] !== undefined)));
-  const inMode = (k) => modes.findIndex((m) => m.fields.includes(k));
-  const needed = (k) => req.has(k) || (modes.length && inMode(k) === mode && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
+  // the mode that the preset fills most
+  const filled = (m) => m.fields.filter((k) => preset[k] !== undefined).length;
+  let mode = modes.reduce((best, m, i) => (filled(m) > filled(modes[best]) ? i : best), 0);
+  const needed = (k) => req.has(k) || (modes.length && modes[mode].fields.includes(k) && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
   const fields = {};
 
   const tip = (s) => (s.description ? h('span.form-tip', { title: s.description, 'aria-label': s.description, tabindex: 0 }, icon('info')) : null);
@@ -90,7 +91,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       const inp = h('input', { value: v === undefined ? '' : Array.isArray(v) ? v.join(', ') : v, list: L.points, placeholder: pts.length ? `e.g. ${pts[0].name}${namesOnly ? '' : ', or x, y, z'}` : namesOnly ? 'a point name' : 'x, y, z' });
       const fn = () => readPoint(inp.value, pointNames, { namesOnly });
       live(inp, fn);
-      const pb = pick && !namesOnly && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; if (p) (inp.value = [snapName(p)].flat().join(', ')), inp.dispatchEvent(new Event('input')); } }, icon('crosshair'), 'Pick in the view');
+      const pb = pick && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; const v = p && snapName(p); if (namesOnly && Array.isArray(v)) msg.textContent = 'Click on a survey point.'; else if (v) (inp.value = [v].flat().join(', ')), inp.dispatchEvent(new Event('input', { bubbles: true })); } }, icon('crosshair'), namesOnly ? 'Pick' : 'Pick in the view');
       control = h('div.form-row.form-grow', {}, pb, inp);
       read = checked(fn);
     } else if (kind === 'points' || isPoints(s)) {
@@ -108,6 +109,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
         if (pb) pb.hidden = inp.hidden;
         const r = fn();
         msg.textContent = r.error || '';
+        chips.dispatchEvent(new Event('input', { bubbles: true })); // a live preview hears the list change
       };
       const add = () => {
         const r = readPoint(inp.value, pointNames);
@@ -119,7 +121,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       };
       inp.onchange = add; // a choice from the list, or typed and left
       inp.onkeydown = (e) => e.key === 'Enter' && (e.preventDefault(), add());
-      const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) vals.push(coords ? r3(p) : snapName(p)); show(); } }, icon('crosshair'), 'Pick in the view');
+      const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) { const v = coords ? r3(p) : snapName(p); if (!(s.ui?.names && Array.isArray(v))) vals.push(v); } show(); } }, icon('crosshair'), 'Pick in the view');
       control = h('div.form-stack', {}, chips, h('div.form-row.form-grow', {}, inp, pb));
       show();
       read = checked(fn);
@@ -224,12 +226,12 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   };
 
   const keys = Object.keys(props);
-  const modeKeys = modes.flatMap((m) => m.fields);
-  const main = keys.filter((k) => !modeKeys.includes(k) && (req.has(k) || preset[k] !== undefined || k === 'ids' || k === 'id')); // which thing(s) it acts on come first
+  const modeKeys = keys.filter((k) => modes.some((m) => m.fields.includes(k))); // in schema order; a field may serve several modes
+  const main = keys.filter((k) => !modeKeys.includes(k) && (req.has(k) || preset[k] !== undefined || k === 'ids' || k === 'id' || c.params.ui?.main?.includes(k))); // which thing(s) it acts on come first; ui.main: shown, not under More
   const more = keys.filter((k) => !modeKeys.includes(k) && !main.includes(k));
   const showMode = () => {
     for (const k of modeKeys) {
-      fields[k].row.hidden = inMode(k) !== mode;
+      fields[k].row.hidden = !modes[mode].fields.includes(k);
       fields[k].star.hidden = !needed(k);
     }
     modeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(i === mode)));
@@ -250,23 +252,26 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   if (modes.length) showMode();
   return {
     el,
-    read() {
+    /** The arguments, or a throw naming the field. quiet: no messages under the fields (a live preview while typing). */
+    read({ quiet = false } = {}) {
       const args = {};
-      for (const f of Object.values(fields)) f.msg.textContent = '';
+      const say = (f, m) => quiet || (f.msg.textContent = m);
+      for (const f of Object.values(fields)) say(f, '');
       for (const [k, f] of Object.entries(fields)) {
         if (f.row.hidden) continue; // another mode's field
         let v;
         try {
           v = f.read();
         } catch (e) {
-          f.msg.textContent = e instanceof SyntaxError ? 'This is not valid; check the brackets and commas.' : e.message;
-          throw new Error(`${human(k)}: ${f.msg.textContent}`);
+          const m = e instanceof SyntaxError ? 'This is not valid; check the brackets and commas.' : e.message;
+          say(f, m);
+          throw new Error(`${human(k)}: ${m}`);
         }
         if (v !== undefined) args[k] = v;
       }
       for (const k of Object.keys(fields))
         if (!fields[k].row.hidden && needed(k) && args[k] === undefined && k !== 'ids') {
-          fields[k].msg.textContent = 'Needed.';
+          say(fields[k], 'Needed.');
           throw new Error(`${human(k)} is needed.`);
         }
       return args;
