@@ -34,6 +34,7 @@ await api.check_surface({ id: s.id });
 ## Good to know
 
 - The Survey tab lists every point; edit northings, eastings, elevations and codes in place.
+- Coding in the field: with the [Survey point](tool:point) tool, each click opens a small code card. Type a code or pick one (your recent codes come first, then the library's, each saying what it places) and press Enter; Esc places nothing. Click an existing point to change its code. A feature code can also place a component from your model (`object: { type: 'component', component: 'Lamp' }`).
 - LandXML points and surfaces come in with **File › Import** too.
 
 ## Related

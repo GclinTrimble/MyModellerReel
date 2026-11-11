@@ -28,6 +28,7 @@ import * as SC from './shortcuts.js';
 import * as I18N from './i18n.js';
 import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
+import { stripUi } from './fields.js';
 import * as Comp from './components.js';
 import * as S from './survey.js';
 import * as L from './layers.js';
@@ -140,7 +141,7 @@ export function createRegistry(ctx) {
       [...commands.values()].map(({ name, description, params, category, mutates }) => ({
         name,
         description,
-        params,
+        params: stripUi(params), // the form hints stay in the app
         category,
         mutates: !!mutates,
       })),
@@ -1166,7 +1167,7 @@ function registerCore(reg, ctx) {
     return { display: ctx.doc.settings.display_units || 'auto', precision: ctx.doc.settings.precision ?? null, units: g.units, angles: g.angles };
   }, true);
 
-  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', obj({ name: str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: str('or: COGO from this point'), bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), (a) => {
+  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', { ...obj({ name:str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: { ...str('or: COGO from this point'), ui: { kind: 'point', names: true } }, bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), ui: { modes: [{ label: 'Coordinates', fields: ['n', 'e', 'z', 'grid'], required: ['n', 'e'] }, { label: 'A model point', fields: ['at'] }, { label: 'From another point', fields: ['from', 'bearing', 'distance', 'dz'], required: ['from', 'bearing', 'distance'] }] } }, (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const k = S.UNITS[g.units] || 1;
@@ -1382,8 +1383,18 @@ function registerCore(reg, ctx) {
     for (const l of plan.lines)
       D.addEntity(doc, { type: 'linework', name: `${l.code}${l.string !== '1' ? ` ${l.string}` : ''}`, fromCodes: true, line: { points: l.points, kind: l.def.breakline ? 'breakline' : 'line', mode: 'hard', closed: l.closed, smooth: l.smooth }, tag: l.def.layer || 'Untagged', material: { color: l.def.color || S.codeColor(doc, l.code) } });
     for (const o of plan.objects) {
-      const h = +o.point.point.attrs?.[o.def.object.height_attr] || o.def.object.height || 4;
       const type = o.def.object.type || 'tree';
+      if (type === 'component') {
+        // a model from the component library at the point (#217); a missing one is a warning, not a failed edit
+        if (!doc.components?.[o.def.object.component]) {
+          plan.warnings.push({ message: `Point ${o.point.name} (${o.code}): no component "${o.def.object.component}" in the model.` });
+          continue;
+        }
+        const g =Comp.instantiate(doc, o.def.object.component, { position: [...o.point.position] });
+        Object.assign(g, { name: `${o.code} ${o.point.name}`, fromCodes: true, tag: o.def.layer || 'Untagged' });
+        continue;
+      }
+      const h = +o.point.point.attrs?.[o.def.object.height_attr] || o.def.object.height || 4;
       const mesh = type === 'tree' ? G.translate(G.cone(h * 0.3, h * 0.7, 12), [0, h * 0.3, 0]) : type === 'post' ? G.cylinder(0.05, h, 8) : G.cylinder(0.5, 0.15, 24);
       const extra = type === 'tree' ? G.cylinder(h * 0.05, h * 0.3, 8) : null;
       const m = extra ? { v: [...mesh.v, ...extra.v], f: [...mesh.f, ...extra.f.map((f) => f.map((i) => i + mesh.v.length))] } : mesh;
@@ -1399,7 +1410,7 @@ function registerCore(reg, ctx) {
     }
     return { lines: plan.lines.length, objects: plan.objects.length, warnings: plan.warnings.map((w) => w.message) };
   };
-  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines), place an object (tree, post, manhole) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), description: str('what it is'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole']), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), options: { type: 'array', items: { type: 'string' } }, required: bool('') }, ['name']), description: 'attribute fields' } }, ['code']), (a) => {
+  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines), place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), description: str('what it is'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), options: { type: 'array', items: { type: 'string' } }, required: bool('') }, ['name']), description: 'attribute fields' } }, ['code']), (a) => {
     const doc = ctx.doc;
     const code = a.code.toUpperCase();
     const old = (doc.featureCodes ||= {})[code] || {};
@@ -1675,7 +1686,7 @@ function registerCore(reg, ctx) {
   };
   const P3 = (d) => ({ description: `${d}: a point name or [x, y, z] in the model` });
   def('terrain', 'design_line_slope', 'Design surface along a line with a cross slope either side (a pad or road edge).', obj({ from: P3('start'), to: P3('end'), left: num('m, default 5'), right: num('m, default 5'), left_slope: num('%, default −2'), right_slope: num('%, default −2'), name: common.name, color: common.color }, ['from', 'to']), (a) => makeDesign('design_line_slope', { from: designRef(a.from), to: designRef(a.to), left: a.left ?? 5, right: a.right ?? 5, left_slope: a.left_slope ?? -2, right_slope: a.right_slope ?? -2 }, a.name, a.color), true);
-  def('terrain', 'design_plane', 'Design plane through three points, or through a point with a slope (%) falling towards a bearing (degrees from north).', obj({ points: { type: 'array', description: 'three point names or [x, y, z]' }, point: P3('or a point'), slope: num('%'), bearing: { description: 'degrees from north, or DMS' }, size: { type: 'array', items: { type: 'number' }, description: '[width, depth] m, default [20, 20]' }, name: common.name, color: common.color }), (a) =>
+  def('terrain', 'design_plane', 'Design plane through three points, or through a point with a slope (%) falling towards a bearing (degrees from north).', { ...obj({ points: { type: 'array', description: 'three point names or [x, y, z]', ui: { count: 3 } }, point: P3('or a point'), slope: num('%, falling towards the bearing, default 0'), bearing: { description: 'degrees from north, or DMS, default 0' }, size: { type: 'array', items: { type: 'number' }, description: '[width, depth] m, default [20, 20]' }, name: common.name, color: common.color }), ui: { modes: [{ label: 'Through three points', fields: ['points'] }, { label: 'Point, slope and bearing', fields: ['point', 'slope', 'bearing'] }] } }, (a) =>
     makeDesign('design_plane', { ...(a.points ? { points: a.points.map(designRef) } : { point: designRef(a.point), slope: a.slope ?? 0, bearing: S.parseAngle(a.bearing ?? 0, S.geo(ctx.doc).angles) }), size: a.size || [20, 20] }, a.name, a.color), true);
   def('terrain', 'design_trench', 'A trench or ditch from one point to another: bottom width, depth below the ground (or invert levels / a grade), side slopes up to the ground surface. "1.2 m deep trench from MH1 to MH2 at 1% fall with 1:1 sides".', obj({ from: P3('start (e.g. MH1)'), to: P3('end'), bottom: num('bottom width, m (default 0.6)'), depth: num('below the ground at the start, m (default 1)'), grade: num('fall from start to end, % (instead of depth at the end)'), invert_from: num('invert level at the start (project)'), invert_to: num('invert level at the end (project)'), side_slope: num('H:V, default 1'), surface: str('ground surface to cut from'), name: common.name, color: common.color }, ['from', 'to']), (a) => {
     const doc = ctx.doc;

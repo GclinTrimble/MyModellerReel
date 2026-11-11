@@ -783,3 +783,41 @@ test('friendly: a form keeps its error, the outliner drags into a group, a compo
   await w.evaluate(() => (window.mmr.app.learning.stop(), window.mmr.app.tools.set('select')));
   await ok('set_camera', { projection: 'perspective' });
 });
+
+test('calm forms (#215, #216): Design plane with modes, point chips and checked inputs', async () => {
+  await ok('import_points', { text: 'Q1,100,100,10\nQ2,100,112,10.4\nQ3,110,100,11' });
+  await w.evaluate(() => { window.mmr.app.ui.commandDialog('design_plane'); });
+  const form = w.locator('#modal');
+  await form.locator('[data-field=points] input[aria-label="Points"]').waitFor();
+  assert.equal(await form.locator('[data-field=point]').isHidden(), true, 'only the chosen mode shows');
+  assert.equal(await form.locator('.form-help').count(), 0, 'help is in the tooltips');
+  for (const n of ['Q1', 'Q2']) await form.locator('[data-field=points] input').fill(n), await form.locator('[data-field=points] input').press('Enter');
+  assert.match(await form.locator('[data-field=points] .form-error').textContent(), /2 so far/);
+  await form.locator('[data-field=points] input').fill('Q3');
+  await form.locator('[data-field=points] input').press('Enter');
+  assert.equal(await form.locator('.form-chip').count(), 3);
+  await form.getByRole('button', { name: 'Point, slope and bearing' }).click();
+  await form.locator('[data-field=bearing] input').fill('north');
+  assert.match(await form.locator('[data-field=bearing] .form-error').textContent(), /degrees/);
+  await form.getByRole('button', { name: 'Through three points' }).click();
+  await form.getByRole('button', { name: 'Run' }).click();
+  const plane = (await ok('get_scene')).entities.find((e) => e.generator === 'design_plane');
+  assert.ok(plane, 'the plane was made from the three chips');
+});
+
+test('survey code card (#217): click, recall a code, Enter places the point and its object', async () => {
+  await ok('define_feature_code', { code: 'TREE', description: 'Tree', object: { type: 'tree' } });
+  await w.evaluate(() => localStorage.setItem('mymodellerreel.recentCodes', JSON.stringify(['GND', 'TREE'])));
+  const picked = w.evaluate(() => window.mmr.app.ui.codeCard({ clientX: 300, clientY: 300 }, '', 'Code of the new point'));
+  const card = w.locator('.code-card');
+  await card.locator('input').waitFor();
+  assert.deepEqual(await card.locator('.code-item b').allTextContents(), ['GND', 'TREE']);
+  await card.locator('input').fill('tr');
+  await card.locator('input').press('Enter');
+  assert.equal(await picked, 'TREE');
+  assert.deepEqual(await w.evaluate(() => JSON.parse(localStorage.getItem('mymodellerreel.recentCodes'))), ['TREE', 'GND']);
+  const esc = w.evaluate(() => window.mmr.app.ui.codeCard({}, 'GND'));
+  await card.locator('input').waitFor();
+  await card.locator('input').press('Escape');
+  assert.equal(await esc, null);
+});
