@@ -31,6 +31,8 @@ import * as Topo from './topology.js';
 import { stripUi } from './fields.js';
 import * as Comp from './components.js';
 import * as S from './survey.js';
+import * as CG from './cogo.js';
+import * as SK from './sketch.js';
 import * as L from './layers.js';
 import * as U from './underlay.js';
 import * as DR from './drafting.js';
@@ -1190,6 +1192,43 @@ function registerCore(reg, ctx) {
     return fmtPt(p);
   }, true);
 
+  // ---------------------------------------------------------------- COGO (#227): the maths is in cogo.js, shared with the COGO panel's preview
+  const DIR = 'azimuth (45.5, DMS 45°30\'00"), quadrant bearing (N45°30\'E), or a turn from the last leg: R90 / L45 (deflection), AR270 (angle right)';
+  const PT = (d) => ({ description: `${d}: a point name, or [Northing, Easting, Elevation]`, ui: { kind: 'point', names: true } });
+  const storeCogo = (sol, a, { first = a.name } = {}) => {
+    const made = sol.points.map((p, i) => S.addPoint(ctx.doc, { n: p.n, e: p.e, z: p.z ?? 0, name: i === 0 && first ? first : undefined, code: a.code || '', desc: a.desc || '' }));
+    if (made.length) afterPoints(), ctx.selection.set(made.map((p) => p.id));
+    return made.map(fmtPt);
+  };
+  def('terrain', 'cogo_inverse', 'COGO inverse: azimuth, quadrant bearing, horizontal and slope distance, height difference and grade between two survey points, or along a chain of points (with the total).', { ...obj({ from: PT('from'), to: PT('to'), points: { type: 'array', description: 'or: a chain of point names', ui: { kind: 'points', names: true } } }), ui: { modes: [{ label: 'Two points', fields: ['from', 'to'], required: ['from', 'to'] }, { label: 'Along a chain', fields: ['points'] }] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'inverse', a);
+    return { ...(Array.isArray(r.result) ? { legs: r.result } : r.result), report: r.report };
+  });
+  def('terrain', 'cogo_traverse', 'COGO traverse and sideshots: from a point, legs of direction + horizontal distance (+ height difference) store new survey points. Directions may be turns from the last leg (needs backsight for the first). close_to checks the closure (misclosure, precision 1:N, area); adjust: compass spreads the error (Bowditch).', { ...obj({ from: PT('start at'), backsight: { description: 'a point name or a direction you arrive with, for turned angles on the first leg' }, legs: { type: 'array', description: 'legs in order', items: obj({ direction: { description: DIR }, distance: num('horizontal, project units'), dz: num('height difference'), side: bool('a sideshot: measure from the current station but do not move on') }, ['direction', 'distance']) }, close_to: str('the point the traverse should end on (e.g. the start point)'), adjust: str('compass: spread the misclosure', ['none', 'compass']), store: bool('store the points, default true'), code: str('feature code for the new points'), name: str('first new point name (default: next number)') }, ['from', 'legs']) }, (a) => {
+    const r = CG.solve(ctx.doc, 'traverse', a);
+    return { ...r.result, ...(a.store === false ? {} : { stored: storeCogo(r, a) }), report: r.report };
+  }, true);
+  def('terrain', 'cogo_intersect', 'COGO intersection: a new point where two bearings meet, a bearing meets a distance, two distances meet, or two lines (two points each) cross. Two answers: both are returned, solution picks the one stored (1 or 2).', { ...obj({ point1: PT('first point'), direction1: { description: `from the first point: ${DIR}` }, distance1: num('from the first point, project units'), point2: PT('second point'), direction2: { description: `from the second point: ${DIR}` }, distance2: num('from the second point, project units'), line1: { type: 'array', description: 'two point names', ui: { kind: 'points', names: true, count: 2 } }, line2: { type: 'array', description: 'two point names', ui: { kind: 'points', names: true, count: 2 } }, solution: str('which answer to store when there are two (default 1)', ['1', '2']), store: bool('store the point, default true'), name: str('new point name (default: next number)'), code: str('feature code') }), ui: { modes: [{ label: 'Bearing, bearing', fields: ['point1', 'direction1', 'point2', 'direction2'], required: ['point1', 'direction1', 'point2', 'direction2'] }, { label: 'Bearing, distance', fields: ['point1', 'direction1', 'point2', 'distance2', 'solution'], required: ['point1', 'direction1', 'point2', 'distance2'] }, { label: 'Distance, distance', fields: ['point1', 'distance1', 'point2', 'distance2', 'solution'], required: ['point1', 'distance1', 'point2', 'distance2'] }, { label: 'Two lines', fields: ['line1', 'line2'], required: ['line1', 'line2'] }] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'intersect', { ...a, solution: a.solution === undefined ? undefined : +a.solution || a.solution });
+    return { ...r.result, ...(a.store === false ? {} : { stored: storeCogo(r, a) }), report: r.report };
+  }, true);
+  def('terrain', 'cogo_station_offset', 'COGO station and offset: where survey points are along a line (point names), curve, alignment or linework, and how far right (+) or left (−) of it.', { ...obj({ line: { description: 'a curve, alignment or linework name, or two or more point names', ui: { kind: 'points', names: true } }, point: PT('the point'), points: { type: 'array', description: 'or: several point names', ui: { kind: 'points', names: true } } }, ['line']), ui: { main: ['point'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'station_offset', a);
+    return { points: r.result, report: r.report };
+  });
+  def('terrain', 'cogo_offset_point', 'COGO point at a station and offset along a line (point names), curve, alignment or linework: + right, − left. Elevation from the line, or z / dz.', { ...obj({ line: { description: 'a curve, alignment or linework name, or two or more point names', ui: { kind: 'points', names: true } }, station: num('distance along, project units'), offset: num('right (+) or left (−), project units, default 0'), dz: num('height above the line'), z: num('or: the elevation'), name: str('new point name (default: next number)'), code: str('feature code') }, ['line', 'station']), ui: { main: ['offset'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'offset_point', a);
+    return { ...r.result, stored: storeCogo(r, a), report: r.report };
+  }, true);
+  def('terrain', 'cogo_curve', 'COGO curve solver: a circular curve from any two of radius, delta, arc length, tangent, chord, external and middle ordinate; returns all of them and the degree of curve.', { ...obj({ radius: num('project units'), delta: { description: 'deflection angle: degrees or DMS' }, length: num('arc length'), tangent: num('tangent length'), chord: num('long chord'), external: num('external distance'), middle: num('middle ordinate') }), ui: { main: ['radius', 'delta', 'length', 'tangent', 'chord', 'external', 'middle'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'curve', a);
+    return { ...r.result, report: r.report };
+  });
+  def('terrain', 'cogo_area', 'COGO area: the area (project units², hectares, acres) and perimeter of a parcel through survey points in order.', obj({ points: { type: 'array', description: 'three or more point names, in order around', ui: { kind: 'points', names: true } } }, ['points']), (a) => {
+    const r = CG.solve(ctx.doc, 'area', a);
+    return { ...r.result, report: r.report };
+  });
+
   def('terrain', 'edit_points', 'Change survey points: set code, description, attributes or coordinates, or raise / lower them (raise in project units). Pick them by names/ids or by code.', obj({ points: { type: 'array', items: { type: 'string' }, description: 'names or ids (default: selection)' }, where_code: str('or: every point with this code'), code: str('new code'), desc: str('new description'), attrs: obj({}, []), n: num('Northing'), e: num('Easting'), z: num('Elevation'), raise: num('add to the elevation') }), (a) => {
     const doc = ctx.doc;
     const k = S.UNITS[S.geo(doc).units] || 1;
@@ -2249,6 +2288,13 @@ function registerCore(reg, ctx) {
     (doc.profiles ||= {})[a.name] = { points: pts, ...(a.anchor ? { anchor: a.anchor } : {}), ...(a.description ? { description: a.description } : {}) };
     return { name: a.name, points: pts.length };
   }, true);
+  def('parametric', 'sketch_profile', 'Save a profile for sweeps from a hand sketch (#230): freehand strokes (canvas pixels, y down) become straight lines with tidy angles, closed when the ends meet, scaled to a real width or height (m). Returns the clean [u, v] points.', obj({ name: str('profile name'), strokes: { type: 'array', description: 'strokes, each [[x, y], …] in canvas pixels', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } } }, width: num('real width, m'), height: num('or: real height, m'), snap: num('angle step in degrees, default 15 (0: keep the angles as drawn)'), anchor: str('which point of the profile follows the path, default bottom-center', P.ANCHORS) }, ['name', 'strokes']), async (a) => {
+    const o = SK.scaleOutline(SK.cleanSketch(a.strokes, { snap: a.snap ?? 15 }), { width: a.width, height: a.height });
+    if (!o.closed) o.points.push(...[...o.points].reverse().map(([x, y]) => [x, Math.round((y - 0.05) * 1000) / 1000])); // an open line becomes a 5 cm thick strip
+    await reg.run('define_profile', { name: a.name, points: o.points, anchor: a.anchor || 'bottom-center', description: `sketched, ${o.width} × ${o.height} m` });
+    return { name: a.name, closed: o.closed, width: o.width, height: o.height, points: o.points };
+  }, true);
+  reg.commands.get('sketch_profile').compound = true;
 
   def('parametric', 'set_params', 'Change a parametric shape\'s parameters (width of a box, steps of a stair, profile of a sweep, count of a live array…); it rebuilds, and so does everything made from it. get_entity shows the current params.', obj({ id, params: obj({}, []) }, ['id', 'params']), (a) => {
     const doc = ctx.doc;

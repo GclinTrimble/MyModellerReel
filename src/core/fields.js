@@ -1,7 +1,7 @@
 // Command form fields (#215): which control a schema property gets, its default, and reading what was typed. Pure, so
 // the rules are tested in Node; src/renderer/forms.js draws the controls. Hints live in the schema as `ui` (on a
 // property: { kind, count }; on params: { modes: [{ label, fields }] }) and are stripped from what AIs and MCP see.
-import { parseAngle } from './survey.js';
+import { direction } from './cogo.js';
 
 /** A params schema without the form hints: AIs, MCP and the HTTP API get plain JSON Schema. */
 export function stripUi(s) {
@@ -52,15 +52,15 @@ export function readPoint(text, names, { namesOnly = false } = {}) {
   return { error: `No point named "${t}". Choose one from the list${namesOnly ? '' : ', pick it in the view, or type x, y, z'}.` };
 }
 
-/** A bearing or angle: degrees (45.5) or DMS (45°30'00"). The text is sent as typed; the command reads it. */
+/** A bearing or angle: degrees (45.5), DMS (45°30'00"), a quadrant bearing (N45°30'E) or a turn (R90, L45, AR270). The text is sent as typed; the command reads it. */
 export function readAngle(text) {
   const t = String(text ?? '').trim();
   if (!t) return { value: undefined };
   try {
-    parseAngle(t);
+    direction(t, { prev: 0 });
     return { value: /^-?\d+(\.\d+)?$/.test(t) ? +t : t };
   } catch {
-    return { error: 'Type degrees (45.5) or degrees, minutes, seconds (45°30\'00").' };
+    return { error: 'Type degrees (45.5), degrees, minutes, seconds (45°30\'00") or a bearing (N45°30\'E).' };
   }
 }
 

@@ -16,6 +16,7 @@ Help by intent: each page is one goal, with the clicks, a prompt for the copilot
 ## Terrain and survey
 
 - [Turn survey points into a surface](survey-points-to-surface.md)
+- [Work out points with COGO](cogo-calculations.md)
 - [Work out cut and fill for a building pad](cut-and-fill-for-a-pad.md)
 - [Design an access road on the ground](design-an-access-road.md)
 
@@ -32,6 +33,7 @@ Help by intent: each page is one goal, with the clicks, a prompt for the copilot
 ## AI and insight
 
 - [Ask the copilot to build or change something](ask-the-copilot.md)
+- [Show the copilot a picture or a sketch](show-the-copilot-a-sketch.md)
 - [Check a model and count what is in it](review-and-quantities.md)
 
 Sample files for trying them: [samples/](samples/).

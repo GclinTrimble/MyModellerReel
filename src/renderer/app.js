@@ -14,6 +14,7 @@ import { Help } from './help.js';
 import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
 import { Assistant } from './ai.js';
+import { CogoPanel } from './cogo.js';
 import { IO } from './io.js';
 import { Panes } from './panes.js';
 import { Learning } from './learning.js';
@@ -442,6 +443,7 @@ native.onBeforeClose(async () => {
 const theme = localStorage.getItem('mymodellerreel.theme');
 app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
 app.ai = new Assistant(app);
+app.cogo = new CogoPanel(app);
 app.help = new Help(app);
 app.learning = new Learning(app);
 // every command, from any source, may complete a lesson or a guided step (#213, #214)
