@@ -80,13 +80,101 @@ export class Assistant {
       h(
         'div.chat-empty',
         {},
-        h('p.muted', {}, 'Ask in plain words. The copilot uses every modelling, animation and file command, sees what you selected, and each of its turns is a single undo step.'),
+        this.settings.provider === 'ollama' && window.native ? this.setupCard({ quiet: true }) : null,
+        h('p.muted', {}, 'Ask in plain words. The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
         ...SUGGESTIONS.map((s) => h('button.chip', { onclick: () => this.ask(s) }, s)),
       ),
     );
   }
+  /** The things a turn made: select one, or open its parameters to change it by hand. */
+  madeList(made) {
+    const app = this.app;
+    const pick = (e, edit) => (app.reg.run('select', { ids: [e.id] }).catch(() => (app.selection = [e.id])), edit && app.ui.show('entity'));
+    return h(
+      'div.made-list',
+      { role: 'list', 'aria-label': 'Made in this turn' },
+      h('div.overline', {}, `Made (${made.length}): edit by hand`),
+      ...made.slice(0, 12).map((e) => h('div.made-item.row', { role: 'listitem' }, icon(e.derived ? 'sliders-horizontal' : e.type === 'group' ? 'stack' : e.curve ? 'pencil-line' : 'cube'), h('span.grow', { title: e.derived ? `Parametric: ${e.derived.generator}` : 'A plain shape' }, e.name), h('button.btn.sm', { onclick: () => pick(e) }, 'Select'), e.derived ? h('button.btn.sm', { onclick: () => pick(e, true), title: 'Change its parameters' }, icon('sliders-horizontal'), 'Edit') : null)),
+      made.length > 12 ? h('div.small.muted', {}, `and ${made.length - 12} more`) : null,
+    );
+  }
   focus() {
     this.input.focus();
+  }
+
+  /**
+   * Local AI setup (#224): install Ollama, start it, download the model, try it, with the step done ticked. quiet:
+   * nothing shows when all is ready (the empty chat).
+   */
+  setupCard({ quiet = false } = {}) {
+    const app = this.app;
+    const box = h('div.card.ai-setup', { hidden: quiet });
+    let poll = null;
+    const run = (name, args = {}) => app.reg.run(name, args).catch((e) => (app.ui.toast(e.message, 'danger'), null));
+    const watch = (ms) => {
+      clearInterval(poll);
+      const until = Date.now() + 15 * 60e3;
+      poll = setInterval(() => (!box.isConnected || Date.now() > until ? clearInterval(poll) : draw(true)), ms);
+    };
+    const draw = async (polling = false) => {
+      const s = await app.reg.run('ai_setup_status', {}).catch(() => null);
+      if (!s || !box.isConnected && polling) return clearInterval(poll);
+      if (s.next === 'ready') {
+        clearInterval(poll);
+        if (quiet) return box.remove();
+      }
+      box.hidden = false;
+      const step = (key, done, title, text, btn) =>
+        h(`div.setup-step${done ? '.done' : s.next === key ? '.now' : ''}`, {}, icon(done ? 'check-circle' : 'circle', done), h('div.grow', {}, h('strong', {}, title), text ? h('div.small.muted', {}, text) : null), !done && s.next === key ? btn : null);
+      const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${s.model}` }, h('i'));
+      const note = h('div.small.muted');
+      box.replaceChildren(
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `The copilot is ready (${s.model} on this PC)` : 'Set up the copilot on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
+        s.next === 'ready' ? null : h('p.small', {}, 'The copilot runs a free AI model on your own PC (nothing leaves it). Three steps, once:'),
+        s.provider !== 'ollama'
+          ? h('p.small.muted', {}, 'The copilot uses an online model (Settings › AI).')
+          : h(
+              'div.setup-steps',
+              {},
+              step('install', s.ollama !== 'missing', 'Install Ollama', 'The free app that runs AI models. A window opens; follow it, then come back.', h('button.btn.sm.primary', { onclick: async () => (await run('install_local_ai')) && ((note.textContent = 'Installing… this card ticks itself when Ollama is there.'), watch(5000)) }, icon('download-simple'), 'Install')),
+              step('start', s.ollama === 'running', 'Start Ollama', 'It then runs in the background (tray icon).', h('button.btn.sm.primary', { onclick: async () => (await run('start_local_ai')) && ((note.textContent = 'Starting…'), watch(1500)) }, icon('play'), 'Start')),
+              step(
+                'download',
+                s.has_model,
+                `Download ${s.model}`,
+                'About 4 GB, once. Mistral works well with the app\'s tools.',
+                h('button.btn.sm.primary', {
+                  onclick: async (ev) => {
+                    ev.target.disabled = true;
+                    bar.hidden = false;
+                    window.native?.onPullProgress && !this.pullHooked && ((this.pullHooked = true), window.native.onPullProgress((p) => this.onPull?.(p)));
+                    this.onPull = (p) => {
+                      const pct = p.total ? Math.round((p.completed / p.total) * 100) : 0;
+                      bar.firstChild.style.width = `${pct}%`;
+                      bar.setAttribute('aria-valuenow', pct);
+                      note.textContent = `${p.status}${p.total ? ` · ${pct}% of ${(p.total / 1e9).toFixed(1)} GB` : ''}`;
+                    };
+                    const r = await run('pull_ai_model', { model: s.model });
+                    this.onPull = null;
+                    if (r) app.ui.toast(`${s.model} is downloaded.`);
+                    draw();
+                  },
+                }, icon('download-simple'), 'Download'),
+              ),
+            ),
+        bar,
+        note,
+        h(
+          'div.row.wrap',
+          {},
+          s.next === 'ready' ? h('button.btn.sm.primary', { onclick: () => this.ask('Hello! In two lines, what can you do for me here?') }, icon('chat-circle'), 'Try it') : null,
+          h('button.btn.sm', { onclick: () => app.ui.show('settings') }, icon('gear'), 'Other models (Claude, LM Studio…)'),
+          h('button.btn.sm', { onclick: () => app.help.open('first-steps-with-the-copilot') }, icon('book-open'), 'How it works'),
+        ),
+      );
+    };
+    draw();
+    return box;
   }
   reset() {
     this.stop();
@@ -168,6 +256,7 @@ export class Assistant {
     if (!proposing) app.store.checkpoint();
     ctx.batchDepth = (ctx.batchDepth || 0) + 1;
     const turnLength = this.history.length;
+    const had = new Set(app.store.doc.entities.map((e) => e.id));
     const t0 = performance.now();
     const usage = { in: 0, out: 0, calls: 0, steps: 0 };
     app.onUsage = (d) => {
@@ -226,7 +315,10 @@ export class Assistant {
     } catch (e) {
       thinking.remove();
       const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
-      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : msg));
+      // cannot reach the local model: the setup card, not a raw network error (#224)
+      const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model/i.test(msg) && this.settings.provider === 'ollama';
+      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'The copilot cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
+      if (unreachable) this.add(this.setupCard());
       // keep the history valid for the next turn: drop this turn's dangling user message if nothing came back
       if (this.history.length === turnLength && this.history.at(-1)?.role === 'user') this.history.pop();
     } finally {
@@ -237,6 +329,10 @@ export class Assistant {
       const tok = usage.in + usage.out;
       this.add(h('div.turn-stats.muted.small', {}, `${((performance.now() - t0) / 1000).toFixed(1)} s · ${usage.calls} tool call${usage.calls === 1 ? '' : 's'}${tok ? ` · ${tok > 999 ? `${(tok / 1000).toFixed(1)}k` : tok} tokens (${usage.in} in, ${usage.out} out)` : ''}`));
       ctx.batchDepth--;
+      app.learning?.aiTurn(usage.calls);
+      // what it drafted, ready to change by hand (#225)
+      const made = app.store.doc.entities.filter((e) => !had.has(e.id) && !e.parent && e.type !== 'point');
+      if (made.length) this.add(this.madeList(made));
       if (proposing && app.store.proposalDiff()?.empty) app.store.acceptProposal(); // nothing to review
       app.store.changed();
       this.busy = false;

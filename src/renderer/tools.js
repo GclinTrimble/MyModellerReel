@@ -41,7 +41,7 @@ export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, g
 export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
-export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], 'paint', 'eraser', 'section'];
+export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], 'paint', 'eraser', 'section'];
 
 export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
@@ -57,6 +57,8 @@ export const TOOLS = [
   { id: 'point', label: 'Survey point (click to add)', key: 'N', icon: 'map-pin', group: 'draw' },
   { id: 'trim', label: 'Trim curves', key: 'W', icon: 'scissors', group: 'draft' },
   { id: 'extend', label: 'Extend curves', key: 'Y', icon: 'arrow-line-right', group: 'draft' },
+  { id: 'split', label: 'Split a line (click where)', key: '', icon: 'scissors', group: 'draft' },
+  { id: 'join', label: 'Join two lines (click near the ends)', key: '', icon: 'link', group: 'draft' },
   { id: 'calibrate', label: 'Calibrate drawing (scale, orient)', key: 'I', icon: 'ruler', group: 'draft' },
   { id: 'control', label: 'Control points (georeference a drawing)', key: 'J', icon: 'crosshair', group: 'draft' },
   { id: 'sculpt', label: 'Sculpt terrain (type: raise 5 0.5)', key: 'V', icon: 'paint-brush-broad', group: 'edit' },
@@ -161,6 +163,22 @@ export class Tools {
     if (ids.some((id) => !this.vp.objs.get(id))) this.vp.rebuild(); // just made: draw it first
     this.placeIds = ids;
     this.set('place');
+  }
+  /** Let the user click a thing in the view for a form: resolves with its id (null: Esc). */
+  pickEntity(hint = '') {
+    const back = this.id === 'pick' ? 'select' : this.id;
+    return new Promise((resolve) => {
+      this.pickCount = 1;
+      this.pickWhat = 'entity';
+      this.pickHint = `${hint || 'Click it in the view.'} Esc to stop.`;
+      this.pickDone = (ids) => {
+        this.pickWhat = null;
+        this.clear();
+        setTimeout(() => this.set(back));
+        resolve(ids[0] ?? null);
+      };
+      this.set('pick');
+    });
   }
   /** Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). */
   pickPoints(count = 1, hint = '') {
@@ -1797,6 +1815,14 @@ class PickTool {
     if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT));
   }
   down(ev) {
+    if (this.t.pickWhat === 'entity') {
+      const vp = this.t.vp;
+      const hit = vp.pick(ev);
+      const id = vp.pickCurve()?.entityId || vp.pickPoint()?.entityId || hit?.entityId;
+      if (!id) return this.t.status(`Nothing there. ${this.hint}`);
+      this.pts.push(id);
+      return this.finish();
+    }
     this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
     if (this.t.pickCount && this.pts.length >= this.t.pickCount) this.finish();
   }
@@ -1849,6 +1875,56 @@ class TrimTool {
     const hit = this.t.vp.pickCurve();
     if (!hit || !this.t.app.entity(hit.entityId)?.curve) return;
     await this.t.run('trim', { id: hit.entityId, at: D.round3(hit.point.toArray()) });
+  }
+}
+
+/** Split (#219): click a line where it should come apart: two lines. */
+class SplitTool {
+  hint = 'Click a line where it should be split in two.';
+  constructor(t) {
+    this.t = t;
+  }
+  async down(ev) {
+    this.t.vp.pick(ev);
+    const hit = this.t.vp.pickCurve();
+    if (!hit || !this.t.app.entity(hit.entityId)?.curve) return this.t.status(`No line there. ${this.hint}`);
+    await this.t.run('break_curve', { id: hit.entityId, at: D.round3(hit.point.toArray()) });
+  }
+}
+
+/** Join (#219): click a line near the end to join, then the other line near its end: one line, any gap bridged. */
+class JoinTool {
+  hint = 'Click the first line near the end to join.';
+  constructor(t) {
+    this.t = t;
+  }
+  cancel() {
+    this.first = null;
+    this.t.vp.overlay.clear();
+    this.t.status(this.hint);
+  }
+  busy() {
+    return !!this.first;
+  }
+  move(ev) {
+    if (!this.first) return;
+    this.t.vp.overlay.clear();
+    this.t.lines([this.first.at, this.t.infer(ev).point], ACCENT);
+  }
+  async down(ev) {
+    this.t.vp.pick(ev);
+    const hit = this.t.vp.pickCurve();
+    const e = hit && this.t.app.entity(hit.entityId);
+    if (!e?.curve) return this.t.status(`No line there. ${this.first ? 'Click the second line near its end.' : this.hint}`);
+    if (!this.first || this.first.id === e.id) {
+      this.first = { id: e.id, at: hit.point.clone() };
+      return this.t.status(`${e.name}: now click the line to join it to, near its end. Esc to start again.`);
+    }
+    const { id, at } = this.first;
+    this.first = null;
+    this.t.vp.overlay.clear();
+    await this.t.run('connect_curves', { ids: [id, e.id], at: D.round3(at.toArray()), at2: D.round3(hit.point.toArray()) });
+    this.t.status(this.hint);
   }
 }
 
@@ -2028,6 +2104,8 @@ const IMPL = {
   calibrate: CalibrateTool,
   control: ControlTool,
   trim: TrimTool,
+  split: SplitTool,
+  join: JoinTool,
   zoomwin: ZoomWindowTool,
   sculpt: SculptTool,
   extend: ExtendTool,

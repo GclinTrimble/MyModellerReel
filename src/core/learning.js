@@ -30,6 +30,7 @@ export const MODULES = [
         { text: 'Open the Views drop-down in the view bar and choose Four views.', target: '#viewbar', done: { command: 'set_layout' } },
         { text: 'In a pane title, choose another view (for example Left).', target: '.pane-head', done: { command: 'set_pane' } },
       ] },
+      { id: 'first-steps-with-the-copilot', commands: ['pull_ai_model', 'start_local_ai'] },
       { id: 'ask-the-copilot', commands: [] },
       { id: 'tabs-handles-walk-and-language', commands: ['set_gizmo', 'new_document', 'walk_to'] },
     ],
@@ -93,16 +94,20 @@ export const MODULES = [
 
 export const allLessons = () => MODULES.flatMap((m) => m.lessons.map((l) => ({ ...l, module: m.id })));
 
-/** Points, level, the next level and the badges (a module fully done) from the lessons done. */
-export function progress(done = []) {
+/** Finishing a lesson's guided steps earns this much more, once (#221). */
+export const TUTORIAL_POINTS = 5;
+
+/** Points, level, the next level and the badges (a module fully done) from the lessons done and tutorials finished. */
+export function progress(done = [], tutorials = []) {
   const set = new Set(done);
   const lessons = allLessons();
-  const points = lessons.filter((l) => set.has(l.id)).length * POINTS;
+  const guided = new Set(tutorials.filter((id) => lessons.some((l) => l.id === id && l.guide)));
+  const points = lessons.filter((l) => set.has(l.id)).length * POINTS + guided.size * TUTORIAL_POINTS;
   let level = LEVELS[0];
   for (const L of LEVELS) if (points >= L[0]) level = L;
   const next = LEVELS.find(([p]) => p > points) || null;
   const modules = MODULES.map((m) => ({ id: m.id, title: m.title, done: m.lessons.filter((l) => set.has(l.id)).length, of: m.lessons.length }));
-  return { points, level: level[1], next: next ? { level: next[1], points: next[0] } : null, modules, badges: modules.filter((m) => m.done === m.of).map((m) => m.title.replace(/^\d+ /, '')) };
+  return { points, level: level[1], next: next ? { level: next[1], points: next[0] } : null, lessons: set.size, tutorials: guided.size, modules, badges: modules.filter((m) => m.done === m.of).map((m) => m.title.replace(/^\d+ /, '')) };
 }
 
 /** The lessons a command completes. */

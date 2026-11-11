@@ -74,6 +74,7 @@ export class Help {
     this.app = app;
     this.page = null;
     this.query = '';
+    this.expanded = new Set(); // topics open in the list survive the panel being drawn again
   }
 
   /** Run what a "Do it" link names. */
@@ -106,17 +107,56 @@ export class Help {
     const search = h('input', { type: 'search', placeholder: 'What do you want to do?', value: this.query, 'aria-label': 'Search help', oninput: (ev) => ((this.query = ev.target.value), this.renderList(listEl)) });
     const listEl = h('div.help-list');
     this.renderList(listEl, list);
-    queueMicrotask(() => search.focus());
-    return h('div.panel.help', {}, app.learning ? app.learning.card() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Every page shows the clicks, a prompt for the copilot, and the commands for scripts and MCP.'));
+    queueMicrotask(() => search.focus({ preventScroll: true }));
+    return h('div.panel.help', {}, this.startHere(), app.learning ? app.learning.card() : null, app.learning ? app.learning.insightsCard() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Click a topic to read it here; every page shows the clicks, a prompt for the copilot, and the commands for scripts and MCP.'));
+  }
+
+  /** New here (#223): the app is AI first, so the first steps are the copilot's, with the way back to editing by hand. */
+  startHere() {
+    const app = this.app;
+    if (app.settings?.help?.hideStart) return null;
+    const prompts = ['Draw a 10 m by 6 m rectangle and pull it up 3 m into a building', 'Add a pitched roof to the building', 'Make the building 12 m long instead'];
+    return h(
+      'div.card.start-here',
+      {},
+      h('div.row', {}, icon('rocket-launch'), h('strong.grow', {}, 'New here? Start with the copilot'), h('button.icon-btn.sm', { title: 'Hide this card', 'aria-label': 'Hide the start card', onclick: () => app.io.setSettings({ help: { hideStart: true } }).then(() => app.ui.renderDock()) }, icon('x'))),
+      h('p.small', {}, 'Tell the copilot what you want in plain words; it drafts it with the same tools you have. What it makes stays parametric: select it and change its sizes by hand, or ask again. Each request is one undo step.'),
+      h('div.row.wrap', {}, h('button.btn.sm.primary', { onclick: () => app.ui.show('ai') }, icon('sparkle'), 'Open the copilot'), h('button.btn.sm', { onclick: () => this.open('first-steps-with-the-copilot') }, icon('book-open'), 'First steps'), h('button.btn.sm', { onclick: () => app.ui.actions.tour?.run() }, icon('compass'), '2-minute tour')),
+      h('div.small.muted', {}, 'Try, one after the other:'),
+      ...prompts.map((p) => h('button.chip', { onclick: () => app.ai.ask(p) }, p)),
+    );
   }
 
   renderList(el, list = findHowtos(this.query, 50)) {
     const areas = this.query ? [null] : AREAS;
+    // a topic opens in place to read it in full (#223); "Open as a page" for the whole panel
+    const item = (x) => {
+      const body = h('div.help-page.help-inline');
+      const d = h(
+        'details.help-item-x',
+        {
+          ontoggle: () => {
+            d.open ? this.expanded.add(x.id) : this.expanded.delete(x.id);
+            if (!d.open || body.dataset.loaded) return;
+            body.dataset.loaded = '1';
+            body.replaceChildren(h('p.muted', {}, 'Loading…'));
+            this.app.io
+              .readHowto(x.id)
+              .then((md) => body.replaceChildren(...renderMarkdown(md.replace(/^# .*\n/, ''), (k, a) => this.act(k, a)), h('button.btn.sm', { onclick: () => this.open(x.id) }, icon('arrows-out'), 'Open as a page')))
+              .catch((e) => body.replaceChildren(h('p', { role: 'alert' }, e.message)));
+          },
+        },
+        h('summary.help-item', {}, icon('book-open'), h('span', {}, x.title)),
+        body,
+      );
+      if (this.expanded.has(x.id)) d.open = true;
+      return d;
+    };
     el.replaceChildren(
       ...areas.flatMap((area) => {
         const items = list.filter((x) => !area || x.area === area);
         if (!items.length) return [];
-        return [...(area ? [h('div.overline', {}, area)] : []), ...items.map((x) => h('button.help-item', { onclick: () => this.open(x.id) }, icon('book-open'), h('span', {}, x.title)))];
+        return [...(area ? [h('div.overline', {}, area)] : []), ...items.map(item)];
       }),
       ...(list.length ? [] : [h('p.muted', {}, 'Nothing matches: try other words, or ask the copilot.')]),
     );
