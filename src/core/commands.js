@@ -32,6 +32,7 @@ import { stripUi } from './fields.js';
 import * as Comp from './components.js';
 import * as S from './survey.js';
 import * as CG from './cogo.js';
+import * as SK from './sketch.js';
 import * as L from './layers.js';
 import * as U from './underlay.js';
 import * as DR from './drafting.js';
@@ -2287,6 +2288,13 @@ function registerCore(reg, ctx) {
     (doc.profiles ||= {})[a.name] = { points: pts, ...(a.anchor ? { anchor: a.anchor } : {}), ...(a.description ? { description: a.description } : {}) };
     return { name: a.name, points: pts.length };
   }, true);
+  def('parametric', 'sketch_profile', 'Save a profile for sweeps from a hand sketch (#230): freehand strokes (canvas pixels, y down) become straight lines with tidy angles, closed when the ends meet, scaled to a real width or height (m). Returns the clean [u, v] points.', obj({ name: str('profile name'), strokes: { type: 'array', description: 'strokes, each [[x, y], …] in canvas pixels', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } } }, width: num('real width, m'), height: num('or: real height, m'), snap: num('angle step in degrees, default 15 (0: keep the angles as drawn)'), anchor: str('which point of the profile follows the path, default bottom-center', P.ANCHORS) }, ['name', 'strokes']), async (a) => {
+    const o = SK.scaleOutline(SK.cleanSketch(a.strokes, { snap: a.snap ?? 15 }), { width: a.width, height: a.height });
+    if (!o.closed) o.points.push(...[...o.points].reverse().map(([x, y]) => [x, Math.round((y - 0.05) * 1000) / 1000])); // an open line becomes a 5 cm thick strip
+    await reg.run('define_profile', { name: a.name, points: o.points, anchor: a.anchor || 'bottom-center', description: `sketched, ${o.width} × ${o.height} m` });
+    return { name: a.name, closed: o.closed, width: o.width, height: o.height, points: o.points };
+  }, true);
+  reg.commands.get('sketch_profile').compound = true;
 
   def('parametric', 'set_params', 'Change a parametric shape\'s parameters (width of a box, steps of a stair, profile of a sweep, count of a live array…); it rebuilds, and so does everything made from it. get_entity shows the current params.', obj({ id, params: obj({}, []) }, ['id', 'params']), (a) => {
     const doc = ctx.doc;

@@ -8,6 +8,7 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES } from './forms.js';
+import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
@@ -353,6 +354,8 @@ export class UI {
       proposeToggle: { label: 'Propose AI changes for review', icon: 'git-pull-request', checked: () => app.ai.propose, run: () => app.ai.setPropose(!app.ai.propose) },
       proposeAccept: { label: 'Accept proposal', icon: 'check-circle', run: run('propose', { action: 'accept' }) },
       proposeReject: { label: 'Reject proposal', icon: 'x-circle', run: run('propose', { action: 'reject' }) },
+      sketchProfile: { label: 'Sketch a profile…', icon: 'scribble', run: () => sketchPad(app, { mode: 'profile' }).then(() => this.refresh()) },
+      sketchForAi: { label: 'Sketch for the AI…', icon: 'scribble', run: () => sketchPad(app, { mode: 'chat' }).then((r) => r && app.ai.attachPicture(r.image, r.note, true)) },
       sweep: { label: 'Sweep a profile along a path…', icon: 'path', run: form('sweep', () => (app.entity(sel()[0])?.curve ? { path: sel()[0] } : {})) },
       liveArray: { label: 'Live array of the selection…', icon: 'columns', run: form('duplicate', () => ({ live: 'true', count: 3, offset: [1, 0, 0] })) },
       bake: { label: 'Bake (freeze parameters)', icon: 'snowflake', run: () => sel().length && app.reg.run('bake', {}).then((r) => this.toast(`Baked ${r.baked.length}`)) },
@@ -588,11 +591,11 @@ export class UI {
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'timeline', 'theme', 'perf'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
-      AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
+      AI: ['askAi', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
@@ -2028,7 +2031,7 @@ export class UI {
           h('button.profile', { title: p.description, disabled: !path, onclick: () => run('sweep', { path: path.id, profile: p.name }) }, thumb(p), h('span', {}, p.name.replace(/_/g, ' '))),
         ),
       ),
-      h('div.row', {}, h('button.btn', { onclick: () => this.commandDialog('define_profile', app.selection[0] ? { from_face: app.selection[0] } : {}) }, icon('plus'), 'Profile from a face…')),
+      h('div.row', {}, h('button.btn', { onclick: () => this.commandDialog('define_profile', app.selection[0] ? { from_face: app.selection[0] } : {}) }, icon('plus'), 'Profile from a face…'), h('button.btn', { onclick: this.actions.sketchProfile.run }, icon('scribble'), 'Sketch a profile…')),
       h('h3', {}, 'Recipes'),
       h('p.muted.small', {}, 'A recipe is how a model was built, replayable with other values ("3 storeys instead of 2"). Record a macro to capture what you do next.'),
       h(

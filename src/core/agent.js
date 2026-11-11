@@ -13,6 +13,7 @@ export function systemPrompt({ doc, selection = [], time = 0, vision = false, sk
 You act by calling tools: each call changes the live model the user is looking at.
 Work like an expert: plan briefly, use realistic real-world dimensions, prefer fewer bigger steps (run_script for anything repetitive), name things clearly, group parts that belong together.
 Prefer relations to coordinates: place_on, against, stack, align, distribute, find_free_space.
+When the user shares a picture, a photo or a sketch, read it closely (shapes, proportions, written dimensions, arrows, marks drawn over the view) and build from it. A sketched outline comes with its cleaned points: use them (define_profile, then sweep or extrude) rather than guessing. Ask only for a dimension you cannot read or infer.
 You draft for a person who will carry on by hand: keep everything editable. Build with parametric commands (create_* shapes, create_parametric, sweep along a curve, live arrays, design_* surfaces) rather than baked meshes or one big generate_mesh; never bake unless asked; give each part a clear name and group the parts of one object, so the user can select it and change its parameters afterwards.
 After building, verify with get_scene${vision ? ' and a screenshot' : ''}, fix problems, then answer with a short summary (2-4 lines). Do not paste JSON back to the user.${small ? '\nYou see only some tools. If you need another, call list_commands with a query describing the task; every listed command can be called.' : ''}
 
@@ -81,6 +82,19 @@ export function toolResultMessage(protocol, call, result, isError) {
   }
   const note = image ? `${content}\n(This model cannot see images; use get_scene numbers instead.)` : content;
   return protocol === 'ollama' ? { role: 'tool', tool_name: call.name, content: note } : { role: 'tool', tool_call_id: call.id, content: note };
+}
+
+/** The user's message with pictures (#229): images are data URLs, sent the way each protocol takes them. */
+export function userMessage(protocol, text, images = []) {
+  if (!images.length) return { role: 'user', content: text };
+  const parts = images.map((u) => {
+    const m = /^data:(image\/[\w.+-]+);base64,(.+)$/.exec(u);
+    if (!m) throw new Error('A picture must be a PNG or JPEG data URL.');
+    return { type: m[1], data: m[2] };
+  });
+  if (protocol === 'anthropic') return { role: 'user', content: [...parts.map((p) => ({ type: 'image', source: { type: 'base64', media_type: p.type, data: p.data } })), { type: 'text', text }] };
+  if (protocol === 'ollama') return { role: 'user', content: text, images: parts.map((p) => p.data) };
+  return { role: 'user', content: [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] };
 }
 
 /** A one-shot request that shows images to a vision model (design review). */

@@ -631,3 +631,23 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .cogo-line { color: var(--my-text-muted); }
 .cogo-result { position: sticky; bottom: 0; z-index: 1; box-shadow: var(--my-shadow-2); }
 .cogo-trav .form-row > .field { flex: 1; min-width: 0; }
+
+/* pictures and sketches for the copilot (#229, #230) */
+.chat-compose { border-top: 1px solid var(--my-border); }
+.chat-compose .chat-input { border-top: 0; flex-wrap: wrap; align-items: center; }
+.chat-compose .chat-input textarea { flex: 1 1 100%; }
+.chat-tools { display: flex; gap: var(--my-space-1); flex: 1; }
+.chat-pictures { display: flex; flex-wrap: wrap; gap: var(--my-space-2); padding: var(--my-space-3) var(--my-space-3) 0; }
+.chat-picture { position: relative; }
+.chat-picture img { display: block; height: 64px; max-width: 120px; object-fit: cover; border-radius: var(--my-radius-sm); border: 1px solid var(--my-border); }
+.chat-picture-x { position: absolute; top: calc(-1 * var(--my-space-2)); right: calc(-1 * var(--my-space-2)); display: grid; place-items: center; width: 1.5em; height: 1.5em; padding: 0; border-radius: var(--my-radius-pill); border: 1px solid var(--my-border); background: var(--my-surface); color: var(--my-text); cursor: pointer; font-size: var(--my-text-xs); }
+.chat-picture-tag { position: absolute; left: var(--my-space-1); bottom: var(--my-space-1); display: flex; align-items: center; gap: 2px; padding: 0 var(--my-space-1); border-radius: var(--my-radius-xs); background: var(--my-surface); font-size: var(--my-text-xs); }
+.chat.drop { outline: 2px dashed var(--my-accent); outline-offset: -6px; }
+.msg-pictures { display: flex; flex-wrap: wrap; gap: var(--my-space-1); margin-bottom: var(--my-space-1); }
+.msg-pictures img { max-width: 100%; max-height: 140px; border-radius: var(--my-radius-sm); }
+.sketch { display: flex; flex-direction: column; gap: var(--my-space-2); }
+.modal:has(.sketch) { width: min(1040px, 94vw); } /* the pad needs room to draw */
+.sketch-canvas { align-self: center; width: auto; height: auto; max-width: 100%; max-height: 58vh; border: 1px solid var(--my-border); border-radius: var(--my-radius-md); cursor: crosshair; touch-action: none; }
+.sketch-tools { align-items: center; gap: var(--my-space-2); }
+.sketch-tools input.form-num { flex: 0 0 6em; } /* flex-basis beats the generic full-width input */
+.sketch-tools input.sketch-label { flex: 0 1 16em; }

@@ -1,7 +1,27 @@
 // The in-app copilot: a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
 // registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on.
-import { protocolOf, systemPrompt, runTurn } from '../core/agent.js';
+import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
 import { h, icon } from './ui.js';
+import { sketchPad } from './sketch.js';
+
+/** A picture made small enough for a model to read cheaply (longest side 1568 px), as a data URL. */
+export function fitPicture(url, max = 1568) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, max / Math.max(im.width, im.height));
+      if (k === 1 && /^data:image\/(png|jpeg)/.test(url)) return resolve(url);
+      const c = Object.assign(document.createElement('canvas'), { width: Math.round(im.width * k), height: Math.round(im.height * k) });
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      resolve(c.toDataURL(/^data:image\/png/.test(url) ? 'image/png' : 'image/jpeg', 0.9));
+    };
+    im.onerror = () => reject(new Error('This file is not a picture the AI can read (use PNG or JPEG).'));
+    im.src = url;
+  });
+}
+const readFile = (file) => new Promise((resolve) => Object.assign(new FileReader(), { onload: (e) => resolve(e.target.result) }).readAsDataURL(file));
+/** Local models that can see pictures, by name. */
+const SEES = /llava|vision|-vl|vl:|gemma3|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|llama4|mistral-small3/i;
 import { SKILLS } from '../core/skills.js';
 
 const SUGGESTIONS = [
@@ -43,7 +63,28 @@ export class Assistant {
     this.sendBtn = h('button.btn.primary', { onclick: () => (this.busy ? this.stop() : this.send()), title: 'Send (Enter)' }, icon('paper-plane-right'));
     // voice (#98): hold to talk; MyVoiceReel's engine turns it into text on this PC
     this.micBtn = h('button.btn.icon-only', { title: 'Hold to talk (or hold Ctrl+M)', 'aria-label': 'Hold to talk', onpointerdown: (e) => (e.preventDefault(), this.listen()), onpointerup: () => this.hear(), onpointerleave: () => this.recorder && this.hear() }, icon('microphone'));
-    const el = h('div.chat', {}, this.head, this.log, h('div.chat-input', {}, this.input, this.micBtn, this.sendBtn));
+    // pictures (#229): attach, paste, drop, or sketch over the view; they go with the next message
+    this.pictures = [];
+    this.strip = h('div.chat-pictures', { role: 'list', 'aria-label': 'Pictures to send', hidden: true });
+    const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', multiple: true, hidden: true, onchange: async (e) => { for (const f of e.target.files) await this.attachPicture(await readFile(f)); e.target.value = ''; } });
+    const clip = h('button.btn.icon-only', { title: 'Attach a picture (or paste / drop one here)', 'aria-label': 'Attach a picture', onclick: () => file.click() }, icon('paperclip'));
+    const draw = h('button.btn.icon-only', { title: 'Sketch for the AI: draw over the view or on paper', 'aria-label': 'Sketch for the AI', onclick: async () => { const r = await sketchPad(this.app, { mode: 'chat' }); if (r) await this.attachPicture(r.image, r.note); } }, icon('scribble'));
+    this.input.onpaste = async (e) => {
+      const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+      if (!files.length) return;
+      e.preventDefault();
+      for (const f of files) await this.attachPicture(await readFile(f));
+    };
+    const el = h('div.chat', {}, this.head, this.log, h('div.chat-compose', {}, this.strip, h('div.chat-input', {}, this.input, h('div.chat-tools', {}, clip, draw, this.micBtn), this.sendBtn)), file);
+    el.ondragover = (e) => [...(e.dataTransfer?.items || [])].some((i) => i.type.startsWith('image/')) && (e.preventDefault(), el.classList.add('drop'));
+    el.ondragleave = () => el.classList.remove('drop');
+    el.ondrop = async (e) => {
+      el.classList.remove('drop');
+      const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+      if (!files.length) return;
+      e.preventDefault();
+      for (const f of files) await this.attachPicture(await readFile(f));
+    };
     this.renderHead();
     this.empty();
     return el;
@@ -100,6 +141,30 @@ export class Assistant {
   }
   focus() {
     this.input.focus();
+  }
+
+  /** Add a picture to the next message (note: words that go with it, e.g. a sketch's cleaned points). open: show the chat. */
+  async attachPicture(url, note = '', open = false) {
+    try {
+      this.pictures.push({ url: await fitPicture(url), note });
+    } catch (e) {
+      return this.app.ui.toast(e.message, 'danger');
+    }
+    this.drawPictures();
+    if (this.settings.provider === 'ollama' && !SEES.test(this.modelName()) && !this.warnedSight) {
+      this.warnedSight = true;
+      this.app.ui.toast(`${this.modelName()} may not see pictures. A vision model (gemma3, qwen2.5vl, llava) or Claude reads them; a sketch's cleaned points still go as text.`);
+    }
+    if (open) this.app.ui.show('ai', true);
+    this.input.focus();
+  }
+  drawPictures() {
+    this.strip.hidden = !this.pictures.length;
+    this.strip.replaceChildren(
+      ...this.pictures.map((p, i) =>
+        h('div.chat-picture', { role: 'listitem' }, h('img', { src: p.url, alt: p.note ? 'Sketch' : 'Picture' }), p.note ? h('span.chat-picture-tag', { title: p.note }, icon('polygon'), 'outline') : null, h('button.chat-picture-x', { type: 'button', 'aria-label': 'Remove this picture', title: 'Remove', onclick: () => (this.pictures.splice(i, 1), this.drawPictures()) }, icon('x'))),
+      ),
+    );
   }
 
   /**
@@ -236,13 +301,17 @@ export class Assistant {
   }
 
   async send() {
-    const text = this.input.value.trim();
-    if (!text || this.busy) return;
+    const typed = this.input.value.trim();
+    const pics = this.pictures;
+    if ((!typed && !pics.length) || this.busy) return;
     this.input.value = '';
+    this.pictures = [];
+    this.drawPictures();
     const protocol = protocolOf(this.settings.provider);
     if (protocol !== this.protocol) (this.history = []), (this.protocol = protocol);
-    this.add(h('div.msg.user', {}, text));
-    this.history.push({ role: 'user', content: text });
+    const text = [typed || 'Look at this and build it.', ...pics.map((p) => p.note).filter(Boolean)].join('\n\n');
+    this.add(h('div.msg.user', {}, pics.length ? h('div.msg-pictures', {}, ...pics.map((p) => h('img', { src: p.url, alt: 'Sent picture' }))) : null, typed || 'Look at this and build it.'));
+    this.history.push(userMessage(protocol, text, pics.map((p) => p.url)));
 
     const app = this.app;
     const ctx = app.ctx;

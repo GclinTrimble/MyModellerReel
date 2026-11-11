@@ -821,3 +821,64 @@ test('survey code card (#217): click, recall a code, Enter places the point and 
   await card.locator('input').press('Escape');
   assert.equal(await esc, null);
 });
+
+test('COGO panel (#227, #228): the answer as you type, a traverse table, Store in one step', async () => {
+  await ok('import_points', { text: 'K1,2000,1000,10\nK2,2000,1100,11' });
+  await w.evaluate(() => window.mmr.app.ui.show('cogo'));
+  const panel = w.locator('.cogo');
+  await panel.locator('[data-field=from] input').fill('K1');
+  await panel.locator('[data-field=to] input').fill('K2');
+  await panel.locator('.cogo-fact b').first().waitFor();
+  assert.deepEqual((await panel.locator('.cogo-fact b').allTextContents()).slice(0, 2), ['N 90°00\'00.0" E', '100.000 m']);
+  await panel.getByRole('radio', { name: 'Traverse' }).click();
+  await panel.locator('.cogo-trav input[aria-label="Backsight (for turns)"]').fill('K2');
+  await panel.locator('.cogo-trav input[aria-label="Start at"]').fill('K1');
+  for (const [dir, dist] of [['R90', '40'], ['R90', '100'], ['R90', '40']]) {
+    await panel.locator('.cogo-dir').last().fill(dir);
+    await panel.locator('.cogo-dir').last().press('Enter');
+    await w.keyboard.type(dist);
+    await w.keyboard.press('Enter');
+  }
+  await panel.locator('.cogo-trav input[aria-label="Closes on (optional)"]').fill('K2');
+  await w.waitForFunction(() => document.querySelector('.cogo .btn.primary')?.textContent.includes('Store 2 points'));
+  assert.match(await panel.locator('.cogo-answer').textContent(), /1:Infinity|exact/);
+  await panel.getByRole('button', { name: /Store 2 points/ }).click();
+  const pts = (await ok('query_points', {})).points ?? (await ok('get_scene')).entities.filter((e) => e.type === 'point');
+  assert.ok(pts.length >= 4, 'the two new points were stored');
+  assert.match(await panel.locator('.cogo-entry').first().textContent(), /Traverse → stored/);
+});
+
+test('pictures for the copilot (#229, #230): a sketch straightened into a profile, a picture sent with the message', async () => {
+  const pad = w.evaluate(() => window.mmr.app.ui.actions.sketchProfile.run());
+  const canvas = w.locator('.sketch-canvas');
+  await canvas.waitFor();
+  const b = await canvas.boundingBox();
+  const k = b.width / 960;
+  const at = (x, y) => [b.x + x * k, b.y + y * k];
+  await w.mouse.move(...at(200, 400));
+  await w.mouse.down();
+  for (const [x, y] of [[203, 250], [198, 100], [350, 104], [500, 98], [502, 250], [498, 400], [350, 396], [204, 402]]) await w.mouse.move(...at(x, y), { steps: 6 });
+  await w.mouse.up();
+  await w.locator('.sketch input[aria-label="Real width in metres"]').fill('2');
+  assert.match(await w.locator('.sketch-status').textContent(), /Closed outline, 4 corners, 2 × 2(\.0\d+)? m/);
+  await w.locator('.sketch input[aria-label="Profile name"]').fill('Drawn box');
+  await w.locator('#modal').getByRole('button', { name: 'Save profile' }).click();
+  await pad;
+  assert.equal((await w.evaluate(() => window.mmr.app.store.doc.profiles['Drawn box'].points.length)), 4);
+  // a picture goes with the next message, in the provider's own shape
+  await w.evaluate(() => window.mmr.app.ui.show('ai'));
+  await w.evaluate(async () => window.mmr.app.ai.attachPicture(document.querySelector('.sketch-canvas')?.toDataURL() || 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='));
+  assert.equal(await w.locator('.chat-picture').count(), 1);
+  const sent = await w.evaluate(async () => {
+    const a = window.mmr.app;
+    const real = a.chat;
+    let body;
+    a.chat = async (x) => ((body = x), a.settings.ai.provider === 'anthropic' ? { content: [{ type: 'text', text: 'Seen.' }] } : a.settings.ai.provider === 'ollama' ? { message: { role: 'assistant', content: 'Seen.' } } : { choices: [{ message: { role: 'assistant', content: 'Seen.' } }] });
+    a.ai.input.value = 'Build this';
+    await a.ai.send();
+    a.chat = real;
+    return JSON.stringify(body.messages.at(-1)).includes('base64') || !!body.messages.at(-1).images?.length;
+  });
+  assert.ok(sent, 'the picture went with the message');
+  assert.equal(await w.locator('.msg.user img').count(), 1);
+});
