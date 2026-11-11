@@ -178,6 +178,7 @@ export const getEntity = (doc, id) => doc.entities.find((e) => e.id === id);
 export function uniqueName(doc, base) {
   const taken = new Set(doc.entities.map((e) => e.name.toLowerCase()));
   if (!taken.has(base.toLowerCase())) return base;
+  base = base.replace(/ \d+$/, '') || base; // a copy of "Rectangle 2" is "Rectangle 3", not "Rectangle 2 2"
   let n = 2;
   while (taken.has(`${base} ${n}`.toLowerCase())) n++;
   return `${base} ${n}`;

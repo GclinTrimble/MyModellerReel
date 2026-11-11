@@ -31,10 +31,16 @@ const r3 = (p) => p.map((x) => Math.round(x * 1000) / 1000);
  * The form of command c (its schema) prefilled with preset. Returns { el, read(), error(field, msg) } where read()
  * gives the arguments to run it with (fields left empty are not sent, so the command's defaults apply).
  */
-export function buildForm(app, c, preset = {}, { pick } = {}) {
+let formN = 0;
+export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   const props = c.params.properties || {};
   const req = new Set(c.params.required || []);
   const doc = app.store.doc;
+  const uid = ++formN; // each form its own lists: a list left by an earlier form must not answer for this one (#220)
+  const L = { entities: `form-entities-${uid}`, layers: `form-layers-${uid}`, points: `form-points-${uid}` };
+  // the one thing selected fills the field that asks which thing (#220)
+  const selected = app.selection.length === 1 ? doc.entities.find((e) => e.id === app.selection[0]) : null;
+  let selUsed = false;
   const names = [...new Set(doc.entities.filter((e) => !e.parent || e.type !== 'point').map((e) => e.name))].slice(0, 400);
   const layers = (doc.tags || []).map((t) => t.name);
   const pts = doc.entities.filter((e) => e.type === 'point');
@@ -75,17 +81,17 @@ export function buildForm(app, c, preset = {}, { pick } = {}) {
     if (k === 'ids') {
       const sel = app.selection.length;
       const useSel = h('input', { type: 'checkbox', checked: v === undefined && sel > 0 });
-      const list = h('input', { value: Array.isArray(v) ? v.join(', ') : '', list: 'form-entities', placeholder: 'names, separated by commas' });
+      const list = h('input', { value: Array.isArray(v) ? v.join(', ') : '', list: L.entities, placeholder: 'names, separated by commas' });
       control = h('div.form-stack', {}, h('label.form-check', {}, useSel, `The selection (${sel})`), list);
       read = () => (list.value.trim() ? list.value.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
     } else if (kind === 'point') {
       // one point: the model's points to choose from, or x, y, z; Pick in the view snaps to a named point
       const namesOnly = !!s.ui?.names;
-      const inp = h('input', { value: v === undefined ? '' : Array.isArray(v) ? v.join(', ') : v, list: 'form-points', placeholder: pts.length ? `e.g. ${pts[0].name}${namesOnly ? '' : ', or x, y, z'}` : namesOnly ? 'a point name' : 'x, y, z' });
+      const inp = h('input', { value: v === undefined ? '' : Array.isArray(v) ? v.join(', ') : v, list: L.points, placeholder: pts.length ? `e.g. ${pts[0].name}${namesOnly ? '' : ', or x, y, z'}` : namesOnly ? 'a point name' : 'x, y, z' });
       const fn = () => readPoint(inp.value, pointNames, { namesOnly });
       live(inp, fn);
-      const pb = pick && !namesOnly && h('button.btn.sm', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; if (p) (inp.value = [snapName(p)].flat().join(', ')), inp.dispatchEvent(new Event('input')); } }, icon('crosshair'), 'Pick');
-      control = h('div.form-row.form-grow', {}, inp, pb);
+      const pb = pick && !namesOnly && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; if (p) (inp.value = [snapName(p)].flat().join(', ')), inp.dispatchEvent(new Event('input')); } }, icon('crosshair'), 'Pick in the view');
+      control = h('div.form-row.form-grow', {}, pb, inp);
       read = checked(fn);
     } else if (kind === 'points' || isPoints(s)) {
       // several points as chips: choose from the list, type x, y, z, or pick them in the view
@@ -93,7 +99,7 @@ export function buildForm(app, c, preset = {}, { pick } = {}) {
       const count = s.ui?.count;
       const vals = Array.isArray(v) ? [...v] : [];
       const chips = h('div.form-chips', { role: 'list' });
-      const inp = h('input', { list: 'form-points', placeholder: count ? `Choose ${count} points` : pts.length ? 'Choose points, or type x, y, z' : 'x, y, z' });
+      const inp = h('input', { list: L.points, placeholder: count ? `Choose ${count} points` : pts.length ? 'Choose points, or type x, y, z' : 'x, y, z' });
       const label = (p) => (Array.isArray(p) ? p.join(', ') : p);
       const fn = () => (count && vals.length && vals.length !== count ? { error: `Choose ${count} points (${vals.length} so far).` } : { value: vals.length ? vals : undefined });
       const show = () => {
@@ -181,15 +187,21 @@ export function buildForm(app, c, preset = {}, { pick } = {}) {
         });
       };
     } else if (s.type === 'array' && (s.items?.type === 'number' || s.items?.type === 'string')) {
-      const inp = h('input', { value: Array.isArray(v) ? v.join(', ') : v ?? '', placeholder: Array.isArray(def) ? def.join(', ') : s.items.type === 'number' ? '1, 2, 3' : 'a, b, c', list: s.items.type === 'string' ? 'form-entities' : undefined });
+      const inp = h('input', { value: Array.isArray(v) ? v.join(', ') : v ?? '', placeholder: Array.isArray(def) ? def.join(', ') : s.items.type === 'number' ? '1, 2, 3' : 'a, b, c', list: s.items.type === 'string' ? L.entities : undefined });
       control = inp;
       read = () => (inp.value.trim() ? inp.value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => (s.items.type === 'number' ? +x : x)) : undefined);
     } else if (s.type === 'string' || !s.type) {
-      const listId = LAYER_KEYS.has(k) ? 'form-layers' : ENTITY_KEYS.has(k) || /entity|id or name|curve|alignment|surface/i.test(s.description || '') ? 'form-entities' : null;
+      const listId = LAYER_KEYS.has(k) ? L.layers : ENTITY_KEYS.has(k) || /entity|id or name|curve|alignment|surface/i.test(s.description || '') ? L.entities : null;
       const choices = choicesIn(s);
       const dl = choices && h('datalist', { id: `form-${k}` }, choices.map((x) => h('option', { value: x })));
-      const inp = h('input', { value: v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v), list: listId || (choices ? `form-${k}` : undefined), placeholder: choices ? choices.join(' · ') : def !== undefined ? String(def) : exampleOf(s) });
-      control = h('div.form-stack', {}, inp, dl);
+      const isThing = listId === L.entities;
+      const fromSel = isThing && v === undefined && selected && needed(k) && !selUsed && (selUsed = true) ? selected.name : undefined;
+      const val = v ?? fromSel;
+      const inp = h('input', { value: val === undefined ? '' : typeof val === 'string' ? val : JSON.stringify(val), list: listId || (choices ? `form-${uid}-${k}` : undefined), placeholder: isThing && pickEntity ? 'Pick it in the view, or type its name' : choices ? choices.join(' · ') : def !== undefined ? String(def) : exampleOf(s) });
+      if (choices) dl.id = `form-${uid}-${k}`;
+      // which thing: click it in the view (#220), the list stays for those who know the name
+      const pb = isThing && pickEntity && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const id = await pickEntity(`Click the ${human(k).toLowerCase()} in the view`); const e = id && app.store.doc.entities.find((x) => x.id === id); if (e) inp.value = e.name; } }, icon('cursor-click'), 'Pick in the view');
+      control = pb ? h('div.form-row.form-grow', {}, pb, inp, dl) : h('div.form-stack', {}, inp, dl);
       read = () => {
         const t = inp.value.trim();
         if (!t) return undefined;
@@ -226,9 +238,9 @@ export function buildForm(app, c, preset = {}, { pick } = {}) {
   const el = h(
     'div.cmd-form',
     {},
-    h('datalist', { id: 'form-entities' }, names.map((n) => h('option', { value: n }))),
-    h('datalist', { id: 'form-layers' }, layers.map((n) => h('option', { value: n }))),
-    h('datalist', { id: 'form-points' }, pts.slice(0, 2000).map((p) => h('option', { value: p.name }, p.point?.code || ''))),
+    h('datalist', { id: L.entities }, names.map((n) => h('option', { value: n }))),
+    h('datalist', { id: L.layers }, layers.map((n) => h('option', { value: n }))),
+    h('datalist', { id: L.points }, pts.slice(0, 2000).map((p) => h('option', { value: p.name }, p.point?.code || ''))),
     modes.length ? h('div.segmented.form-modes', { role: 'radiogroup', 'aria-label': 'How' }, ...modeBtns) : null,
     ...main.map((k) => field(k, props[k])),
     ...modeKeys.map((k) => field(k, props[k])),

@@ -1133,6 +1133,21 @@ const PAGES = {
     await shot('Each step moves on when you have done it; the lesson earns its points');
     await js('window.mmr.app.learning.stop(); return 1;');
   },
+  async 'first-steps-with-the-copilot'() {
+    await fresh();
+    await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
+    await camera([16, 10, 18], [0, 1.5, 0]);
+    await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
+    await shot('First time: the copilot sets up its model on your PC (install, start, download)');
+    // what a turn leaves: the shapes it drafted (here made by the same commands), listed to select or edit
+    const b = await run('create_box', { width: 10, height: 3, depth: 6, name: 'Building' });
+    await js(`const ai = window.mmr.app.ai; const m = (c, t) => Object.assign(document.createElement('div'), { className: c, textContent: t }); ai.add(m('msg user', 'Draw a 10 m by 6 m rectangle and pull it up 3 m into a building')); ai.add(m('msg assistant', 'Done: a 10 × 6 × 3 m building, Building. Change its sizes in the Entity panel or ask me.')); ai.add(ai.madeList([window.mmr.doc.entities.find((e) => e.id === '${b.id}')])); return 1;`);
+    await none();
+    await shot('Under the answer: what it made, to select or edit by hand');
+    await run('select', { ids: [b.id] });
+    await panel('entity');
+    await shot('Edit: its parameters; change a number and it rebuilds');
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

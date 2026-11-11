@@ -347,6 +347,10 @@ export class IO {
   detectModels() {
     return native().invoke('ai:detect');
   }
+  /** Local AI setup (#224): one call per step. */
+  aiSetup(step, arg) {
+    return native().invoke({ status: 'ai:setup-status', start: 'ai:ollama-start', install: 'ai:ollama-install', pull: 'ai:ollama-pull', cancel: 'ai:ollama-pull-cancel' }[step], arg);
+  }
   transcribe(input, lang) {
     return native().invoke('voice:transcribe', input, lang);
   }

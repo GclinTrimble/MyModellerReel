@@ -160,6 +160,64 @@ ipcMain.handle('ai:detect', async () => {
   return { servers, installed, huggingface, claudeDesktop };
 });
 
+// Local AI setup (#224): where Ollama stands, start it, install it (in a window the user sees), download a model.
+const OLLAMA_DIR = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama');
+const ollamaBase = () => (settings.ai.ollama.baseUrl || 'http://127.0.0.1:11434').replace(/\/(v1|api)?\/?$/, '');
+ipcMain.handle('ai:setup-status', async () => {
+  let running = null;
+  try {
+    const r = await fetch(`${ollamaBase()}/api/tags`, { signal: AbortSignal.timeout(1200) });
+    if (r.ok) running = await r.json();
+  } catch {}
+  const installed = !!running || fs.existsSync(path.join(OLLAMA_DIR, 'ollama.exe'));
+  const models = (running?.models || []).map((m) => m.name);
+  const want = settings.ai.ollama.model;
+  const has = models.some((m) => m === want || m.split(':')[0] === want.split(':')[0]);
+  return { provider: settings.ai.provider, ollama: running ? 'running' : installed ? 'stopped' : 'missing', models, model: want, has_model: has, platform: process.platform };
+});
+ipcMain.handle('ai:ollama-start', () => {
+  const gui = path.join(OLLAMA_DIR, 'ollama app.exe');
+  const exe = fs.existsSync(gui) ? gui : fs.existsSync(path.join(OLLAMA_DIR, 'ollama.exe')) ? path.join(OLLAMA_DIR, 'ollama.exe') : 'ollama';
+  const child = require('node:child_process').spawn(exe, exe.endsWith('app.exe') ? [] : ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+  child.on('error', () => {});
+  child.unref();
+  return { started: exe };
+});
+// winget in a console window: the user sees what is installed and answers its questions themselves
+ipcMain.handle('ai:ollama-install', () => {
+  if (process.platform !== 'win32') return shell.openExternal('https://ollama.com/download').then(() => ({ opened: 'https://ollama.com/download' }));
+  const child = require('node:child_process').spawn('cmd.exe', ['/c start "Install Ollama" cmd /k "winget install -e --id Ollama.Ollama && echo Ollama is installed: go back to MyModellerReel and press Start."'], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true });
+  child.on('error', () => shell.openExternal('https://ollama.com/download'));
+  child.unref();
+  return { opened: 'winget' };
+});
+let pulling = null;
+ipcMain.handle('ai:ollama-pull', async (event, model) => {
+  if (!/^[\w.:/-]{1,80}$/.test(String(model))) throw new Error('Not a model name.');
+  pulling = new AbortController();
+  const res = await fetch(`${ollamaBase()}/api/pull`, { method: 'POST', body: JSON.stringify({ model, stream: true }), signal: pulling.signal }).catch((e) => {
+    throw new Error(`Cannot reach Ollama (${e.cause?.code || e.message}). Start it first.`);
+  });
+  if (!res.ok) throw new Error(`Ollama: ${res.status} ${await res.text()}`);
+  let buf = '';
+  let last = {};
+  const dec = new TextDecoder();
+  for await (const chunk of res.body) {
+    buf += dec.decode(chunk, { stream: true });
+    for (let i; (i = buf.indexOf('\n')) >= 0; ) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line) continue;
+      last = JSON.parse(line);
+      if (last.error) throw new Error(`Ollama: ${last.error}`);
+      event.sender.send('ai:pull-progress', { model, status: last.status, completed: last.completed || 0, total: last.total || 0 });
+    }
+  }
+  pulling = null;
+  return { model, status: last.status || 'success' };
+});
+ipcMain.handle('ai:ollama-pull-cancel', () => pulling?.abort());
+
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
   if (patch?.ai?.image?.openai && !patch.ai.image.openai.apiKey) delete patch.ai.image.openai.apiKey;

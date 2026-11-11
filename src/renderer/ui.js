@@ -61,7 +61,7 @@ export class UI {
     if (!c) return this.toast(`No command ${name}`, 'danger');
     if (name === 'create_layer') return this.layerDialog(preset);
     // a friendly form (#201): plain words, the right control per field, points picked in the view, errors in place
-    const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint) });
+    const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint), pickEntity: (hint) => this.pickInView(0, hint, true) });
     const err = h('div.form-error.form-top', { role: 'alert' });
     const body = h('div.panel.form', { style: { padding: 0 } }, h('p.small.muted', {}, c.description), err, form.el);
     const title = (TITLES[name] || name.replace(/_/g, ' ')).replace(/^./, (x) => x.toUpperCase());
@@ -217,11 +217,13 @@ export class UI {
     });
   }
 
-  async pickInView(n, hint) {
+  /** The form steps aside while points (or, with thing, one object: its id) are clicked in the view. */
+  async pickInView(n, hint, thing = false) {
     const dlg = this.$('modal');
     this.modalClosing = true;
     dlg.close();
     try {
+      if (thing) return await this.app.tools.pickEntity(hint);
       const pts = await this.app.tools.pickPoints(n, hint);
       return pts.map((p) => p.toArray());
     } finally {
@@ -563,6 +565,11 @@ export class UI {
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
+      aiPanel: { label: 'Ask the copilot', icon: 'sparkle', run: () => this.show('ai') },
+      aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
+      insights: { label: 'My achievements', icon: 'trophy', run: () => ((this.app.learning.insightsOpen = true), (this.app.help.page = null), this.show('help')) },
+      splitLine: { label: 'Split a line', icon: 'scissors', run: () => this.app.tools.set('split') },
+      joinLines: { label: 'Join two lines', icon: 'link', run: () => this.app.tools.set('join') },
       mcp: { label: 'Connect Claude Desktop (MCP)…', icon: 'plugs-connected', run: () => this.mcpDialog() },
       shortcuts: { label: 'Keyboard shortcuts', icon: 'keyboard', run: () => this.shortcutsDialog() },
       about: { label: 'About MyModellerReel', icon: 'info', run: () => this.aboutDialog() },
@@ -580,9 +587,9 @@ export class UI {
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
-      Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
-      AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSettings'],
-      Help: ['howto', 'tour', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
+      Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
+      AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
+      Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
     for (const name of Object.keys(this.menus)) {
@@ -1119,7 +1126,7 @@ export class UI {
       '2 Scale': ['tool:calibrate', 'drawingScale', 'snapDrawings'],
       '3 Place on the map': ['tool:control', 'georef', 'georefReport', 'worldFile'],
       '4 Take lines out': ['pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours'],
-      '5 Clean up': ['tool:trim', 'tool:extend', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide'],
+      '5 Clean up': ['tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide'],
       '6 To the model': ['elevate', 'toBreaklines', 'extrudeLines', 'sweepLines'],
     },
   };
@@ -2103,6 +2110,7 @@ export class UI {
       {},
       ...this.accountCard(),
       h('h3', {}, 'AI'),
+      ai.provider === 'ollama' ? app.ai.setupCard() : null,
       this.aiFinder(),
       h(
         'label.field',

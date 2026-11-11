@@ -61,6 +61,7 @@ import * as PL from './planar.js';
 import * as TX from './textures.js';
 import * as CRS from './crs.js';
 import * as LEARN from './learning.js';
+import * as ACH from './achievements.js';
 import { MATERIALS } from './materials.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
@@ -98,7 +99,7 @@ export const GUIDE = `MyModellerReel conventions:
   (scale by a known distance, orient by a bearing, move onto a survey point) or add_control_pair + georeference_underlay
   (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
   curves on layers (filter by PDF layer, colour, width, window); list_drawing_text reads spot heights. Drafting on
-  curves: offset_curve, trim, extend, fillet, chamfer, join_curves, break_curve, simplify_curve, divide_curve.
+  curves: offset_curve, trim, extend, fillet, chamfer, join_curves, connect_curves (two lines end to end, gap bridged), break_curve (split a line at a point), simplify_curve, divide_curve.
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
 - Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
   (schema IFC4 or IFC4X3; roles in metadata become IFC classes, metadata becomes property sets) and dxf.
@@ -2057,7 +2058,17 @@ function registerCore(reg, ctx) {
     const extra = pieces.slice(1).map((p) => newCurve(e, DR.lift(p, c.pts3, c.closed), false));
     return [e, ...extra].map((x) => summary(ctx.doc, x));
   }, true);
-  def('drafting', 'simplify_curve', 'Fewer points, same shape within a tolerance (Douglas–Peucker); also merges straight runs.', obj({ ids, layer: str('or: every curve on layers matching this glob'), tolerance: num('m, default 0.05') }), (a) => {
+  def('drafting', 'connect_curves', 'Join two lines into one by their ends, even with a gap between them (a straight piece bridges it): the ends nearest `at` / `at2` (picked), else the closest pair. The first line keeps its name.', obj({ ids: { type: 'array', items: { type: 'string' }, description: 'the two curves' }, at: AT, at2: v3('a world point near the second curve\'s end'), closed: bool('also close the result') }, ['ids']), (a) => {
+    const [e1, e2] = a.ids.map(oneCurve);
+    if (!e2 || e1.id === e2.id) throw new Error('Pick two different curves.');
+    if (e1.curve.closed || e2.curve.closed) throw new Error('Closed curves have no ends to join.');
+    const pts = DR.connect(curve2d(e1).pts3, curve2d(e2).pts3, a.at, a.at2);
+    setPts(e1, pts, !!a.closed);
+    D.removeEntity(ctx.doc, e2);
+    ctx.selection.set([e1.id]);
+    return summary(ctx.doc, e1);
+  }, true);
+  def('drafting', 'simplify_curve','Fewer points, same shape within a tolerance (Douglas–Peucker); also merges straight runs.', obj({ ids, layer: str('or: every curve on layers matching this glob'), tolerance: num('m, default 0.05') }), (a) => {
     const ents = DW.curvesOf(ctx.doc, a.layer ? [] : targets(ctx, a), a.layer);
     let before = 0;
     let after = 0;
@@ -3344,22 +3355,35 @@ function registerCore(reg, ctx) {
   });
   def('scene', 'list_shortcuts', 'Your keyboard shortcuts (on top of the built-in ones).', obj({}), () => ctx.io?.settings?.().shortcuts || {});
   // learning modules (#213): progress is the user's, kept with the app's settings (not in the model)
-  const lessonsDone = () => ctx.io?.settings?.()?.learning?.done || ctx.learning?.done || [];
-  const saveDone = async (done) => {
-    if (ctx.io?.setSettings) await ctx.io.setSettings({ learning: { done } });
-    else ctx.learning = { done };
+  const learnState = () => ctx.io?.settings?.()?.learning || ctx.learning || {};
+  const lessonsDone = () => learnState().done || [];
+  const tutorialsDone = () => learnState().tutorials || [];
+  const saveLearning = async (patch) => {
+    if (ctx.io?.setSettings) await ctx.io.setSettings({ learning: patch });
+    else ctx.learning = { ...learnState(), ...patch };
   };
-  def('scene', 'list_lessons', 'The learning modules (1 Getting started … 5 Presenting): each lesson (a help page), whether it is done, whether it has guided steps, and the points, level and badges earned.', obj({}), () => {
+  def('scene', 'list_lessons', 'The learning modules (1 Getting started … 5 Presenting): each lesson (a help page), whether it is done, whether it has guided steps (a tutorial) and whether those were finished, and the points, level and badges earned.', obj({}), () => {
     const done = new Set(lessonsDone());
-    return { ...LEARN.progress([...done]), modules: LEARN.MODULES.map((m) => ({ id: m.id, title: m.title, lessons: m.lessons.map((l) => ({ id: l.id, done: done.has(l.id), guided: !!l.guide })) })) };
+    const tut = new Set(tutorialsDone());
+    return { ...LEARN.progress([...done], [...tut]), modules: LEARN.MODULES.map((m) => ({ id: m.id, title: m.title, lessons: m.lessons.map((l) => ({ id: l.id, done: done.has(l.id), guided: !!l.guide, tutorial_done: tut.has(l.id) })) })) };
   });
-  def('scene', 'complete_lesson', 'Mark a lesson done (or not, done: false). Lessons also complete by themselves when you run one of their commands.', obj({ id: str('lesson (help page id)'), done: bool('default true') }, ['id']), async (a) => {
-    if (!LEARN.allLessons().some((l) => l.id === a.id)) throw new Error(`No lesson "${a.id}".`);
+  def('scene', 'complete_lesson', `Mark a lesson done (or not, done: false). Lessons also complete by themselves when you run one of their commands. tutorial: its guided steps were finished (+${LEARN.TUTORIAL_POINTS} points, once).`, obj({ id: str('lesson (help page id)'), done: bool('default true'), tutorial: bool('the guided steps were finished') }, ['id']), async (a) => {
+    const lesson = LEARN.allLessons().find((l) => l.id === a.id);
+    if (!lesson) throw new Error(`No lesson "${a.id}".`);
     const done = new Set(lessonsDone());
-    if (a.done === false) done.delete(a.id);
-    else done.add(a.id);
-    await saveDone([...done]);
-    return LEARN.progress([...done]);
+    const tut = new Set(tutorialsDone());
+    if (a.done === false) (done.delete(a.id), tut.delete(a.id));
+    else {
+      done.add(a.id);
+      if (a.tutorial && lesson.guide) tut.add(a.id);
+    }
+    await saveLearning({ done: [...done], tutorials: [...tut] });
+    return LEARN.progress([...done], [...tut]);
+  });
+  // achievements and insights (#222): counted by the app on this PC (settings.stats), read here
+  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what the copilot did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
+    const p = LEARN.progress(lessonsDone(), tutorialsDone());
+    return ACH.insights(ctx.io?.settings?.()?.stats || ctx.stats || {}, { lessons: p.lessons, tutorials: p.tutorials });
   });
   // AI setup that connects by itself (#198)
   def('ai', 'detect_local_models', 'Find the AI models on this PC: servers answering on their usual ports (Ollama, LM Studio, llama.cpp / LocalAI, vLLM, Jan, GPT4All) with their models, models downloaded from Hugging Face (they need one of those servers to run), and whether Claude Desktop is installed (for the MCP link).', obj({}), async () => {
@@ -3377,6 +3401,19 @@ function registerCore(reg, ctx) {
         : 'No local AI found. Install Ollama (ollama.com) and run "ollama pull mistral", or use Claude or an OpenAI-compatible API key.';
     return r;
   });
+  // local AI setup (#224): the steps the setup card shows, for the API and MCP too
+  const setupIo = () => {
+    if (!ctx.io?.aiSetup) throw new Error('Needs the desktop app.');
+    return ctx.io.aiSetup;
+  };
+  def('ai', 'ai_setup_status', 'Where the local copilot stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
+    const s = await setupIo()('status');
+    s.next = s.provider !== 'ollama' ? 'ready' : s.ollama === 'missing' ? 'install' : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'download' : 'ready';
+    return s;
+  });
+  def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
+  def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
+  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: the copilot\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
   def('ai', 'use_ai_model', 'Use a model for the copilot: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };

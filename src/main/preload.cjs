@@ -6,6 +6,7 @@ const CHANNELS = new Set([
   'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:read-binary', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat', 'ai:abort', 'update:check', 'update:install', 'help:read',
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
   'ai:image', 'library:list', 'library:path', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
+  'ai:setup-status', 'ai:ollama-start', 'ai:ollama-install', 'ai:ollama-pull', 'ai:ollama-pull-cancel',
 ]);
 
 contextBridge.exposeInMainWorld('native', {
@@ -16,5 +17,6 @@ contextBridge.exposeInMainWorld('native', {
   onBeforeClose: (fn) => ipcRenderer.on('app:before-close', () => fn()),
   onAccount: (fn) => ipcRenderer.on('account:status', (_, s) => fn(s)),
   onAiDelta: (fn) => ipcRenderer.on('ai:delta', (_, t) => fn(t)),
+  onPullProgress: (fn) => ipcRenderer.on('ai:pull-progress', (_, p) => fn(p)),
   onUpdateReady: (fn) => ipcRenderer.on('update:ready', (_, v) => fn(v)),
 });

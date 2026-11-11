@@ -315,3 +315,18 @@ export function lift(pts2, src3, closed = false) {
 }
 
 export const flat = (pts3) => pts3.map((p) => [p[0], -p[2]]);
+
+/** Join two open polylines end to end (#219): the ends nearest `atA` / `atB` (default: the closest pair) meet; a gap
+ * becomes a straight piece, touching ends merge. Works on 3D points. */
+export function connect(a, b, atA = null, atB = null, tol = 1e-6) {
+  const d3 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+  const ends = (pts, at) => (at ? [d3(pts[0], at) <= d3(pts.at(-1), at) ? 0 : 1] : [0, 1]);
+  let best = null;
+  for (const i of ends(a, atA)) for (const j of ends(b, atB)) {
+    const d = d3(i ? a.at(-1) : a[0], j ? b.at(-1) : b[0]);
+    if (!best || d < best.d) best = { i, j, d };
+  }
+  const A = best.i ? a.slice() : [...a].reverse(); // A ends at the joining end
+  const B = best.j ? [...b].reverse() : b.slice(); // B starts at it
+  return best.d <= tol ? [...A, ...B.slice(1)] : [...A, ...B];
+}

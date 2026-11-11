@@ -15,6 +15,7 @@
   --axis-z: #3c9a4e;
   --dock-w: 380px;
   --tool-w: 52px;
+  --tier-0: #b07a4a; --tier-1: #9aa3ab; --tier-2: #c8a23c; --tier-3: #5f8fa8;
   color-scheme: light;
 }
 html.dark {
@@ -580,3 +581,28 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 @keyframes guide-pulse { 50% { box-shadow: 0 0 0 3px var(--my-accent), 0 0 0 14px rgba(47, 111, 134, 0.1); } }
 .guide-card { position: fixed; width: 300px; pointer-events: auto; background: var(--my-surface); color: var(--my-text); border-radius: 10px; padding: var(--my-space-3); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); border-left: 4px solid var(--my-accent); }
 .guide-card p { margin: 4px 0 8px; }
+/* achievements and insights (#222) */
+.insights { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); }
+.insights .learn-head .ph-trophy { color: var(--tier-2); }
+.ins-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--my-space-1); }
+.ins-stat { display: flex; flex-direction: column; padding: var(--my-space-1) var(--my-space-2); background: var(--my-surface-2); border-radius: var(--my-radius-sm); min-width: 0; }
+.ins-stat strong { font-size: var(--my-text-lg, 1.1rem); }
+.ins-tracks { display: flex; flex-direction: column; gap: var(--my-space-2); }
+.ins-track { display: flex; gap: var(--my-space-2); align-items: flex-start; font-size: var(--my-text-sm); }
+.ins-medal { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--my-surface-2); color: var(--my-text-muted); border: 2px solid var(--my-border); }
+.ins-medal.tier-0 { border-color: var(--tier-0); color: var(--tier-0); } .ins-medal.tier-1 { border-color: var(--tier-1); color: var(--tier-1); }
+.ins-medal.tier-2 { border-color: var(--tier-2); color: var(--tier-2); } .ins-medal.tier-3 { border-color: var(--tier-3); color: var(--tier-3); }
+/* local AI setup (#224), what the copilot made (#225), start here and topics in place (#223) */
+.ai-setup { display: flex; flex-direction: column; gap: var(--my-space-2); margin: var(--my-space-2) 0; }
+.setup-steps { display: flex; flex-direction: column; gap: var(--my-space-1); }
+.setup-step { display: flex; gap: var(--my-space-2); align-items: center; padding: var(--my-space-1) var(--my-space-2); border-radius: var(--my-radius-sm); color: var(--my-text-muted); }
+.setup-step.now { background: var(--my-accent-tint); color: var(--my-text); }
+.setup-step.done { color: var(--my-text); } .setup-step.done > .ph-fill { color: var(--my-success); }
+.made-list { display: flex; flex-direction: column; gap: 2px; padding: var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); background: var(--my-surface); }
+.made-item { gap: var(--my-space-1); font-size: var(--my-text-sm); }
+.made-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start-here { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); border-color: var(--my-accent); }
+.start-here .ph-rocket-launch { color: var(--my-accent); }
+.help-item-x > summary { list-style: none; } .help-item-x > summary::-webkit-details-marker { display: none; }
+.help-item-x[open] > summary { background: var(--my-accent-tint); }
+.help-inline { padding: var(--my-space-2) var(--my-space-2) var(--my-space-3) var(--my-space-4); border-left: 2px solid var(--my-accent); margin: 2px 0 var(--my-space-2) var(--my-space-2); }
