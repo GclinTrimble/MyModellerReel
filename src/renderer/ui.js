@@ -8,6 +8,7 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES } from './forms.js';
+import * as S from '../core/survey.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
@@ -145,6 +146,77 @@ export class UI {
     }
   }
   /** Click points in the view while a form waits (it hides, then comes back). n = 0: until Enter. */
+  /**
+   * The code card (#217): a small popover at the click with a code box and the codes to recall (recent first, then the
+   * library's), filtered as you type. Enter takes the highlighted code or what is typed; Esc or a click away gives null.
+   */
+  codeCard(at, current = '', title = 'Code') {
+    const doc = this.app.store.doc;
+    const KEY = 'mymodellerreel.recentCodes';
+    let recent = [];
+    try {
+      recent = JSON.parse(localStorage.getItem(KEY) || '[]');
+    } catch {}
+    return new Promise((resolve) => {
+      const inp = h('input', { value: current, 'aria-label': title, placeholder: 'e.g. KERB, TREE, GND', autocomplete: 'off', spellcheck: false, role: 'combobox', 'aria-controls': 'code-list', 'aria-expanded': 'true' });
+      const list = h('div.code-list', { role: 'listbox', id: 'code-list', 'aria-label': 'Codes' });
+      let items = [];
+      let hi = -1; // -1: what is typed
+      const draw = () => {
+        items = S.suggestCodes(doc, recent, inp.value === current ? '' : inp.value);
+        hi = Math.min(hi, items.length - 1);
+        list.replaceChildren(
+          ...items.map((x, i) =>
+            h('div.code-item', { role: 'option', 'aria-selected': String(i === hi), onpointerdown: (e) => (e.preventDefault(), done(x.code)) }, icon(x.recent ? 'clock-counter-clockwise' : 'tag'), h('b', {}, x.code), h('span', {}, x.action)),
+          ),
+        );
+        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one.'));
+      };
+      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), title), inp, list, h('div.code-keys', {}, '↑↓ choose · Enter OK · Esc cancel · Tab completes'));
+      const away = (e) => !card.contains(e.target) && done(null);
+      const done = (code) => {
+        card.remove();
+        window.removeEventListener('pointerdown', away, true);
+        if (code !== null) {
+          code = code.trim();
+          try {
+            localStorage.setItem(KEY, JSON.stringify(S.rememberCode(recent, code)));
+          } catch {}
+        }
+        resolve(code);
+      };
+      // typing highlights the first code that starts with it (KE → KERB); ↑ back to what is typed, for a new code
+      inp.oninput = () => {
+        hi = -1;
+        draw();
+        const t = inp.value.trim().toUpperCase();
+        if (t && items[0]?.code.toUpperCase().startsWith(t)) (hi = 0), draw();
+      };
+      inp.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          hi = Math.max(-1, Math.min(items.length - 1, hi + (e.key === 'ArrowDown' ? 1 : -1)));
+          draw();
+        } else if (e.key === 'Enter') done(hi >= 0 ? items[hi].code : inp.value);
+        else if (e.key === 'Escape') done(null);
+        else if (e.key === 'Tab' && hi >= 0) (e.preventDefault(), (inp.value = items[hi].code), (hi = -1), draw());
+      };
+      draw();
+      document.body.append(card);
+      // next to the click, inside the window
+      const r = card.getBoundingClientRect();
+      card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
+      card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      // after the click that opened it: its mousedown would take the focus back and close the card
+      setTimeout(() => {
+        window.addEventListener('pointerdown', away, true);
+        inp.focus();
+        inp.select();
+      });
+    });
+  }
+
   async pickInView(n, hint) {
     const dlg = this.$('modal');
     this.modalClosing = true;

@@ -38,7 +38,7 @@ export function gridToProject(doc, { n, e, z }) {
 export function parseAngle(v, angles = 'deg') {
   if (typeof v === 'number') return angles === 'gon' ? v * 0.9 : v;
   const s = String(v).trim();
-  const m = s.match(/^(-?\d+(?:\.\d+)?)(?:[°\s:d]+(\d+(?:\.\d+)?))?(?:['\s:m]+(\d+(?:\.\d+)?))?["s]?$/i);
+  const m = s.match(/^(-?\d+(?:\.\d+)?)(?:[°\s:d]+(\d+(?:\.\d+)?))?(?:['\s:m]+(\d+(?:\.\d+)?))?['"s]?$/i); // 45°30' reads too
   if (!m) throw new Error(`Cannot read the angle "${s}". Use degrees (45.5) or DMS (45°30'00").`);
   const sign = s.startsWith('-') ? -1 : 1;
   const deg = Math.abs(+m[1]) + (+m[2] || 0) / 60 + (+m[3] || 0) / 3600;
@@ -211,4 +211,45 @@ export function planCodes(doc) {
     else if (controls.has('E')) open.delete(key);
   }
   return { lines: lines.filter((l) => l.points.length >= 2), objects, warnings };
+}
+
+// ---------------------------------------------------------------- the code card (#217)
+
+/** Recent codes, most recent first: code moves to the top, no duplicates (case-insensitive), at most max. */
+export function rememberCode(recent, code, max = 12) {
+  const c = String(code || '').trim();
+  if (!c) return recent;
+  return [c, ...recent.filter((x) => x.toUpperCase() !== c.toUpperCase())].slice(0, max);
+}
+
+/** What a library code does, in a few words: "places a tree", "joins into a line"… */
+export function codeAction(def) {
+  if (!def) return 'not in the library';
+  const o = def.object;
+  const what = o ? `places ${o.type === 'component' ? o.component || 'a component' : `a ${o.type || 'tree'}`}` : def.breakline ? 'joins into a breakline' : def.line ? 'joins into a line' : 'a point';
+  return def.description ? `${def.description} · ${what}` : what;
+}
+
+/**
+ * The codes to offer for a point: the recent ones first (most recent on top), then the library's, then any other used in
+ * the model; filtered by what is typed (start of the code first, then anywhere, also in the description).
+ * Returns [{ code, recent, action }]. The base code is matched, so "KERB 2 B" still offers KERB.
+ */
+export function suggestCodes(doc, recent = [], query = '', max = 8) {
+  const lib = doc.featureCodes || {};
+  const used = points(doc).map((p) => p.point.code).filter(Boolean).reverse();
+  const seen = new Set();
+  const all = [];
+  for (const [c, isRecent] of [...recent.map((c) => [c, true]), ...Object.keys(lib).map((c) => [c, false]), ...used.map((c) => [c, false])]) {
+    const key = c.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    all.push({ code: c, recent: isRecent, action: codeAction(lib[parseCode(c).code]) });
+  }
+  const q = String(query).trim().toUpperCase();
+  if (!q) return all.slice(0, max);
+  const base = parseCode(q).code;
+  const starts = all.filter((x) => x.code.toUpperCase().startsWith(q) || x.code.toUpperCase() === base);
+  const inside = all.filter((x) => !starts.includes(x) && (x.code.toUpperCase().includes(base) || x.action.toUpperCase().includes(q)));
+  return [...starts, ...inside].slice(0, max);
 }

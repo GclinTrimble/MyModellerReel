@@ -521,6 +521,30 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .segmented .seg { border: 0; background: var(--my-surface); padding: 4px 12px; font: inherit; font-size: var(--my-text-sm); cursor: pointer; color: var(--my-text-secondary); }
 .segmented .seg + .seg { border-left: 1px solid var(--my-border); }
 .segmented .seg[aria-pressed='true'] { background: var(--my-accent); color: var(--my-on-accent); }
+/* the survey code card (#217): a small popover at the click */
+.code-card { position: fixed; z-index: 60; width: 18rem; display: flex; flex-direction: column; gap: var(--my-space-2); padding: var(--my-space-3); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); box-shadow: var(--my-shadow-2); }
+.code-title { display: flex; align-items: center; gap: var(--my-space-1); font-size: var(--my-text-sm); font-weight: var(--my-weight-semibold); color: var(--my-text); }
+.code-card > input { font-size: var(--my-text-md); font-family: var(--my-font-mono); }
+.code-list { display: flex; flex-direction: column; max-height: 14rem; overflow-y: auto; }
+.code-item { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: var(--my-space-2); padding: var(--my-space-1) var(--my-space-2); border-radius: var(--my-radius-sm); cursor: pointer; font-size: var(--my-text-sm); }
+.code-item b { font-family: var(--my-font-mono); color: var(--my-text); }
+.code-item span { color: var(--my-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-item .ph { color: var(--my-text-faint); }
+.code-item:hover, .code-item[aria-selected='true'] { background: var(--my-accent-tint); }
+.code-empty, .code-keys { font-size: var(--my-text-xs); color: var(--my-text-faint); }
+/* #215: point chips, short number boxes with their unit, modes, a field marked while it is wrong */
+.form-modes { align-self: stretch; display: flex; }
+.form-modes .seg { flex: 1; padding: var(--my-space-1) var(--my-space-3); }
+.form-grow > input { flex: 1 1 10em; min-width: 0; }
+.form-row > .form-num, .form-tuple > input { width: 6em; flex: 0 1 6em; }
+.form-row > .form-angle { width: 9em; flex-basis: 9em; }
+.form-hint { font-size: var(--my-text-xs); color: var(--my-text-faint); }
+.form-chips { display: flex; flex-wrap: wrap; gap: var(--my-space-1); }
+.form-chips:empty { display: none; }
+.form-chip { display: inline-flex; align-items: center; gap: var(--my-space-1); padding: 2px 4px 2px 8px; border-radius: var(--my-radius-pill); background: var(--my-accent-tint); color: var(--my-accent-text); font-size: var(--my-text-sm); }
+.form-chip-x { border: 0; background: none; color: inherit; cursor: pointer; display: inline-flex; padding: 2px; border-radius: var(--my-radius-round); }
+.form-chip-x:hover { background: var(--my-accent-tint-strong); }
+.cmd-form input[aria-invalid='true'] { border-color: var(--my-danger); outline-color: var(--my-danger); }
 .form-more summary { cursor: pointer; font-size: var(--my-text-sm); color: var(--my-accent-text); margin-bottom: var(--my-space-2); }
 .form-more[open] { display: flex; flex-direction: column; gap: var(--my-space-3); }
 .line-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }

@@ -1248,9 +1248,9 @@ class WalkTool {
   }
 }
 
-/** Survey point: click to add one (snapped), with the code typed in the Measurements box last. */
+/** Survey point: click to add one (snapped); its code card asks for the code (Enter repeats the last one). */
 class PointTool {
-  hint = 'Click to add a survey point. Type in the value box: a code for the next points (GND, KERB B), "E, N, Z" to add one at those coordinates, or #name to rename the last one.';
+  hint = 'Click to add a survey point, then type or pick its code and press Enter (Esc: no point). Click a point to change its code. Value box: "E, N, Z" adds one there, #name renames the last one.';
   vcbLabel = 'Code · E,N,Z · #name';
   constructor(t) {
     this.t = t;
@@ -1260,10 +1260,27 @@ class PointTool {
     this.t.infer(ev);
   }
   async down(ev) {
+    if (this.asking) return;
     const p = this.t.infer(ev).point;
-    const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code: this.code });
+    const hit = this.t.vp.pickPoint();
+    const old = hit && this.t.app.entity(hit.entityId);
+    this.asking = true;
+    let code;
+    try {
+      // the code card (#217): click → type or pick a code → Enter
+      code = await this.t.app.ui.codeCard(ev, old ? old.point.code : this.code, old ? `Code of ${old.name}` : 'Code of the new point');
+    } finally {
+      this.asking = false;
+    }
+    if (code === null) return this.t.status(old ? 'Code unchanged.' : 'No point added.');
+    if (old) {
+      if (code !== old.point.code) await this.t.run('edit_points', { points: [old.id], code });
+      return this.t.status(`Point ${old.name}: code ${code || '(none)'}.`);
+    }
+    this.code = code;
+    const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code });
     this.last = r.id;
-    this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${this.code ? ` · ${this.code}` : ''}. Type #name to rename it.`);
+    this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${code ? ` · ${code}` : ''}. Type #name to rename it.`);
   }
   /** The value box (#188): coordinates add a point there, #name renames the last point, anything else is the code. */
   async vcb(text) {
