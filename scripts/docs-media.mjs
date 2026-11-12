@@ -290,6 +290,23 @@ const PAGES = {
     await js("window.mmr.app.ui.attributeTable('L-TREE'); return 1;");
     await shot('');
   },
+  async 'work-with-several-agents'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await camera([16, 9, 18], [0, 1.5, 0]);
+    await run('save_agent', { name: 'Site surveyor', skill: 'survey', instructions: 'You check levels and drainage; answer in short lists.', color: '#e0a458' });
+    await run('save_agent', { name: 'Landscaper', instructions: 'You plant and pave around buildings.', color: '#9ece6a' });
+    await panel('agents');
+    await none();
+    await shot('The Agents panel: Plumb and your own agents, each with its model, skill and thread');
+    await js("window.mmr.app.agents.editDialog(window.mmr.app.agents.profiles[1]); return 1;");
+    await shot('Each agent: name, model, skill, tools, standing instructions and colour');
+    await js("document.getElementById('modal').close(); const r = window.mmr.app.viewport.canvas.getBoundingClientRect(); const p = window.mmr.app.agents.askAt(r.left + r.width * 0.45, r.top + r.height * 0.55); p.querySelector('select').value = 'landscaper'; p.querySelector('input').value = 'Put a paved terrace here, 3 m deep'; return 1;");
+    await shot('Ctrl+Space or right-click › Ask…: a prompt where you point, with the point and the selection');
+    await js("window.mmr.app.agents.closeAsk(); return 1;");
+    await run('remove_agent', { agent: 'Site surveyor' });
+    await run('remove_agent', { agent: 'Landscaper' });
+  },
   async 'ask-the-copilot'() {
     await fresh();
     await run('new_from_template', { id: 'house' });

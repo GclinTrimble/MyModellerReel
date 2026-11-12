@@ -338,29 +338,34 @@ ipcMain.handle('update:install', () => {
 });
 
 const { readStream } = require('./stream.cjs');
-let aiAbort = null;
-ipcMain.handle('ai:abort', () => aiAbort?.abort());
-ipcMain.handle('ai:chat', async (event, body) => {
-  const ai = settings.ai;
+// one request per agent at a time (#243): agent { id, provider, model } picks its own model; abort(id) stops one, abort() all
+const aiAborts = new Map();
+ipcMain.handle('ai:abort', (_, id) => (id ? [aiAborts.get(id)] : [...aiAborts.values()]).forEach((c) => c?.abort()));
+ipcMain.handle('ai:chat', async (event, { agent: who, ...body }) => {
+  const ai = { ...settings.ai, provider: who?.provider || settings.ai.provider };
+  const own = (x) => (who?.model ? { ...x, model: who.model } : x);
+  const key = who?.id || '';
+  const aiAbort = new AbortController();
+  aiAborts.get(key)?.abort();
+  aiAborts.set(key, aiAbort);
   let url;
   let headers = { 'content-type': 'application/json' };
   if (ai.provider === 'anthropic') {
     if (!ai.anthropic.apiKey) throw new Error('Add your Claude API key in AI settings.');
     url = 'https://api.anthropic.com/v1/messages';
     headers = { ...headers, 'x-api-key': ai.anthropic.apiKey, 'anthropic-version': '2023-06-01' };
-    body = { model: ai.anthropic.model, max_tokens: 8192, ...body };
+    body = { ...own({ model: ai.anthropic.model }), max_tokens: 8192, ...body };
   } else if (ai.provider === 'openai') {
     url = `${ai.openai.baseUrl.replace(/\/$/, '')}/chat/completions`;
     if (ai.openai.apiKey) headers.authorization = `Bearer ${ai.openai.apiKey}`;
-    body = { model: ai.openai.model, ...body };
+    body = { ...own({ model: ai.openai.model }), ...body };
   } else {
     // Ollama's native endpoint, because only it lets us raise the context window for long tool lists.
     url = `${ai.ollama.baseUrl.replace(/\/(v1|api)?\/?$/, '')}/api/chat`;
-    body = { model: ai.ollama.model, ...body };
+    body = { ...own({ model: ai.ollama.model }), ...body };
   }
   let res;
   try {
-    aiAbort = new AbortController();
     res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...body, stream: true, ...(ai.provider === 'openai' ? { stream_options: { include_usage: true } } : {}) }), signal: AbortSignal.any([aiAbort.signal, AbortSignal.timeout(300000)]) });
   } catch (e) {
     if (aiAbort?.signal.aborted) throw new Error('Stopped.');
@@ -372,7 +377,7 @@ ipcMain.handle('ai:chat', async (event, body) => {
   // servers that ignore stream: true answer plain JSON
   if ((res.headers.get('content-type') || '').includes('application/json')) return { provider: ai.provider, data: JSON.parse(await res.text()) };
   try {
-    return { provider: ai.provider, data: await readStream(ai.provider, res.body, (t) => event.sender.send('ai:delta', t)) };
+    return { provider: ai.provider, data: await readStream(ai.provider, res.body, (t) => event.sender.send('ai:delta', t, key)) };
   } catch (e) {
     if (aiAbort?.signal.aborted) throw new Error('Stopped.');
     throw e;

@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('native', {
   },
   onBeforeClose: (fn) => ipcRenderer.on('app:before-close', () => fn()),
   onAccount: (fn) => ipcRenderer.on('account:status', (_, s) => fn(s)),
-  onAiDelta: (fn) => ipcRenderer.on('ai:delta', (_, t) => fn(t)),
+  onAiDelta: (fn) => ipcRenderer.on('ai:delta', (_, t, id) => fn(t, id)),
   onPullProgress: (fn) => ipcRenderer.on('ai:pull-progress', (_, p) => fn(p)),
   onUpdateReady: (fn) => ipcRenderer.on('update:ready', (_, v) => fn(v)),
 });

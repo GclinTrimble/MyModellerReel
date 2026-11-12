@@ -571,6 +571,8 @@ export class UI {
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
+      askHere: { label: 'Ask an agent here…', icon: 'chat-teardrop-dots', key: 'Ctrl+Space', run: () => app.agents.askAt() },
+      agents: { label: 'Agents…', icon: 'users-three', run: () => this.show('agents') },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
       aiPanel: { label: 'Ask the copilot', icon: 'sparkle', run: () => this.show('ai') },
       aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
@@ -595,7 +597,7 @@ export class UI {
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
-      AI: ['askAi', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
+      AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
@@ -852,6 +854,8 @@ export class UI {
       ];
     } else {
       const mesh = vp.pick(ev);
+      // Ask… (#244): a prompt right here, with what is under the pointer
+      const ask = { label: 'Ask…', icon: 'chat-teardrop-dots', key: 'Ctrl+Space', run: () => app.agents.askAt(ev.clientX, ev.clientY, mesh?.point?.toArray()) };
       const hit = vp.pickAnnotation(ev) || vp.pickPoint() || mesh || vp.pickCurve() || vp.pickUnderlay();
       if (hit) {
         const id = app.pickTarget(hit.entityId);
@@ -868,6 +872,8 @@ export class UI {
         if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('editSurface'), a('contours'), a('analyze'));
         items = [
           one ? one.name : `${ents.length} selected`,
+          ask,
+          '-',
           ...extra.filter(Boolean),
           ...(extra.length ? ['-'] : []),
           a('zoomSel'),
@@ -886,7 +892,7 @@ export class UI {
           '-',
           a('properties'),
         ];
-      } else items = [a('paste'), a('selectAll'), a('unhideAll'), a('sectionPlanes'), '-', a('zoomExtents'), ...['iso', 'top', 'front', 'right'].map((v) => a(v, `${A[v].label} view`)), '-', a('layout1'), a('layout4'), '-', a('exportAll')];
+      } else items = [ask, '-', a('paste'), a('selectAll'), a('unhideAll'), a('sectionPlanes'), '-', a('zoomExtents'), ...['iso', 'top', 'front', 'right'].map((v) => a(v, `${A[v].label} view`)), '-', a('layout1'), a('layout4'), '-', a('exportAll')];
     }
     const at = { getBoundingClientRect: () => ({ left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY }) };
     this.popAt(at, items.filter(Boolean));
@@ -1045,6 +1051,7 @@ export class UI {
   buildTabs() {
     this.tabs = [
       ['ai', 'AI', 'sparkle'],
+      ['agents', 'Agents', 'users-three'],
       ['outliner', 'Outliner', 'tree-structure'],
       ['entity', 'Entity', 'info'],
       ['materials', 'Materials', 'palette'],
@@ -1066,6 +1073,9 @@ export class UI {
   }
   panel_help() {
     return this.app.help.panel();
+  }
+  panel_agents() {
+    return this.app.agents.panel();
   }
   renderDock() {
     const body = this.$('dock-body');

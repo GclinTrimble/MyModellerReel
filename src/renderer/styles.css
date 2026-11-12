@@ -651,3 +651,22 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .sketch-tools { align-items: center; gap: var(--my-space-2); }
 .sketch-tools input.form-num { flex: 0 0 6em; } /* flex-basis beats the generic full-width input */
 .sketch-tools input.sketch-label { flex: 0 1 16em; }
+
+/* agents (#243) and Ask at the cursor (#244) */
+.agents { display: flex; flex-direction: column; gap: var(--my-space-2); padding: var(--my-space-3); }
+.agent-list { display: flex; flex-direction: column; gap: var(--my-space-1); }
+.agent-row { display: flex; align-items: center; gap: var(--my-space-2); padding: var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); font-size: var(--my-text-sm); }
+.agent-row .grow { min-width: 0; }
+.agent-row .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-row.busy { border-color: var(--my-accent); }
+.agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.agent-row.busy .agent-dot { animation: agent-pulse 1s ease-in-out infinite alternate; }
+@keyframes agent-pulse { to { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .agent-row.busy .agent-dot { animation: none; } }
+.agent-held { display: flex; flex-direction: column; gap: var(--my-space-1); }
+.agent-form { display: flex; flex-direction: column; gap: var(--my-space-2); padding: var(--my-space-3); }
+.agent-pick { max-width: 140px; font-weight: 600; }
+.msg.user.queued { opacity: 0.6; }
+.ask-pop { position: fixed; z-index: 50; width: 370px; display: flex; flex-direction: column; gap: var(--my-space-1); padding: var(--my-space-2); background: var(--my-surface); color: var(--my-text); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-3); }
+.ask-pop .row { gap: var(--my-space-1); }
+.ask-input { flex: 1; min-width: 0; height: var(--my-control-md, 32px); }
