@@ -128,6 +128,7 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 }
 #snap-label[data-kind='endpoint']::before { border-color: #3c9a4e; background: #3c9a4e; }
 #snap-label[data-kind='midpoint']::before { border-color: #33b3c2; background: #33b3c2; border-radius: 50%; }
+#snap-label[data-kind='survey']::before { border-color: #e0782f; background: transparent; border-radius: 50%; width: 10px; height: 10px; left: -15px; top: -15px; }
 #snap-label[data-kind='x'] { background: var(--axis-x); }
 #snap-label[data-kind='y'] { background: var(--axis-y); }
 #snap-label[data-kind='z'] { background: var(--axis-z); }

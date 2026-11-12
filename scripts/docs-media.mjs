@@ -1184,6 +1184,26 @@ const PAGES = {
     await shot('Any menu as a ribbon: Draw and modify, Edit, View, Animate, Site, Drawings');
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
   },
+  async 'tie-lines-to-points'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('import_points', { text: ['100,0,0,0,EP', '101,5,10,0.5,EP', '102,0,10,0,GND', '103,5,0,0.4,GND'].join('\n') });
+    await run('set_base_point', { e: 0, n: 0, z: 0 });
+    await run('set_style', { grid: false }).catch(() => {});
+    await camera([5, 18, 8], [5, 0, -2.5]);
+    await js("window.mmr.app.tools.set('line'); return 1;");
+    const at = (name) => js(`const p = window.mmr.doc.entities.find((e) => e.name === '${name}'); const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p.position)); return [Math.round(s.x), Math.round(s.y)];`);
+    const [a, b] = [await at('100'), await at('101')];
+    const down = (x, y) => [{ type: 'mouseMove', x, y }, { type: 'wait', ms: 150 }, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 150 }];
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x: a[0] + 30, y: a[1] + 30 }, { type: 'wait', ms: 100 }, { type: 'mouseMove', x: a[0] + 4, y: a[1] - 3 }] });
+    await shot('Line tool: the cursor snaps to a survey point and names it (point · code)');
+    await req('POST', '/api/input', { events: [...down(a[0] + 4, a[1] - 3), ...down(b[0] - 3, b[1] + 4), { type: 'keyDown', keyCode: 'Escape' }, { type: 'keyUp', keyCode: 'Escape' }] });
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select([window.mmr.doc.entities.find((e) => e.type === 'curve').id]); return 1;");
+    await shot('Each end is tied to its point: orange rings on the selected line');
+    await run('edit_points', { points: ['101'], e: 7, n: 1.5, z: 1.5 });
+    await shot('Point 101 moves (edited or dragged): the line follows');
+    await js("window.mmr.app.tools.set('select'); return 1;");
+  },
   async 'edit-a-surface-by-hand'() {
     await fresh();
     await js("window.mmr.app.ui.setRibbon(null); return 1;");

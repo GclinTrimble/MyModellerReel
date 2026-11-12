@@ -60,6 +60,21 @@ export function applyTransform(obj, e) {
   obj.scale.fromArray(e.scale);
 }
 
+let RING = null;
+/** A ring sprite for the tied-vertex marks (drawn once). */
+function ringTexture() {
+  if (RING) return RING;
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  g.strokeStyle = '#fff';
+  g.lineWidth = 6;
+  g.beginPath();
+  g.arc(16, 16, 12, 0, Math.PI * 2);
+  g.stroke();
+  return (RING = new THREE.CanvasTexture(c));
+}
+
 /**
  * Build the object tree for a document. Used by the viewport and by exporters (edges: false).
  * cache (the viewport's): geometry per mesh object, so an edit re-uploads only the shapes it changed.
@@ -622,7 +637,24 @@ export class Viewport {
       o.material.emissiveIntensity = on ? 0.35 : proposed ? 0.45 : 1;
       for (const c of o.children) if (c.userData.isEdges) c.material.color.set(on ? '#2f6f86' : EDGE_COLOR);
     }
+    this.showTies(doc, ids);
     this.dirty = true;
+  }
+
+  /** Tied vertices of the selected curves (point ties): orange rings on top of the curve. */
+  showTies(doc, ids) {
+    if (this.tieMarks) this.scene.remove(this.tieMarks), this.tieMarks.geometry.dispose(), (this.tieMarks = null);
+    const at = [];
+    for (const id of ids) {
+      const e = D.getEntity(doc, id);
+      if (!e?.ties || !e.curve) continue;
+      const m = new THREE.Matrix4().fromArray(D.worldMatrix(doc, e).elements);
+      for (const t of e.ties) if (e.curve.points[t.vertex]) at.push(new THREE.Vector3(...e.curve.points[t.vertex]).applyMatrix4(m));
+    }
+    if (!at.length) return;
+    this.tieMarks = new THREE.Points(new THREE.BufferGeometry().setFromPoints(at), new THREE.PointsMaterial({ color: 0xe0782f, size: 13, sizeAttenuation: false, depthTest: false, map: ringTexture(), transparent: true, alphaTest: 0.3 }));
+    this.tieMarks.renderOrder = 996;
+    this.scene.add(this.tieMarks);
   }
 
   /** Tint what a pending proposal adds or changes, and draw red ghosts of what it removes. */
@@ -824,6 +856,15 @@ export class Viewport {
     if (this.vertexCache) return this.vertexCache;
     const pts = [];
     this.modelRoot.updateMatrixWorld(true);
+    // survey points (point ties): they win over an endpoint at the same place, and say which point they are
+    const cloud = this.modelRoot.children.find((o) => o.isPoints && !o.userData.pointcloud);
+    if (cloud?.visible) {
+      const pos = cloud.geometry.attributes.position;
+      cloud.userData.pointIds.forEach((id, i) => {
+        const e = this.store.doc.entities.find((x) => x.id === id);
+        if (e) pts.push({ p: new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(cloud.matrixWorld), kind: 'Survey point', point: id, label: e.name + (e.point?.code ? ` · ${e.point.code}` : '') });
+      });
+    }
     for (const [id, o] of this.objs) {
       const e = this.store.doc.entities.find((x) => x.id === id);
       if (e?.curve && o.visible) {
