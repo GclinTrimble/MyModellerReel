@@ -578,6 +578,7 @@ export class UI {
       coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
       editSurface: { label: 'Edit surface by hand: swap, delete, points, outline, holes', icon: 'triangle', run: () => app.tools.set('surfedit') },
       basePoint: { label: 'Base point: click a point, type its coordinates', icon: 'crosshair', run: () => app.tools.set('basepoint') },
+      mapPick: { label: 'Base point from a map…', icon: 'map-trifold', run: () => app.pickLocation() },
       units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
       survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
@@ -607,7 +608,7 @@ export class UI {
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
@@ -1098,10 +1099,10 @@ export class UI {
       h('p.small.muted', {}, `Where is the project? Give its latitude and longitude (from a map, or the geolocation), or words such as a country. ${cur ? `Now: ${cur.epsg ? `EPSG:${cur.epsg} ` : ''}${cur.name || ''}.` : ''}`),
       h('div.row', {}, h('label.field.grow', {}, h('span', {}, 'Latitude'), lat), h('label.field.grow', {}, h('span', {}, 'Longitude'), lon)),
       h('label.field', {}, h('span', {}, 'Or words'), words),
-      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest')),
+      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest'), h('button.btn.sm', { onclick: () => (this.closeModal(), app.pickLocation()) }, icon('map-trifold'), 'Pick on a map…')),
       list,
     );
-    for (const el of [lat, lon, words]) el.onkeydown = (e) => e.key === 'Enter' && find();
+    for (const el of [lat, lon, words]) el.onkeydown = (e) => void (e.key === 'Enter' && find()); // void: an onkeydown returning false swallows the key
     if (geo.latitude !== undefined || words.value) find();
     this.modal('Coordinate system', body);
   }
@@ -1239,7 +1240,7 @@ export class UI {
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint'],
+      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
       Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
@@ -1753,7 +1754,7 @@ export class UI {
       list.replaceChildren(h('p.small.muted', {}, 'Searching…'));
       app.reg.run('search_assets', { query: q.value, type: type.value }).then((r) => list.replaceChildren(...(r.length ? r.map((x) => h('div.legend-row', {}, h('span.grow', {}, `${x.name} `, h('span.small.muted', {}, x.categories.slice(0, 3).join(', '))), h('button.btn.sm', { onclick: () => (this.closeModal(), app.reg.run('import_asset', { id: x.id, type: type.value }).then(() => this.toast(`${x.name} imported (CC0)`)).catch((e) => this.toast(e.message, 'danger'))) }, 'Import'))) : [h('p.small.muted', {}, 'Nothing found.')]))).catch((e) => list.replaceChildren(h('p.small', {}, e.message)));
     };
-    q.onkeydown = (e) => e.key === 'Enter' && go();
+    q.onkeydown = (e) => void (e.key === 'Enter' && go());
     this.modal('Free assets', h('div', {}, h('div.row', {}, q, type, h('button.btn.primary.sm', { onclick: go }, 'Search')), list));
   }
   /** Versions saved in the file: save, restore, compare. */
@@ -2499,7 +2500,7 @@ export class UI {
       h('h3', {}, 'Coordinates'),
       h('div.small', {}, g.base ? `Base point E ${g.base[0]} · N ${g.base[1]} · Z ${g.base[2]}` : 'No base point yet: the first point sets it.'),
       h('div.small.muted', {}, `${g.crs?.name || 'No coordinate system'}${g.crs?.epsg ? ` (EPSG:${g.crs.epsg})` : ''} · units ${g.units || 'm'} · angles ${g.angles || 'deg'}`),
-      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
+      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.mapPick.run }, icon('map-trifold'), 'Map…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
       h('div.row', {}, h('h3.grow', {}, `Points · ${pts.length}`), h('button.btn', { onclick: this.actions.importPoints.run }, icon('tray-arrow-down'), 'Import…'), h('button.icon-btn.sm', { title: 'Export points', 'aria-label': 'Export points', onclick: this.actions.exportPoints.run }, icon('export'))),
       filter,
       h(

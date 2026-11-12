@@ -27,6 +27,7 @@ import * as Assets from '../core/assets.js';
 import { referencePaths } from '../core/usd.js';
 import { newDoc as freshDoc } from '../core/document.js';
 import { PickFirst } from './pickfirst.js';
+import { GroundMap, pickLocation } from './maps.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -504,6 +505,8 @@ for (const f of await native.invoke('mytools:list'))
   }
 app.ui.refresh();
 app.viewport.listeners.add(() => drawLabels(app));
+app.groundMap = new GroundMap(app); // after the labels: its grid labels draw over them
+app.pickLocation = () => pickLocation(app);
 // first run, or nothing to restore: the start screen (#109); tests drive the app themselves
 if (!app.info.test && !restored?.doc?.entities?.length) app.ui.startScreen();
 // Keep the camera in the document so saves and the AI know the current view.

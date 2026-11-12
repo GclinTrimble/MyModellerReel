@@ -120,7 +120,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
         show();
       };
       inp.onchange = add; // a choice from the list, or typed and left
-      inp.onkeydown = (e) => e.key === 'Enter' && (e.preventDefault(), add());
+      inp.onkeydown = (e) => void (e.key === 'Enter' && (e.preventDefault(), add()));
       const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) { const v = coords ? r3(p) : snapName(p); if (!(s.ui?.names && Array.isArray(v))) vals.push(v); } show(); } }, icon('crosshair'), 'Pick in the view');
       control = h('div.form-stack', {}, chips, h('div.form-row.form-grow', {}, inp, pb));
       show();
