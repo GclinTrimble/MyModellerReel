@@ -14,7 +14,7 @@ You want real furniture, materials and skies without modelling them, free to use
    ![An HDRI sky as the environment](media/free-assets-and-models/03.jpg)
 4. **AI › [Generate a 3D model from words](action:generateMesh)** asks a text-to-3D service (Tripo, or your own local server in AI settings) for a prop, and brings it in as a shape.
 
-## Ask the copilot
+## Ask Plumb
 
 > Find a free picnic table and put it on the deck, then put a wood floor texture on the deck.
 

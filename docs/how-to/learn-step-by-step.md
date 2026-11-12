@@ -14,7 +14,7 @@ You are new to the app and want a path through it: what to learn first, a sense 
 4. Each step moves on by itself when you have done it; **Back**, **Skip step** and **Stop** are on the card.
    ![The next step](media/learn-step-by-step/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Which lessons have I not done yet in module 4?
 

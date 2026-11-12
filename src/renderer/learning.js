@@ -24,7 +24,7 @@ export class Learning {
     for (const id of fresh) this.complete(id);
     this.count(name);
   }
-  /** A copilot request that ran `calls` commands. */
+  /** A request to Plumb that ran `calls` commands. */
   aiTurn(calls) {
     this.count(null, { ai: { calls } });
     if (calls && !this.done.includes('ask-the-copilot')) this.complete('ask-the-copilot');
@@ -64,8 +64,8 @@ export class Learning {
         stat(r.days_active, 'days active'),
         stat(r.minutes < 120 ? `${r.minutes} min` : `${Math.round(r.minutes / 6) / 10} h`, 'modelling'),
         stat(r.commands_run, 'things done'),
-        stat(r.ai_requests, 'copilot requests', `${r.ai_commands} commands run for you`),
-        stat(`${r.ai_minutes_saved} min`, 'saved by the copilot', `About ${ACH.SECONDS_PER_CALL} s for each of the ${r.ai_commands} commands it ran`),
+        stat(r.ai_requests, 'requests to Plumb', `${r.ai_commands} commands run for you`),
+        stat(`${r.ai_minutes_saved} min`, 'saved by Plumb', `About ${ACH.SECONDS_PER_CALL} s for each of the ${r.ai_commands} commands it ran`),
       ),
       open
         ? h(
@@ -81,7 +81,7 @@ export class Learning {
             ),
             r.favourites.length ? h('p.small.muted', {}, `Favourites: ${r.favourites.map((f) => `${f.name.replace(/_/g, ' ')} (${f.count})`).join(', ')}`) : null,
             r.busiest_day ? h('p.small.muted', {}, `Busiest day: ${r.busiest_day.day}, ${r.busiest_day.commands} things done.`) : null,
-            h('p.small.muted', {}, 'Counted on this PC only. Ask the copilot "how am I doing?" to hear it.'),
+            h('p.small.muted', {}, 'Counted on this PC only. Ask Plumb "how am I doing?" to hear it.'),
           )
         : null,
     );

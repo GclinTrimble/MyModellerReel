@@ -15,11 +15,11 @@ Your PDF plan is vector (from CAD): you want its kerbs, buildings and boundary a
 4. **Drawings › Elevate linework** (constant, on a surface, a grade, or the spot levels printed on the PDF), **Extrude closed linework** for buildings, **Sweep a profile along linework** for kerbs.
    ![Drawings › Elevate linework (constant, on a surface, a grade, or the spot levels](media/pdf-linework-to-3d/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Extract the kerbs and buildings from the site plan, grade the kerbs from the spot levels, make the buildings 8 m high at 103.00 and sweep kerbs along the kerb lines.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

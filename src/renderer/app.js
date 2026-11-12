@@ -24,7 +24,9 @@ import { registerFont } from '../core/font.js';
 import { setLanguage } from '../core/i18n.js';
 import { comboOf } from '../core/shortcuts.js';
 import * as Assets from '../core/assets.js';
+import { referencePaths } from '../core/usd.js';
 import { newDoc as freshDoc } from '../core/document.js';
+import { PickFirst } from './pickfirst.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -336,7 +338,13 @@ store.on((doc) => {
   app.setFile(app.file, true);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(app.autosave, 1500);
+  // live references (#246): follow the files this model references, and republish when this one is published
+  const refs = JSON.stringify(referencePaths(doc));
+  if (refs !== lastRefs) (lastRefs = refs), native.invoke('ref:watch', JSON.parse(refs)).catch(() => {});
+  app.io.republish();
 });
+let lastRefs = '[]';
+native.onRefChanged?.((path) => app.reg.run('reload_reference', { path }).catch((e) => app.ui.toast(`Live reference: ${e.message}`, 'danger')));
 
 // ---------------------------------------------------------------- public API (HTTP server, MCP, plugins, devtools)
 window.mmr = {
@@ -420,12 +428,13 @@ window.addEventListener('keydown', (ev) => {
   const A_ = app.ui.actions;
   const combos = {
     'ctrl+z': 'undo', 'ctrl+y': 'redo', 'ctrl+shift+z': 'redo', 'ctrl+s': 'save', 'ctrl+shift+s': 'saveAs', 'ctrl+o': 'open', 'ctrl+n': 'new',
-    'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline',
+    'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline', 'ctrl+b': 'sidePanel',
     'ctrl+c': 'copy', 'ctrl+x': 'cut', 'ctrl+v': 'paste',
     f1: 'howto', // over a tool button: Help asks about that tool (#241), below
     'shift+z': 'zoomExtents', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',
   };
   const combo = `${ctrl ? 'ctrl+' : ''}${ev.shiftKey ? 'shift+' : ''}${k.toLowerCase()}`;
+  if (app.pickFirst.typeKey(ev)) return ev.preventDefault(); // picking first (#234): numbers go to the cursor box
   // Typing numbers while a tool works goes to the Measurements box, like in the classic modellers.
   const vcbChar = /^[0-9.,;\-*/'"]$/.test(k) || (vcb.value && /^[a-z]$/i.test(k)) || (k === 'x' && app.tools.id === 'move');
   if (!ctrl && app.tools.id !== 'select' && vcbChar && !app.tools.key(ev)) {
@@ -456,6 +465,7 @@ const theme = localStorage.getItem('mymodellerreel.theme');
 app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
 app.ai = new Assistant(app);
 app.cogo = new CogoPanel(app);
+app.pickFirst = new PickFirst(app);
 app.help = new Help(app);
 app.learning = new Learning(app);
 // every command, from any source, may complete a lesson or a guided step (#213, #214)

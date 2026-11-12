@@ -64,8 +64,8 @@ function publicSettings() {
 }
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
-const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
+const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin|usd|usda|usdc|usdz)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
 
 let win;
 function createWindow(page) {
@@ -281,7 +281,7 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ply|las|laz|e57|xyz|pts|csv|txt|ifc|shp|shx|dbf)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio and IFC files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ply|las|laz|e57|xyz|pts|csv|txt|ifc|shp|shx|dbf|usd|usda|usdc|usdz)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio, IFC and USD files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
@@ -297,6 +297,29 @@ ipcMain.handle('file:write', (_, p, data) => {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, typeof data === 'string' ? data : Buffer.from(data));
   return p;
+});
+
+// live references (#246): the files a window follows, polled (survives editors that replace the file), one set per window
+const watched = new Map(); // webContents id → Map(path → listener)
+ipcMain.handle('ref:watch', (ev, paths) => {
+  const wc = ev.sender;
+  let mine = watched.get(wc.id);
+  if (!mine) {
+    watched.set(wc.id, (mine = new Map()));
+    wc.once('destroyed', () => {
+      for (const [p, fn] of mine) fs.unwatchFile(p, fn);
+      watched.delete(wc.id);
+    });
+  }
+  const want = new Set((paths || []).filter((p) => MODEL_EXT.test(p)));
+  for (const [p, fn] of mine) if (!want.has(p)) fs.unwatchFile(p, fn), mine.delete(p);
+  for (const p of want) {
+    if (mine.has(p)) continue;
+    const fn = (cur, prev) => cur.mtimeMs !== prev.mtimeMs && cur.mtimeMs && !wc.isDestroyed() && wc.send('ref:changed', p);
+    fs.watchFile(p, { interval: 400 }, fn);
+    mine.set(p, fn);
+  }
+  return [...want];
 });
 
 ipcMain.handle('plugins:list', () => {

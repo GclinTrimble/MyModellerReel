@@ -1,5 +1,5 @@
 // A first pass over a new drawing (#151): the scale, the title, a date, grid coordinates along the edges (control
-// points) and the north arrow's letter, read from the drawing's text. The copilot can refine it from a picture
+// points) and the north arrow's letter, read from the drawing's text. Plumb can refine it from a picture
 // (merge); nothing is applied until read_drawing is asked to.
 
 const num = (s) => +String(s).replace(/[\s']/g, '').replace(',', '.');
@@ -45,7 +45,7 @@ export function readClues(texts, size) {
   return out;
 }
 
-/** The copilot's JSON reply merged over the text clues (the reply wins where it says something). */
+/** Plumb's JSON reply merged over the text clues (the reply wins where it says something). */
 export function mergeClues(clues, reply) {
   if (!reply || typeof reply !== 'object') return clues;
   const out = { ...clues };

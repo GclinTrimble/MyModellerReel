@@ -9,6 +9,8 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+import { USDLoader } from 'three/addons/loaders/USDLoader.js';
+import * as USD from '../core/usd.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as G from '../core/geometry.js';
@@ -17,6 +19,7 @@ import * as A from '../core/animation.js';
 import { buildModel } from './viewport.js';
 import { renderVideo } from './render.js';
 import { stripForSave, hydrate } from '../core/components.js';
+import { migrateSurfaces } from '../core/sitework.js';
 import * as Assets from '../core/assets.js';
 import { tiffInfo, demRead } from './underlays.js';
 
@@ -36,6 +39,23 @@ function avgOf(tex) {
   for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) s[k] += d[i + k];
   return s.map((x) => x / 256 / 255);
 }
+/** A three.js mesh as one of our shapes: world transform baked, recentred, its material's look. Null when empty. */
+function meshPart(o) {
+  if (!o.isMesh || !o.geometry?.attributes?.position) return null;
+  let g = o.geometry.clone().applyMatrix4(o.matrixWorld);
+  if (g.index) g = g.toNonIndexed();
+  const raw = G.fromTriangles(g.attributes.position.array);
+  if (!raw.f.length) return null;
+  const { mesh, origin } = G.recenter(raw);
+  const m = [].concat(o.material)[0] || {};
+  // shortcut: texture maps are not kept (no UVs on our meshes); their average colour stands in for them
+  const color = m.color?.clone();
+  const avg = avgOf(m.map);
+  if (color && avg) color.multiply(new THREE.Color().setRGB(...avg, THREE.SRGBColorSpace));
+  const metal = avgOf(m.metalnessMap);
+  const rough = avgOf(m.roughnessMap);
+  return { mesh, position: D.round3(origin), material: { color: color ? `#${color.getHexString()}` : D.DEFAULT_COLOR, opacity: m.opacity ?? 1, metalness: +((m.metalness ?? 0) * (metal ? metal[2] : 1)).toFixed(2), roughness: +((m.roughness ?? 0.85) * (rough ? rough[1] : 1)).toFixed(2) } };
+}
 const FILTERS = {
   glb: [{ name: 'GLB 3D model', extensions: ['glb'] }],
   gltf: [{ name: 'glTF (JSON)', extensions: ['gltf'] }],
@@ -43,8 +63,10 @@ const FILTERS = {
   stl: [{ name: 'STL (3D printing)', extensions: ['stl'] }],
   png: [{ name: 'PNG image', extensions: ['png'] }],
   video: [{ name: 'MP4 video (H.264)', extensions: ['mp4'] }, { name: 'WebM video (VP9, can be transparent)', extensions: ['webm'] }, { name: 'Animated GIF', extensions: ['gif'] }, { name: 'PNG sequence', extensions: ['png'] }],
-  models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
-  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'xml', 'landxml', 'ifc', 'dxf', 'jxl', 'fxl', 'geojson', 'json', 'shp'] }, { name: 'Trimble JobXML / feature library', extensions: ['jxl', 'fxl'] }, { name: 'GeoJSON / Shapefile', extensions: ['geojson', 'json', 'shp'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'usda', 'usdc', 'usdz', 'usd'] }],
+  reference: [{ name: 'Designs to follow', extensions: ['usda', 'usdc', 'usdz', 'usd', 'glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  usda: [{ name: 'OpenUSD (text)', extensions: ['usda'] }],
+  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'usda', 'usdc', 'usdz', 'usd', 'xml', 'landxml', 'ifc', 'dxf', 'jxl', 'fxl', 'geojson', 'json', 'shp'] }, { name: 'Trimble JobXML / feature library', extensions: ['jxl', 'fxl'] }, { name: 'GeoJSON / Shapefile', extensions: ['geojson', 'json', 'shp'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
   landxml: [{ name: 'LandXML 1.2', extensions: ['xml'] }],
   ifc: [{ name: 'IFC', extensions: ['ifc'] }],
   dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
@@ -157,6 +179,7 @@ export class IO {
     if (ext === 'obj') return { scene: new OBJLoader().parse(new TextDecoder().decode(buf)) };
     if (ext === 'stl') return { scene: new THREE.Mesh(new STLLoader().parse(buf), new THREE.MeshStandardMaterial({ color: D.DEFAULT_COLOR })) };
     if (ext === 'fbx') return { scene: new FBXLoader().parse(buf, '') };
+    if (/^usd[acz]?$/.test(ext)) return { scene: new USDLoader().parse(buf) };
     throw new Error(`Cannot read .${ext} files.`);
   }
 
@@ -169,6 +192,7 @@ export class IO {
       const opened = JSON.parse(raw);
       Assets.unpack(gltf.scene.userData.mymodellerreel_assets);
       hydrate(opened);
+      migrateSurfaces(opened); // older files: surfaces onto the editable definition (#239)
       this.app.store.replace(opened);
       this.app.afterOpen(path);
       return { opened: path, entities: this.app.store.doc.entities.length, editable: true };
@@ -197,29 +221,56 @@ export class IO {
     const group = D.addEntity(doc, { type: 'group', name: name.replace(/\.\w+$/, '') });
     let count = 0;
     object.traverse((o) => {
-      if (!o.isMesh || !o.geometry?.attributes?.position) return;
-      let g = o.geometry.clone().applyMatrix4(o.matrixWorld);
-      if (g.index) g = g.toNonIndexed();
-      const raw = G.fromTriangles(g.attributes.position.array);
-      if (!raw.f.length) return;
-      const { mesh, origin } = G.recenter(raw);
-      const m = [].concat(o.material)[0] || {};
-      // shortcut: texture maps are not kept (no UVs on our meshes); their average colour stands in for them
-      const color = m.color?.clone();
-      const avg = avgOf(m.map);
-      if (color && avg) color.multiply(new THREE.Color().setRGB(...avg, THREE.SRGBColorSpace));
-      const metal = avgOf(m.metalnessMap);
-      const rough = avgOf(m.roughnessMap);
-      D.addEntity(doc, {
-        name: o.name || `Part ${++count}`,
-        parent: group.id,
-        mesh,
-        position: D.round3(origin),
-        material: { color: color ? `#${color.getHexString()}` : D.DEFAULT_COLOR, opacity: m.opacity ?? 1, metalness: +((m.metalness ?? 0) * (metal ? metal[2] : 1)).toFixed(2), roughness: +((m.roughness ?? 0.85) * (rough ? rough[1] : 1)).toFixed(2) },
-      });
+      const p = meshPart(o);
+      if (!p) return;
+      D.addEntity(doc, { name: o.name || `Part ${++count}`, parent: group.id, ...p });
       count++;
     });
     return { group: group.id, parts: count };
+  }
+
+  /** A USD file's bytes (.usda, .usdc or .usdz) as shapes in one group (#245). */
+  insertUsd(bytes, name) {
+    return this.insert(new USDLoader().parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), name);
+  }
+
+  /** A file's meshes as live reference parts (#246), keyed by prim: the entity id our .usda writer puts in each name. */
+  async referenceParts(path) {
+    const { scene } = await this.load(path);
+    scene.updateMatrixWorld(true);
+    const parts = [];
+    const seen = new Set();
+    scene.traverse((o) => {
+      const p = meshPart(o);
+      if (!p) return;
+      const names = [];
+      for (let x = o; x && x !== scene; x = x.parent) names.unshift(x.name || '');
+      let key = USD.primKey(o.name || '', names.join('/'));
+      while (seen.has(key)) key += '+'; // unnamed twins in other formats
+      seen.add(key);
+      parts.push({ key, name: USD.primLabel(o.name || `Part ${parts.length + 1}`), ...p });
+    });
+    return parts;
+  }
+
+  /** Publish the design as a live reference (#246): a .usda written now and after every change, debounced. */
+  async publish(path) {
+    this.published = path;
+    if (!path) return { publishing: false };
+    await this.republish(true);
+    this.app.ui.toast(`Publishing to ${base(path)}: other windows can reference it`);
+    return { publishing: path };
+  }
+  async republish(now) {
+    if (!this.published) return;
+    clearTimeout(this.publishT);
+    const write = () => {
+      const doc = this.app.store.doc;
+      const shown = (e) => !e || (e.visible !== false && shown(e.parent && D.getEntity(doc, e.parent)));
+      return native().invoke('file:write', this.published, USD.writeUsda(doc, { ents: doc.entities.filter(shown) }));
+    };
+    if (now) return write();
+    this.publishT = setTimeout(() => write().catch((e) => this.app.ui.toast(`Publishing: ${e.message}`, 'danger')), 300);
   }
 
   async exportAs(format, path) {
