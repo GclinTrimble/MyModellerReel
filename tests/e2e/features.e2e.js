@@ -935,6 +935,83 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   assert.equal(await w.locator('.msg.user img').count(), 1);
 });
 
+test('agent profiles work at once (#243) and Ask at the cursor (#244)', async () => {
+  await ok('new_model');
+  // two scripted local models, told apart by the agent each request names, slow enough that their turns overlap
+  await app.evaluate(({ ipcMain }) => {
+    const call = (name, args) => ({ role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] });
+    const scripts = {
+      plumb: [[300, call('create_box', { width: 1, height: 1, depth: 1, name: 'Plumb box' })], [900, { role: 'assistant', content: 'Plumb done.' }]],
+      helper: [[100, call('create_sphere', { radius: 0.3, position: [3, 0, 0], name: 'Helper ball' })], [500, call('set_material', { ids: ['Plumb box'], color: '#ff0000' })], [100, { role: 'assistant', content: 'Helper done.' }]],
+    };
+    globalThis.agentLog = [];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', async (_, body) => {
+      const id = body.agent?.id;
+      const [ms, message] = scripts[id]?.shift() || [50, { role: 'assistant', content: `Reply from ${id}` }];
+      globalThis.agentLog.push({ id, at: Date.now(), text: JSON.stringify(body.messages.at(-1)) });
+      await new Promise((r) => setTimeout(r, ms));
+      return { provider: 'ollama', data: { message } };
+    });
+  });
+  await ok('save_agent', { name: 'Helper', instructions: 'You help.', color: '#e0a458' });
+  const undoBefore = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  assert.equal((await ok('ask_agent', { text: 'Make a box' })).started, true);
+  assert.equal((await ok('ask_agent', { agent: 'Helper', text: 'Make a ball and paint the box' })).started, true);
+  const both = await ok('list_agents');
+  assert.deepEqual(both.agents.map((a) => a.status), ['working', 'working']);
+  let list;
+  for (let i = 0; i < 100 && (list = await ok('list_agents')).agents.some((a) => a.status === 'working'); i++) await w.waitForTimeout(100);
+  assert.deepEqual(list.agents.map((a) => a.status), ['idle', 'idle']);
+  // both worked on the same document; the paint on Plumb's box clashed and is held for the user
+  const names = await w.evaluate(() => window.mmr.app.store.doc.entities.map((e) => e.name));
+  assert.ok(names.includes('Plumb box') && names.includes('Helper ball'));
+  const journal = await w.evaluate(() => window.mmr.app.store.doc.journal.map((j) => `${j.agent}:${j.command}`));
+  assert.deepEqual(journal, ['Helper:create_sphere', 'Plumb:create_box']);
+  assert.equal(list.held.length, 1);
+  assert.equal(list.held[0].command, 'set_material');
+  assert.equal(list.held[0].owner, 'plumb');
+  // the agents panel shows them and the held change
+  await w.click('[data-tab="agents"]');
+  await w.locator('.agent-row').nth(1).waitFor();
+  assert.equal(await w.locator('.agent-row').count(), 2);
+  await w.locator('.agent-held').getByRole('button', { name: 'Apply' }).click();
+  await w.waitForFunction(() => window.mmr.app.store.doc.entities.find((e) => e.name === 'Plumb box')?.material.color === '#ff0000');
+  // the overlapping turns were one undo step, the applied change another
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length), undoBefore + 2);
+  await ok('undo');
+  await ok('undo');
+  assert.equal(await w.evaluate(() => window.mmr.app.store.doc.entities.length), 0);
+
+  // Ask at the cursor: Ctrl+Space over the view, pick the agent, Enter; the reply comes as a toast and in its thread
+  await ok('create_box', { width: 2, height: 1, depth: 2, name: 'Table' });
+  await ok('set_camera', { position: [0, 10, 0.001], target: [0, 0, 0] });
+  const box = await w.locator('#viewport').boundingBox();
+  await w.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await w.keyboard.press('Control+Space');
+  const pop = w.locator('.ask-pop');
+  await pop.waitFor();
+  assert.match(await pop.innerText(), /at -?0\.\d+, 1\.00, -?0\.\d+/);
+  await pop.locator('select').selectOption('helper');
+  await pop.locator('input').fill('What is this?');
+  await pop.locator('input').press('Enter');
+  await w.locator('.toast', { hasText: 'Helper: Reply from helper' }).waitFor();
+  const asked = await app.evaluate(() => globalThis.agentLog.at(-1).text);
+  assert.match(asked, /What is this\?/);
+  assert.match(asked, /the point under the cursor: \[/);
+  await ok('ask_agent', { agent: 'Helper', text: 'again' });
+  // right-click › Ask… opens the same prompt
+  await w.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
+  await w.waitForTimeout(200);
+  await w.locator('#menu-pop').getByRole('menuitem', { name: 'Ask…' }).click();
+  await pop.waitFor();
+  await w.keyboard.press('Escape');
+  await w.evaluate(() => window.mmr.app.agents.open('helper'));
+  await w.locator('.chat .msg.assistant', { hasText: 'Reply from helper' }).first().waitFor();
+  await w.evaluate(() => window.mmr.app.agents.open('plumb'));
+  await ok('remove_agent', { agent: 'Helper' });
+});
+
 test('help that answers and my own tools (#241, #242): Ask Plumb, F1 over a tool, a turn saved as a tool, My tools', async () => {
   await ok('new_model');
   // a scripted local model: one-shot help answers have no tools; copilot turns do

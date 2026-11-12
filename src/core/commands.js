@@ -116,6 +116,7 @@ export const GUIDE = `MyModellerReel conventions:
   merge_layers, map_layers, save_layer_state / restore_layer_state. New geometry goes on the current layer.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
+- Agents: list_agents, ask_agent hands a task to another agent profile (it works alongside you), save_agent.
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
@@ -185,7 +186,7 @@ export function createRegistry(ctx) {
         if (c.compound) ctx.batchDepth--, ctx.scriptDepth--;
       }
       if (record) {
-        journal(ctx.doc, name, recArgs, result);
+        journal(ctx.doc, name, recArgs, result, ctx.agent);
         ctx.macro?.steps.push({ command: name, args: structuredClone(recArgs) });
         ctx.journalSel = JSON.stringify(ctx.selection.get());
       }
@@ -199,9 +200,9 @@ export function createRegistry(ctx) {
 }
 
 const JOURNAL_MAX = 2000;
-function journal(doc, command, args, result) {
-  // made: the id the step created, so a user tool replayed later can point later steps at the new one (#242)
-  (doc.journal ||= []).push({ command, args: structuredClone(args), ...(typeof result?.id === 'string' ? { made: result.id } : {}) });
+function journal(doc, command, args, result, agent) {
+  // made: the id the step created, so a user tool replayed later can point later steps at the new one (#242); agent: who ran it (#243)
+  (doc.journal ||= []).push({ command, args: structuredClone(args), ...(typeof result?.id === 'string' ? { made: result.id } : {}), ...(agent ? { agent } : {}) });
   if (doc.journal.length > JOURNAL_MAX) doc.journal.splice(0, doc.journal.length - JOURNAL_MAX);
 }
 
@@ -2445,7 +2446,7 @@ function registerCore(reg, ctx) {
   def('recipe', 'save_recipe', 'Save how this model was built as a named, replayable recipe. Without steps it takes the commands that built the current model (from step `from`). Steps may hold "{{expr}}" placeholders over params (e.g. "{{storeys * 3}}"); run_script steps also get `params`.', obj({ name: str('recipe name'), description: str('what it builds'), params: obj({}, []), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the journal)' }, from: num('first journal step (default 0)') }, ['name']), (a) => {
     const doc = ctx.doc;
     const old = doc.recipes?.[a.name];
-    const steps = (a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => structuredClone(s))).flatMap((s) =>
+    const steps = (a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => ({ command: s.command, args: structuredClone(s.args) }))).flatMap((s) =>
       s.command === 'replay_recipe' && s.args?.name === a.name ? (old ? structuredClone(old.steps) : []) : [s],
     );
     if (!steps.length) throw new Error('Nothing to save: no steps given and the journal is empty.');
@@ -3689,6 +3690,20 @@ function registerCore(reg, ctx) {
     if (!ctx.io?.transcribe) throw new Error('Needs the desktop app.');
     return ctx.io.transcribe(a.path, a.lang);
   });
+
+  // agent profiles (#243): several copilots with their own model, skill, instructions and thread, working at once
+  const crew = () => {
+    if (!ctx.agents) throw new Error('Agents need the desktop app.');
+    return ctx.agents;
+  };
+  const agent = str('agent id or name (default: Plumb)');
+  def('ai', 'list_agents', 'The agent profiles (Plumb is the default) with what each is doing (idle, working, queued tasks), and the changes held because two agents touched the same thing.', obj({}), () => crew().list());
+  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb') }), (a) => crew().save(a));
+  def('ai', 'remove_agent', 'Delete an agent profile (not Plumb).', obj({ agent }, ['agent']), (a) => crew().remove(a.agent));
+  def('ai', 'ask_agent', 'Give an agent a task: it joins that agent\'s queue and runs when the agent is free, alongside other agents. Returns at once (the reply goes to its thread).', obj({ agent, text: str('the task'), ids: { ...ids, description: 'entities to point it at' }, point: v3('a point in the model, world metres') }, ['text']), (a) => crew().ask(a.agent, a.text, { ids: a.ids, point: a.point }));
+  def('ai', 'stop_agent', 'Stop an agent\'s running turn and clear its queue (what it did so far stays; undo removes it).', obj({ agent }), (a) => crew().stop(a.agent));
+  def('ai', 'retry_agent', 'Run an agent\'s last task again.', obj({ agent }), (a) => crew().retry(a.agent));
+  def('ai', 'held_change', 'A change held because two agents touched the same thing: apply it (one undo step) or drop it.', obj({ n: num('its number, from list_agents'), action: str('apply | drop', ['apply', 'drop']) }, ['n', 'action']), (a) => crew().held(a.n, a.action));
 
   def('view', 'walk_to', 'Stand somewhere at eye height (1.6 m above what is under it) and look towards a point: a walk-through view. The Walk tool moves on from there (arrow keys or WASD, drag to look).', obj({ position: v3('where to stand (x, z; y is found)'), look_at: v3('what to look at'), eye: num('eye height, m (default 1.6)') }, ['position']), (a) => {
     if (!ctx.view?.walkTo) throw new Error('Needs the desktop app.');

@@ -14,7 +14,7 @@ import { Tools, TOOLS, setDisplay, setAxes } from './tools.js';
 import { Help } from './help.js';
 import { UI } from './ui.js';
 import { Timeline } from './timeline.js';
-import { Assistant } from './ai.js';
+import { Agents } from './agents.js';
 import { CogoPanel } from './cogo.js';
 import { IO } from './io.js';
 import { Panes } from './panes.js';
@@ -98,7 +98,7 @@ app.ctx = {
   skill: localStorage.getItem('mymodellerreel.skill') || null,
   onSkill: (name) => {
     localStorage.setItem('mymodellerreel.skill', name || '');
-    app.ai?.renderHead();
+    for (const t of app.agents?.threads.values() || []) t.renderHead();
   },
   // The design review's vision half: four views + the checks, to the configured model (#100).
   // several documents in tabs (#112): the one store swaps what it holds
@@ -409,6 +409,7 @@ window.addEventListener('keydown', (ev) => {
   if (overTool) return ev.preventDefault(), app.help.ask(`How do I use the ${TOOLS.find((t) => t.id === overTool.dataset.tool)?.label || overTool.dataset.tool} tool?`, overTool.dataset.tool);
   if (ctrl && k.toLowerCase() === 'k') return ev.preventDefault(), app.ui.openPalette();
   if (ctrl && k.toLowerCase() === 'j') return ev.preventDefault(), app.ui.show('ai', true);
+  if (ctrl && ev.code === 'Space') return ev.preventDefault(), app.agents.askAt(); // Ask at the cursor (#244)
   if (ev.target === vcb) {
     if (k === 'Enter') app.tools.vcb(vcb.value), (vcb.value = ''), canvas.focus();
     if (k === 'Escape') (vcb.value = ''), canvas.focus();
@@ -463,7 +464,10 @@ native.onBeforeClose(async () => {
 // ---------------------------------------------------------------- start
 const theme = localStorage.getItem('mymodellerreel.theme');
 app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
-app.ai = new Assistant(app);
+// agent profiles (#243): app.ai is the thread on show (Plumb unless another agent's is open)
+app.agents = new Agents(app);
+app.ctx.agents = app.agents;
+Object.defineProperty(app, 'ai', { get: () => app.agents.current });
 app.cogo = new CogoPanel(app);
 app.pickFirst = new PickFirst(app);
 app.help = new Help(app);
@@ -516,6 +520,8 @@ canvas.addEventListener('drop', (e) => {
   app.reg.run('insert_asset', { name, ...(p ? { position: p.toArray().map((x) => Math.round(x * 100) / 100) } : {}) }).catch((err) => app.ui.toast(err.message, 'danger'));
 });
 
+// where the pointer is, for Ask at the cursor (#244)
+canvas.addEventListener('pointermove', (e) => (app.agents.pointer = { x: e.clientX, y: e.clientY }));
 // Ctrl+M released: stop listening and transcribe (#98)
 window.addEventListener('keyup', (ev) => (ev.key.toLowerCase() === 'm' || ev.key === 'Control') && app.ai.recorder && app.ai.hear());
 // the gizmo's drags become one set_transform each (#67)
