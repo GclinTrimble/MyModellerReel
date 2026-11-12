@@ -1101,6 +1101,26 @@ const PAGES = {
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
     await run('set_style', { grid: true });
   },
+  async 'place-on-a-map'() {
+    await fresh();
+    await run('create_box', { width: 12, height: 9, depth: 8, name: 'Pavilion', color: '#e9e4d8', position: [40, 0, 60] });
+    await js("window.mmr.app.pickLocation(); return 1;");
+    await wait(800);
+    await js("const d = document.querySelector('#modal'); const [la, lo] = d.querySelectorAll('input'); la.value = '48.8582'; lo.value = '2.2945'; la.dispatchEvent(new Event('change')); return 1;");
+    await shot('Site › Base point from a map: click where the model origin is; the coordinate system is suggested');
+    await js("document.querySelector('#modal footer .btn.primary').click(); return 1;");
+    await camera([150, 160, 230], [0, 0, 0]);
+    await shot('The map under the model: the origin is where you clicked');
+    await run('set_view_overlay', { map: 'imagery', grid: true });
+    await camera([30, 420, 60], [30, 0, 30]);
+    await shot('Imagery and the grid: Easting and Northing in Lambert-93');
+    await js("window.mmr.app.groundMap.open = true; window.mmr.app.groundMap.sync(); return 1;");
+    await run('set_view_overlay', { map: 'topo' });
+    await camera([-180, 170, 240], [0, 0, 0]);
+    await shot('Layers (bottom left): Map, Imagery, Topo, None and the grid');
+    await js("window.mmr.app.groundMap.open = false; return 1;");
+    await run('set_view_overlay', { map: 'none', grid: false });
+  },
   async 'everyday-workflow'() {
     await fresh();
     await js("window.mmr.app.ui.setRibbon(null); window.mmr.app.ui.setSideToolbar(true); return 1;");

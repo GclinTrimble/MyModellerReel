@@ -703,3 +703,19 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .ask-pop { position: fixed; z-index: 50; width: 370px; display: flex; flex-direction: column; gap: var(--my-space-1); padding: var(--my-space-2); background: var(--my-surface); color: var(--my-text); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-3); }
 .ask-pop .row { gap: var(--my-space-1); }
 .ask-input { flex: 1; min-width: 0; height: var(--my-control-md, 32px); }
+
+/* the model on a map: the base point picker, the layer chooser and the attribution over the view */
+.modal:has(.map-pick) { width: min(900px, 94vw); }
+.map-pick { position: relative; height: 420px; overflow: hidden; border: 1px solid var(--my-border); border-radius: var(--my-radius-xs); background: var(--my-surface-2); cursor: grab; touch-action: none; user-select: none; margin: var(--my-space-2) 0; }
+.map-pick:active { cursor: grabbing; }
+.map-tiles img { position: absolute; width: 256px; height: 256px; pointer-events: none; }
+.map-pin { position: absolute; transform: translate(-50%, -92%); font-size: 32px; line-height: 1; color: var(--axis-x); pointer-events: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.5)); }
+.map-attrib, .view-attrib { position: absolute; right: 0; bottom: 0; padding: 1px var(--my-space-1); font-size: 10px; color: var(--my-text); background: rgb(255 255 255 / 0.75); pointer-events: none; }
+.view-attrib { right: var(--my-space-1); bottom: var(--my-space-1); }
+.layer-chooser { position: absolute; left: var(--my-space-3); bottom: calc(var(--my-space-6) + 4px); display: flex; gap: var(--my-space-1); align-items: flex-start; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2); }
+.layer-tile { display: flex; flex-direction: column; align-items: center; gap: var(--my-space-0); width: 58px; padding: 0; border: 0; background: none; font-size: 10px; color: var(--my-text); cursor: pointer; }
+.layer-thumb { width: 52px; height: 52px; border-radius: var(--my-radius-xs); border: 2px solid transparent; object-fit: cover; display: grid; place-items: center; background: var(--my-surface-2); font-size: 22px; }
+.layer-tile[aria-pressed='true'] .layer-thumb { border-color: var(--my-accent); }
+.layer-tile:hover .layer-thumb { border-color: var(--my-accent-line); }
+.layer-tile:focus-visible { outline: 2px solid var(--my-focus); outline-offset: 1px; }
+.layer-close { align-self: flex-start; }

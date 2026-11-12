@@ -65,6 +65,7 @@ import * as RD from './roads.js';
 import * as PL from './planar.js';
 import * as TX from './textures.js';
 import * as CRS from './crs.js';
+import * as GM from './geomap.js';
 import * as LEARN from './learning.js';
 import * as ACH from './achievements.js';
 import { MATERIALS } from './materials.js';
@@ -1118,11 +1119,20 @@ function registerCore(reg, ctx) {
     return g;
   }, true);
 
-  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points'), at: v3('a point of the model (local x, y, z) that has these coordinates: the model stays where it is and is georeferenced around it (#190)'), north_angle: num('grid north: degrees clockwise from the model\'s −z') }), (a) => {
+  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points'), at: v3('a point of the model (local x, y, z) that has these coordinates: the model stays where it is and is georeferenced around it (#190)'), north_angle: num('grid north: degrees clockwise from the model\'s −z'), latitude: num('a place picked on a map instead of e and n: converted to the coordinate system (its UTM zone when none is set); the model origin (or at) is that place, nothing moves'), longitude: num('with latitude') }), (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const old = g.base || [0, 0, 0];
     if (a.north_angle !== undefined) ctx.doc.settings.geolocation = { ...(ctx.doc.settings.geolocation || {}), north_angle: a.north_angle };
+    if (a.latitude !== undefined || a.longitude !== undefined) {
+      if (a.latitude === undefined || a.longitude === undefined) throw new Error('Give both latitude and longitude.');
+      if (!g.crs?.epsg) g.crs = (({ epsg, name }) => ({ epsg, name }))(CRS.utmZone(a.longitude, a.latitude));
+      const p = GM.projection(g.crs.epsg);
+      if (!p) throw new Error(`Cannot convert latitude / longitude to EPSG:${g.crs.epsg} ${g.crs.name || ''} here: give e and n instead (or use a UTM zone).`);
+      const [e, n] = p.forward(a.longitude, a.latitude);
+      a = { ...a, e: r4(e), n: r4(n), at: a.at || [0, 0, 0] };
+      ctx.doc.settings.geolocation = { ...(ctx.doc.settings.geolocation || {}), latitude: a.latitude, longitude: a.longitude };
+    }
     if (a.at) {
       // this model point is (E, N, Z): nothing moves; survey points keep their place and take new coordinates
       if ([a.e, a.n].some((x) => x === undefined)) throw new Error('With at, give the point\'s e and n (and z).');
@@ -1134,7 +1144,7 @@ function registerCore(reg, ctx) {
       }
       g.base = nb.map(r4);
       S.placePoints(doc);
-      return { base: g.base, at: a.at, ...(a.north_angle !== undefined ? { north_angle: a.north_angle } : {}) };
+      return { base: g.base, at: a.at, ...(a.latitude !== undefined ? { crs: g.crs, latitude: a.latitude, longitude: a.longitude } : {}), ...(a.north_angle !== undefined ? { north_angle: a.north_angle } : {}) };
     }
     let nb;
     if (a.auto) {
@@ -1148,6 +1158,27 @@ function registerCore(reg, ctx) {
     g.base = nb;
     S.placePoints(doc);
     return { base: nb };
+  }, true);
+  def('terrain', 'convert_coordinates', 'Latitude / longitude ↔ project grid (Easting, Northing) in the coordinate system (or the EPSG code given): UTM zones, Lambert-93, NZTM, MGA, Irish TM, SWEREF99, web Mercator and a few more. Give latitude and longitude, or e and n.', obj({ latitude: num('degrees'), longitude: num('degrees'), e: num('Easting'), n: num('Northing'), epsg: num('default the project\'s') }), (a) => {
+    const epsg = a.epsg ?? S.geo(ctx.doc).crs?.epsg;
+    const p = GM.projection(epsg);
+    if (!p) throw new Error(epsg ? `Cannot convert EPSG:${epsg} here (UTM zones, Lambert-93, NZTM, MGA… only).` : 'No coordinate system: set_coordinate_system first, or give epsg.');
+    if (a.latitude !== undefined && a.longitude !== undefined) {
+      const [e, n] = p.forward(a.longitude, a.latitude);
+      return { epsg, latitude: a.latitude, longitude: a.longitude, e: r4(e), n: r4(n) };
+    }
+    if (a.e === undefined || a.n === undefined) throw new Error('Give latitude and longitude, or e and n.');
+    const [longitude, latitude] = p.inverse(a.e, a.n);
+    return { epsg, e: a.e, n: a.n, latitude: Math.round(latitude * 1e8) / 1e8, longitude: Math.round(longitude * 1e8) / 1e8 };
+  });
+  def('view', 'set_view_overlay', 'Over the ground of the 3D view, once the model is placed (set_base_point with latitude / longitude, or set_geolocation): a background map (map: OpenStreetMap, imagery: aerial photos, topo, none), a grid with Easting / Northing labels (grid), how far the map reaches (radius, metres) and its opacity. Kept with the model.', obj({ map: str('background map', ['none', ...Object.keys(GM.LAYERS)]), grid: bool('grid with coordinate labels'), radius: num('metres around the model origin (default 300)'), opacity: num('0–1') }), (a) => {
+    const s = ctx.doc.settings;
+    const v = (s.view_overlay = { map: 'none', grid: false, radius: 300, opacity: 1, ...s.view_overlay });
+    for (const k of ['map', 'grid', 'radius', 'opacity']) if (a[k] !== undefined) v[k] = a[k];
+    v.radius = Math.max(20, Math.min(5000, v.radius));
+    v.opacity = Math.max(0, Math.min(1, v.opacity));
+    const placed = GM.placer({ base: S.geo(ctx.doc).base, epsg: S.geo(ctx.doc).crs?.epsg, geolocation: s.geolocation });
+    return { ...v, ...(v.map !== 'none' ? { attribution: GM.LAYERS[v.map].attribution } : {}), ...(placed ? {} : { note: 'The model is not placed on Earth yet: set_base_point with latitude and longitude (or set_geolocation) to see the map.' }) };
   }, true);
 
   def('terrain', 'set_units', 'Units: display (how lengths are shown: auto, mm, cm, m, in, ft, ft-in) and precision (decimals; for ft-in the inch fraction, e.g. 16), and the survey units for coordinates in and out (length m, ft, usft; angles deg, dms, gon). Commands always take and return metres.', obj({ display: str('length display', Units.DISPLAY), precision: num('decimals (ft-in: inch fraction 2–64)'), length: str('survey length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {

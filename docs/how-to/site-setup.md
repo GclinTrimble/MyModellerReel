@@ -32,7 +32,7 @@ await api.set_base_point({ at: [2, 0, -3], e: 652100, n: 6862300, z: 35, north_a
 
 ## Good to know
 
-- The coordinate system list is built in (national grids and every UTM zone) and works offline; a map to click on is not there yet.
+- The coordinate system list is built in (national grids and every UTM zone) and works offline. To click the place on a map instead, see [Place the model on a map](howto:place-on-a-map).
 - Grid north is kept with the geolocation, so sun studies use it too.
 
 ## Related
