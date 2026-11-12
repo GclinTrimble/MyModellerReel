@@ -112,6 +112,7 @@ function createBuiltin({ dir, load = () => import('node-llama-cpp') }) {
         onTextChunk: onText,
         signal,
         temperature: body.options?.temperature ?? 0.2,
+        maxTokens: 4096, // a reply that runs away still ends
         budgets: { thoughtTokens: 0 }, // no long hidden reasoning on a laptop: answer and call tools straight away
       });
       const tool_calls = (r.functionCalls || []).map((c) => ({ function: { name: c.functionName, arguments: dropNulls(c.params ?? {}) } }));
