@@ -1,6 +1,6 @@
 # Work with several agents at once, and ask one anywhere
 
-Plumb, the copilot, is one agent. You can add more: each has its own model, skill, standing instructions, colour and chat thread, and several can work on the same model at the same time. Ask any of them right where you point, by keyboard or by voice.
+Plumb is one agent. You can add more: each has its own model, skill, standing instructions, colour and chat thread, and several can work on the same model at the same time. Ask any of them right where you point, by keyboard or by voice.
 
 ![Work with several agents](media/work-with-several-agents/work-with-several-agents.gif)
 
@@ -14,7 +14,7 @@ Plumb, the copilot, is one agent. You can add more: each has its own model, skil
    ![Ask at the pointer](media/work-with-several-agents/03.jpg)
 4. Agents working at the same time share one undo step: Ctrl+Z takes back everything they did together. When one agent tries to change something another agent is working on, that change waits under **Held changes** in the panel: **Apply** it (one undo step) or **Drop** it.
 
-## Ask the copilot
+## Ask Plumb
 
 > Make an agent called Site surveyor with the survey skill that checks levels and drainage, then ask it to check the pad.
 

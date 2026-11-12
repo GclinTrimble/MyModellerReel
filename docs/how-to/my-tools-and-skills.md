@@ -21,7 +21,7 @@ want again, keep it as your own tool; keep how you like a kind of work done as y
 4. Run a tool with other values: its form shows the parameters it found.
    ![The tool's form, with the values it was made with](media/my-tools-and-skills/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Save what we just did as a tool called Kerb return.
 
@@ -46,7 +46,7 @@ await api.delete_my_tool({ name: 'kerb_return' });
 ## Good to know
 
 - A tool is a command like any other: command search (Ctrl+K), the HTTP API, MCP clients and Plumb all see it.
-- Without steps, `save_tool` takes what the last copilot turn did. A step's `made` is the id it created: when the tool
+- Without steps, `save_tool` takes what the last Plumb turn did. A step's `made` is the id it created: when the tool
   runs, later steps use the new one. Shapes picked by hand are left out, so the tool works on what is selected.
 - Give `params` with `{{name}}` placeholders in the steps to choose the parameters yourself; edit the JSON in the panel
   for the same.

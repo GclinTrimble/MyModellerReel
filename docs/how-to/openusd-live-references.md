@@ -13,7 +13,7 @@ You exchange models with a USD pipeline (Omniverse, Blender, Houdini, Apple AR),
 5. Move, hide or recolour a referenced part here: that is an override kept in this model, never written to the other file. Its shape stays read-only.
 6. In the Outliner, a reference has **Reload** (read the file now), **Bind** (make it local: ordinary shapes, no longer followed) and **Remove**.
 
-## Ask the copilot
+## Ask Plumb
 
 > Publish this design as a live reference to C:/share/building.usda.
 
