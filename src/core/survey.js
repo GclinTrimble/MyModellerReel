@@ -73,12 +73,13 @@ export function codeColor(doc, code) {
 }
 
 /** Make a point entity at project coordinates. The first point sets the project base point (rounded). */
-export function addPoint(doc, { name, n, e, z = 0, code = '', desc = '', attrs = {} }) {
+/** taken: the point names already used, when adding many (a Set, kept by the caller). */
+export function addPoint(doc, { name, n, e, z = 0, code = '', desc = '', attrs = {} }, taken = null) {
   if (![n, e, z].every(Number.isFinite)) throw new Error('A point needs numbers for n (Northing), e (Easting) and z (Elevation).');
   const g = geo(doc);
   if (!g.base) g.base = [Math.round(e / 100) * 100, Math.round(n / 100) * 100, Math.round(z)];
   const label = String(name ?? nextPointName(doc));
-  if (doc.entities.some((x) => isPoint(x) && x.name === label)) throw new Error(`There is already a point "${label}".`);
+  if (taken ? taken.has(label) : doc.entities.some((x) => isPoint(x) && x.name === label)) throw new Error(`There is already a point "${label}".`);
   const p = D.addEntity(doc, { type: 'point', name: label, point: { n, e, z, code: String(code), desc: String(desc), attrs }, position: D.round3(toLocal(doc, { n, e, z })), material: { color: codeColor(doc, code) }, tag: doc.featureCodes?.[String(code).split(/\s+/)[0].toUpperCase()]?.layer || 'Untagged' });
   return p;
 }
@@ -103,29 +104,123 @@ export function placePoints(doc) {
   for (const p of points(doc)) p.position = D.round3(toLocal(doc, p.point));
 }
 
-/** Parse a points file. format: letters P N E Z D (code) in column order, e.g. PNEZD, PENZD, NEZ. */
-export function parsePoints(text, { format = 'PNEZD', delimiter = null, units = 'm' } = {}) {
-  const f = format.toUpperCase().replace(/[^PNEZD]/g, '');
-  if (!f.includes('N') || !f.includes('E')) throw new Error('format needs N and E columns (e.g. PNEZD).');
+// ---------------------------------------------------------------- delimited point files (CSV, TXT)
+
+/** Named delimiters; anything else is used as given. "space" splits on runs of spaces and tabs. */
+export const DELIMITERS = { comma: ',', tab: '\t', semicolon: ';', space: ' ' };
+/** What a column can hold: point name, easting, northing, elevation, feature code, description, a named attribute, nothing. */
+export const COLUMN_ROLES = ['name', 'e', 'n', 'z', 'code', 'desc', 'attr', 'ignore'];
+const LETTER_ROLE = { P: 'name', N: 'n', E: 'e', Z: 'z', D: 'code' };
+const HEADER_ROLE = [
+  ['name', /^(p|pt|pnt|pno|pt(no|id|name)|point(no|id|name|number)?|name|id|no|num|number)$/],
+  ['n', /^(n|north|northing|y)$/],
+  ['e', /^(e|east|easting|x)$/],
+  ['z', /^(z|el|elev|elevation|height|h|rl|alt|altitude)$/],
+  ['code', /^(d|code|fc|feature|featurecode|pointcode)$/],
+  ['desc', /^(desc|description|note|notes|comment|comments|remark|remarks)$/],
+];
+const isNum = (s) => s !== '' && Number.isFinite(+String(s).replace(',', '.'));
+
+/** The delimiter of a sample line: tab, semicolon (its numbers may have decimal commas), comma, else spaces. */
+export function detectDelimiter(text) {
+  const line = String(text).split(/\r?\n/).find((l) => l.trim() && !l.trim().startsWith('#')) || '';
+  return line.includes('\t') ? 'tab' : line.includes(';') ? 'semicolon' : line.includes(',') ? 'comma' : 'space';
+}
+
+/** Split delimited text into rows of cells (double quotes respected, blank and # lines dropped); each row keeps its file line. */
+export function splitTable(text, delimiter = 'auto') {
+  const key = !delimiter || delimiter === 'auto' ? detectDelimiter(text) : delimiter;
+  const d = DELIMITERS[key] ?? key;
+  const space = d === ' ';
+  const rows = [];
+  String(text).split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
+    // shortcut: a quoted cell cannot span lines; upgrade if a real file needs it
+    const cells = [];
+    let cur = '';
+    let q = false;
+    for (let k = 0; k < line.length; k++) {
+      const ch = line[k];
+      if (ch === '"') {
+        if (q && line[k + 1] === '"') (cur += '"'), k++;
+        else q = !q;
+      } else if (!q && (space ? ch === ' ' || ch === '\t' : line.startsWith(d, k))) {
+        if (space && !cur && (k === 0 || line[k - 1] === ' ' || line[k - 1] === '\t')) continue; // runs of spaces are one
+        cells.push(cur.trim());
+        cur = '';
+        if (!space) k += d.length - 1;
+      } else cur += ch;
+    }
+    cells.push(cur.trim());
+    rows.push(Object.assign(cells, { line: i + 1 }));
+  });
+  return { delimiter: key, rows };
+}
+
+/** A first row of labels over rows of numbers. */
+export const looksLikeHeader = (rows) => rows.length > 1 && rows[0].filter(isNum).length < rows[1].filter(isNum).length;
+
+/** Column roles from header labels (unknown labels become attributes), else the PNEZD order and a description. */
+export function guessColumns(rows, header = looksLikeHeader(rows)) {
+  const width = Math.max(0, ...rows.slice(0, 50).map((r) => r.length));
+  const used = new Set();
+  return Array.from({ length: width }, (_, i) => {
+    const label = header ? rows[0]?.[i] || '' : '';
+    const key = label.toLowerCase().replace(/[^a-z]/g, '');
+    let role = header ? HEADER_ROLE.find(([r, re]) => !used.has(r) && re.test(key))?.[0] : ['name', 'n', 'e', 'z', 'code'][i];
+    role ||= header ? 'attr' : 'desc';
+    if (role !== 'attr') used.add(role);
+    return role === 'attr' ? { role, name: label || `col${i + 1}` } : { role };
+  });
+}
+
+const normColumns = (columns) => columns.map((c, i) => {
+  const o = typeof c === 'string' ? { role: c } : { ...c };
+  if (!COLUMN_ROLES.includes(o.role)) throw new Error(`Column ${i + 1}: role must be one of ${COLUMN_ROLES.join(', ')}.`);
+  return o;
+});
+
+/**
+ * Points from delimited text. columns: one role per column (COLUMN_ROLES, or { role: 'attr', name }); missing ones
+ * are guessed. header: the first row is labels (default: detected). Decimal commas are read when the delimiter is not a comma.
+ */
+export function parseTable(text, { delimiter = 'auto', header, columns, units = 'm' } = {}) {
   const k = UNITS[units];
   if (!k) throw new Error(`units must be one of ${Object.keys(UNITS).join(', ')}.`);
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-  const delim = delimiter || (lines[0]?.includes(',') ? ',' : lines[0]?.includes(';') ? ';' : lines[0]?.includes('\t') ? '\t' : /\s+/);
+  const t = splitTable(text, delimiter);
+  const head = header ?? looksLikeHeader(t.rows);
+  const cols = columns ? normColumns(columns) : guessColumns(t.rows, head);
+  const at = (role) => cols.findIndex((c) => c.role === role);
+  const [iN, iE, iZ, iP, iC] = ['n', 'e', 'z', 'name', 'code'].map(at);
+  if (iN < 0 || iE < 0) throw new Error('Give a column for northing (n) and one for easting (e).');
+  const labels = head ? t.rows[0] : [];
+  const attrs = cols.map((c, i) => (c.role === 'attr' ? c.name || labels[i] || `col${i + 1}` : null));
+  const num = (s) => (t.delimiter === 'comma' ? +(s ?? '') : +String(s ?? '').replace(',', '.'));
   const rows = [];
   const skipped = [];
-  lines.forEach((line, i) => {
-    const c = line.split(delim).map((x) => x.trim().replace(/^"|"$/g, ''));
-    const col = (ch) => c[f.indexOf(ch)];
-    const n = +col('N');
-    const e = +col('E');
-    const z = f.includes('Z') ? +col('Z') : 0;
-    if (!Number.isFinite(n) || !Number.isFinite(e) || !Number.isFinite(z)) {
-      if (i > 0 || rows.length) skipped.push(i + 1); // a header line is not worth a warning
-      return;
+  for (const c of head ? t.rows.slice(1) : t.rows) {
+    const n = num(c[iN]);
+    const e = num(c[iE]);
+    const z = iZ < 0 || !c[iZ] ? 0 : num(c[iZ]);
+    if (!c[iN] || !c[iE] || ![n, e, z].every(Number.isFinite)) {
+      if (rows.length || skipped.length || head || c.some(isNum)) skipped.push(c.line); // an undeclared label line is not worth a warning
+      continue;
     }
-    rows.push({ name: f.includes('P') ? col('P') : undefined, n: n * k, e: e * k, z: z * k, code: f.includes('D') ? (col('D') ?? '') : '', desc: c.slice(f.length).join(' ') });
-  });
-  return { rows, skipped };
+    const row = { name: iP >= 0 && c[iP] ? c[iP] : undefined, n: n * k, e: e * k, z: z * k, code: iC >= 0 ? c[iC] || '' : '', desc: cols.map((x, i) => (x.role === 'desc' ? c[i] : '')).filter(Boolean).join(' '), attrs: {} };
+    attrs.forEach((a, i) => a && c[i] !== undefined && c[i] !== '' && (row.attrs[a] = Number.isFinite(num(c[i])) ? num(c[i]) : c[i]));
+    rows.push(row);
+  }
+  return { rows, skipped, delimiter: t.delimiter, header: head, columns: cols, labels };
+}
+
+/** Parse a points file. format: letters P N E Z D (code) in column order, e.g. PNEZD, PENZD, NEZ; later columns are the description. */
+export function parsePoints(text, { format = 'PNEZD', delimiter = null, units = 'm', header } = {}) {
+  const f = format.toUpperCase().replace(/[^PNEZD]/g, '');
+  if (!f.includes('N') || !f.includes('E')) throw new Error('format needs N and E columns (e.g. PNEZD).');
+  const width = Math.max(f.length, ...splitTable(text, delimiter || 'auto').rows.map((r) => r.length));
+  const columns = Array.from({ length: width }, (_, i) => LETTER_ROLE[f[i]] || 'desc');
+  return parseTable(text, { delimiter: delimiter || 'auto', header, columns, units });
 }
 
 export function formatPoints(doc, pts, { format = 'PNEZD', units = 'm', delimiter = ',' } = {}) {

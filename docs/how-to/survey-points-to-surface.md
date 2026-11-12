@@ -6,7 +6,7 @@ You have surveyed points (a CSV or text file with number, northing, easting, ele
 
 ## In the app
 
-1. **Site › Import points** [Import points](action:importPoints): pick the file and its column order (PNEZD…). The first point sets the base point, so big coordinates stay exact.
+1. **Site › Import points** [Import points](action:importPoints): pick the file, then what each column holds ([Import a points file](howto:import-survey-points)). The first point sets the base point, so big coordinates stay exact.
    ![Site › Import points Import points: pick the file and its column order (PNEZD…).](media/survey-points-to-surface/01.jpg)
 2. **Site › Feature code…** tells the app what codes mean: KERB joins into a breakline, TREE places a tree. **Site › Process codes** applies them.
    ![Site › Feature code… tells the app what codes mean: KERB joins into a breakline,](media/survey-points-to-surface/02.jpg)

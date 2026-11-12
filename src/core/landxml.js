@@ -83,7 +83,10 @@ export function readLandXml(text, { doc, cmd, report, opts = {} }) {
     let name = p.attrs.name || p.attrs.oID || S.nextPointName(doc);
     while (names.has(name)) name = `${name}-1`;
     names.add(name);
-    const pt = S.addPoint(doc, { name, n: v[0] * k, e: v[1] * k, z: (v[2] ?? 0) * k, code: p.attrs.code || '', desc: p.attrs.desc || '' });
+    // attributes: <Feature><Property label value/></Feature> inside the point
+    const attrs = {};
+    for (const f of X.kids(p, 'Feature')) for (const a of X.kids(f, 'Property')) if (a.attrs.label) attrs[a.attrs.label] = a.attrs.value !== '' && Number.isFinite(+a.attrs.value) ? +a.attrs.value : a.attrs.value ?? '';
+    const pt = S.addPoint(doc, { name, n: v[0] * k, e: v[1] * k, z: (v[2] ?? 0) * k, code: p.attrs.code || '', desc: p.attrs.desc || '', attrs });
     if (opts.layer) pt.tag = layer(opts.layer);
     report.add('points');
   }

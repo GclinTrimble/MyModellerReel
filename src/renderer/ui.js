@@ -372,7 +372,7 @@ export class UI {
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
       myTools: { label: 'Manage my tools and skills…', icon: 'toolbox', run: () => this.show('mytools') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
-      importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
+      importPoints: { label: 'Import points (CSV, TXT, JobXML, LandXML)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
       importPdf: { label: 'Import PDF drawing…', icon: 'file-pdf', run: async () => {
         const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'PDF drawing', extensions: ['pdf'] }] });
         if (path) this.commandDialog('import_pdf', { path, scale: '1:500', pages: [1] });
@@ -1917,6 +1917,7 @@ export class UI {
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
+        ...Object.entries(p.attrs || {}).map(([k, v]) => h('label.row.small.param-row', {}, h('span', { title: 'Attribute' }, k), h('input.grow', { value: String(v), 'aria-label': `Attribute ${k}`, onchange: (ev) => run('edit_points', { points: [e.id], attrs: { [k]: typeof v === 'number' && Number.isFinite(+ev.target.value) ? +ev.target.value : ev.target.value } }) }))),
       );
     }
     if (e.alignment) {
@@ -2443,10 +2444,57 @@ export class UI {
     if ((await done) === 'fix' && (r.issues.length || r.critique)) app.ai.ask(`Fix these review findings where they are real mistakes, leave design choices alone:\n${r.issues.map((i) => `- ${i.message}`).join('\n')}${r.critique ? `\n${r.critique}` : ''}`);
   }
 
-  /** Import points: a file, its column order and units. */
-  async importPointsDialog() {
-    const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd'] }] });
-    if (path) this.commandDialog('import_points', { path, format: 'PNEZD' });
+  /** Import points: JobXML / LandXML through the import registry; a text file through a live preview of how it splits. */
+  async importPointsDialog(path) {
+    const app = this.app;
+    path ||= await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd', 'jxl', 'xml'] }] });
+    if (!path) return;
+    const fail = (e) => this.toast(e.message, 'danger');
+    if (/\.(jxl|xml)$/i.test(path)) return app.reg.run('import', { path }).then((r) => this.importReport(r)).catch(fail);
+    const ROLES = { name: 'Point name', e: 'Easting (X)', n: 'Northing (Y)', z: 'Elevation (Z)', code: 'Code', desc: 'Description', attr: 'Attribute', ignore: 'Ignore' };
+    const o = { path, delimiter: 'auto', header: undefined, columns: undefined, units: S.geo(app.store.doc).units || 'm' };
+    const sel = (label, value, opts, onchange) => h('label.field', {}, h('span', {}, label), h('select', { 'aria-label': label, onchange: (ev) => onchange(ev.target.value) }, Object.entries(opts).map(([v, l]) => h('option', { value: v, selected: v === value }, l))));
+    const custom = h('input', { 'aria-label': 'Custom delimiter', placeholder: '|', size: 3, style: { display: 'none' }, oninput: (ev) => ev.target.value && ((o.delimiter = ev.target.value), (o.columns = undefined), draw()) });
+    const opts = h('div.points-wizard-opts');
+    const status = h('p.small', { role: 'status' });
+    const table = h('div.qty.points-wizard');
+    const draw = async () => {
+      let r;
+      try {
+        r = await app.reg.run('preview_points', { ...o, rows: 30 });
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+      o.columns = r.columns;
+      const dKey = ['auto', 'comma', 'tab', 'semicolon', 'space'].includes(o.delimiter) ? o.delimiter : 'custom';
+      custom.style.display = dKey === 'custom' ? '' : 'none';
+      opts.replaceChildren(
+        sel('Delimiter', dKey, { auto: `Detect (${r.delimiter.length > 1 ? r.delimiter : `"${r.delimiter}"`})`, comma: 'Comma', tab: 'Tab', semicolon: 'Semicolon', space: 'Space', custom: 'Other…' }, (v) => (v === 'custom' ? ((custom.style.display = ''), custom.focus()) : ((o.delimiter = v), (o.columns = undefined), draw()))),
+        custom,
+        sel('First line', o.header === undefined ? 'auto' : String(o.header), { auto: `Detect (${r.header ? 'header' : 'data'})`, true: 'Column names', false: 'Data' }, (v) => ((o.header = v === 'auto' ? undefined : v === 'true'), (o.columns = undefined), draw())),
+        sel('Units', o.units, { m: 'Metres', ft: 'Feet', usft: 'US survey feet' }, (v) => ((o.units = v), draw())),
+      );
+      const setCol = (i, c) => ((o.columns = o.columns.map((x, k) => (k === i ? c : x))), draw());
+      const headCell = (c, i) =>
+        h(
+          'th',
+          {},
+          h('select', { 'aria-label': `Column ${i + 1}`, onchange: (ev) => setCol(i, ev.target.value === 'attr' ? { role: 'attr', name: r.labels[i] || `col${i + 1}` } : { role: ev.target.value }) }, Object.entries(ROLES).map(([v, l]) => h('option', { value: v, selected: v === c.role }, l))),
+          c.role === 'attr' ? h('input', { 'aria-label': `Attribute name of column ${i + 1}`, value: c.name, onchange: (ev) => setCol(i, { role: 'attr', name: ev.target.value.trim() || `col${i + 1}` }) }) : null,
+        );
+      const rows = r.sample.map((cells, k) => h(`tr${r.header && k === 0 ? '.is-header' : ''}`, {}, r.columns.map((c, i) => h(`td${c.role === 'ignore' ? '.muted' : ''}`, {}, cells[i] ?? ''))));
+      table.replaceChildren(h('table', {}, h('thead', {}, h('tr', {}, r.columns.map(headCell))), h('tbody', {}, rows)));
+      status.textContent = `${r.points} of ${r.lines - (r.header ? 1 : 0)} lines read as points${r.skipped_lines.length ? `; lines ${r.skipped_lines.slice(0, 8).join(', ')}${r.skipped_lines.length > 8 ? '…' : ''} are skipped (no numbers where northing and easting are)` : ''}.`;
+    };
+    await draw();
+    const body = h('div.panel.form.points-wizard-body', { style: { padding: 0 } }, h('p.small.muted', {}, path), opts, h('p.small.muted', {}, 'Pick what each column holds. Attribute columns are kept on every point under the name you give.'), table, status);
+    if ((await this.modal('Import points', body, [['Import', 'go'], ['Cancel', null]])) !== 'go') return;
+    const { path: p, delimiter, header, columns, units } = o;
+    return app.reg
+      .run('import_points', { path: p, delimiter, ...(header === undefined ? {} : { header }), columns, units })
+      .then((r) => this.toast(`${r.imported} points imported${r.renamed_duplicates.length ? `, ${r.renamed_duplicates.length} renamed (names in use)` : ''}.`))
+      .catch(fail);
   }
 
   /** Surface checks (#130) with one-click fixes. */

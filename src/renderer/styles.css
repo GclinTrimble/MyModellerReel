@@ -394,6 +394,14 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .qty table { border-collapse: collapse; width: 100%; font-size: var(--my-text-sm); font-variant-numeric: tabular-nums; }
 .qty th, .qty td { padding: var(--my-space-1) var(--my-space-2); border-bottom: 1px solid var(--my-border); text-align: right; }
 .qty th:first-child, .qty td:first-child { text-align: left; }
+/* the import points preview: a role per column over the first lines */
+.points-wizard-opts { display: flex; flex-wrap: wrap; gap: var(--my-space-2); align-items: end; }
+.points-wizard { max-height: 40vh; }
+.modal:has(.points-wizard-body) { width: min(1100px, 92vw); }
+.points-wizard th { vertical-align: top; text-align: left; }
+.points-wizard th > * { display: block; width: 100%; min-width: 118px; }
+.points-wizard td { text-align: left; white-space: nowrap; }
+.points-wizard tr.is-header td { color: var(--my-text-muted); font-style: italic; }
 .skill-pick { height: 26px; min-width: 0; max-width: 160px; border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); background: var(--my-surface); font-size: var(--my-text-xs); padding: 0 var(--my-space-1); }
 
 /* ---------- survey (#117): labels over the view, the points table, code chips ---------- */
