@@ -13,11 +13,11 @@ You want a road that follows the ground sensibly: an alignment with curves, a ve
 3. **Site › Corridor…** [Corridor](action:corridor): lanes with crossfall, shoulders, and cut and fill batter slopes that daylight to the surface.
    ![Site › Corridor… Corridor: lanes with crossfall, shoulders, and cut and fill bat](media/design-an-access-road/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Run an access road from point 1 to point 176 through 82 with a 15 m curve, rising from 101 to 104, and make a corridor with two 3 m lanes.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

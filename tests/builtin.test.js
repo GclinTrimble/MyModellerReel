@@ -125,3 +125,23 @@ test('setup status: the built-in model is one download; Ollama users keep start 
   status = { ...status, ollama: 'stopped' };
   assert.equal((await reg.run('ai_setup_status', {})).next, 'start');
 });
+
+test('agents asking the built-in model at once take turns', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-builtin-'));
+  fs.writeFileSync(path.join(dir, 'qwen3-4b.gguf'), 'gguf');
+  let busy = 0;
+  let overlap = false;
+  const fake = fakeLlama([]);
+  fake.LlamaChat = class {
+    async generateResponse() {
+      overlap ||= busy++ > 0;
+      await new Promise((r) => setTimeout(r, 20));
+      busy--;
+      return { response: 'ok' };
+    }
+  };
+  const rt = B.createBuiltin({ dir, load: async () => fake });
+  const replies = await Promise.all([rt.chat('qwen3-4b', { messages: [] }), rt.chat('qwen3-4b', { messages: [] }), rt.chat('qwen3-4b', { messages: [] })]);
+  assert.deepEqual(replies.map((r) => r.message.content), ['ok', 'ok', 'ok']);
+  assert.equal(overlap, false);
+});

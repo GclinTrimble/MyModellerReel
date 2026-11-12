@@ -533,6 +533,15 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .code-item .ph { color: var(--my-text-faint); }
 .code-item:hover, .code-item[aria-selected='true'] { background: var(--my-accent-tint); }
 .code-empty, .code-keys { font-size: var(--my-text-xs); color: var(--my-text-faint); }
+/* pick first (#234): the cursor tip with its typed-value box; the Tool tab (#235) */
+.pick-tip { position: fixed; z-index: 55; left: -999px; top: -999px; display: flex; flex-direction: column; gap: var(--my-space-1); max-width: 22rem; padding: var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); box-shadow: var(--my-shadow-2); font-size: var(--my-text-xs); color: var(--my-text); }
+.pick-ins { display: flex; gap: var(--my-space-1); align-items: center; }
+.pick-in { width: 5.5rem; font-family: var(--my-font-mono); font-size: var(--my-text-xs); }
+.pick-msg { color: var(--my-danger-text); }
+.pick-msg:empty { display: none; }
+.pick-prompt { margin: 0; color: var(--my-text-muted); font-size: var(--my-text-sm); }
+.tool-panel h3 { display: flex; align-items: center; gap: var(--my-space-1); margin: 0; }
+
 /* #215: point chips, short number boxes with their unit, modes, a field marked while it is wrong */
 .form-modes { align-self: stretch; display: flex; }
 .form-modes .seg { flex: 1; padding: var(--my-space-1) var(--my-space-3); }
@@ -565,6 +574,14 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .menu-pop .has-sub.open { background: var(--my-accent-tint); }
 #menu-sub { position: fixed; z-index: 51; }
 body.no-toolbar .workspace { grid-template-columns: 0 1fr var(--dock-w); }
+/* side panel hidden (#236): a rail of tab icons */
+body.no-dock { --dock-w: 44px; }
+body.no-dock .dock { grid-template-rows: 1fr; }
+body.no-dock .dock-body { display: none; }
+body.no-dock #dock-tabs { flex-direction: column; border-bottom: 0; overflow: hidden auto; }
+body.no-dock #dock-tabs button { flex: none; font-size: 0; padding: var(--my-space-1) 0; }
+.tabs .dock-toggle { flex: 0 0 auto; padding: var(--my-space-1); justify-content: center; }
+body.no-dock .tabs .dock-toggle .ph { transform: scaleX(-1); }
 body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; overflow: hidden; }
 /* learning modules (#213) and guided steps (#214) */
 .learn { display: flex; flex-direction: column; gap: var(--my-space-1); margin-bottom: var(--my-space-3); }
@@ -592,7 +609,7 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .ins-medal { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--my-surface-2); color: var(--my-text-muted); border: 2px solid var(--my-border); }
 .ins-medal.tier-0 { border-color: var(--tier-0); color: var(--tier-0); } .ins-medal.tier-1 { border-color: var(--tier-1); color: var(--tier-1); }
 .ins-medal.tier-2 { border-color: var(--tier-2); color: var(--tier-2); } .ins-medal.tier-3 { border-color: var(--tier-3); color: var(--tier-3); }
-/* local AI setup (#224), what the copilot made (#225), start here and topics in place (#223) */
+/* local AI setup (#224), what Plumb made (#225), start here and topics in place (#223) */
 .ai-setup { display: flex; flex-direction: column; gap: var(--my-space-2); margin: var(--my-space-2) 0; }
 .setup-steps { display: flex; flex-direction: column; gap: var(--my-space-1); }
 .setup-step { display: flex; gap: var(--my-space-2); align-items: center; padding: var(--my-space-1) var(--my-space-2); border-radius: var(--my-radius-sm); color: var(--my-text-muted); }
@@ -603,6 +620,10 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .made-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .start-here { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); border-color: var(--my-accent); }
 .start-here .ph-rocket-launch { color: var(--my-accent); }
+.help-ask { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); }
+.help-ask > .row:first-child .ph-sparkle { color: var(--my-accent); }
+.help-ask input { flex: 1; min-width: 0; }
+.help-answer { padding-left: var(--my-space-2); border-left: 2px solid var(--my-accent); }
 .help-item-x > summary { list-style: none; } .help-item-x > summary::-webkit-details-marker { display: none; }
 .help-item-x[open] > summary { background: var(--my-accent-tint); }
 .help-inline { padding: var(--my-space-2) var(--my-space-2) var(--my-space-3) var(--my-space-4); border-left: 2px solid var(--my-accent); margin: 2px 0 var(--my-space-2) var(--my-space-2); }
@@ -632,7 +653,7 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .cogo-result { position: sticky; bottom: 0; z-index: 1; box-shadow: var(--my-shadow-2); }
 .cogo-trav .form-row > .field { flex: 1; min-width: 0; }
 
-/* pictures and sketches for the copilot (#229, #230) */
+/* pictures and sketches for Plumb (#229, #230) */
 .chat-compose { border-top: 1px solid var(--my-border); }
 .chat-compose .chat-input { border-top: 0; flex-wrap: wrap; align-items: center; }
 .chat-compose .chat-input textarea { flex: 1 1 100%; }
@@ -651,3 +672,22 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .sketch-tools { align-items: center; gap: var(--my-space-2); }
 .sketch-tools input.form-num { flex: 0 0 6em; } /* flex-basis beats the generic full-width input */
 .sketch-tools input.sketch-label { flex: 0 1 16em; }
+
+/* agents (#243) and Ask at the cursor (#244) */
+.agents { display: flex; flex-direction: column; gap: var(--my-space-2); padding: var(--my-space-3); }
+.agent-list { display: flex; flex-direction: column; gap: var(--my-space-1); }
+.agent-row { display: flex; align-items: center; gap: var(--my-space-2); padding: var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); font-size: var(--my-text-sm); }
+.agent-row .grow { min-width: 0; }
+.agent-row .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-row.busy { border-color: var(--my-accent); }
+.agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.agent-row.busy .agent-dot { animation: agent-pulse 1s ease-in-out infinite alternate; }
+@keyframes agent-pulse { to { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .agent-row.busy .agent-dot { animation: none; } }
+.agent-held { display: flex; flex-direction: column; gap: var(--my-space-1); }
+.agent-form { display: flex; flex-direction: column; gap: var(--my-space-2); padding: var(--my-space-3); }
+.agent-pick { max-width: 140px; font-weight: 600; }
+.msg.user.queued { opacity: 0.6; }
+.ask-pop { position: fixed; z-index: 50; width: 370px; display: flex; flex-direction: column; gap: var(--my-space-1); padding: var(--my-space-2); background: var(--my-surface); color: var(--my-text); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-3); }
+.ask-pop .row { gap: var(--my-space-1); }
+.ask-input { flex: 1; min-width: 0; height: var(--my-control-md, 32px); }

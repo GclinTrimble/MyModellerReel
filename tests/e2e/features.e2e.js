@@ -786,7 +786,7 @@ test('friendly: a form keeps its error, the outliner drags into a group, a compo
 
 test('calm forms (#215, #216): Design plane with modes, point chips and checked inputs', async () => {
   await ok('import_points', { text: 'Q1,100,100,10\nQ2,100,112,10.4\nQ3,110,100,11' });
-  await w.evaluate(() => { window.mmr.app.ui.commandDialog('design_plane'); });
+  await w.evaluate(() => { window.mmr.app.ui.commandDialog('design_plane', {}, { form: true }); });
   const form = w.locator('#modal');
   await form.locator('[data-field=points] input[aria-label="Points"]').waitFor();
   assert.equal(await form.locator('[data-field=point]').isHidden(), true, 'only the chosen mode shows');
@@ -803,6 +803,58 @@ test('calm forms (#215, #216): Design plane with modes, point chips and checked 
   await form.getByRole('button', { name: 'Run' }).click();
   const plane = (await ok('get_scene')).entities.find((e) => e.generator === 'design_plane');
   assert.ok(plane, 'the plane was made from the three chips');
+});
+
+test('pick first (#234, #235): Design trench starts in the view; picks, typed values and the Tool tab', async () => {
+  await ok('import_points', { text: 'TA,500,500,10' });
+  const ta = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'TA'));
+  const P = ta.position;
+  await ok('set_camera', { position: [P[0], P[1] + 40, P[2] + 0.001], target: P, projection: 'parallel' });
+  await w.evaluate(() => localStorage.removeItem('mymodellerreel.toolOptions'));
+  const done = w.evaluate(() => window.mmr.app.ui.commandDialog('design_trench').then((r) => r?.id || null));
+  const tip = w.locator('.pick-tip');
+  await tip.waitFor();
+  assert.equal(await w.locator('#modal[open]').count(), 0, 'no modal form');
+  assert.match(await tip.locator('.pick-what').textContent(), /^From: pick it/);
+  assert.equal(await w.getAttribute('#dock-tabs [data-tab=tool]', 'aria-selected'), 'true', 'the Tool tab opens');
+  // an option in the docked Tool tab, while picking
+  await w.locator('.tool-panel [data-field=depth] input').fill('1.5');
+  // click the survey point: the pick takes its name; Esc steps back, then pick it again
+  const [x, y] = await w.evaluate((p) => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p)); return [s.x, s.y]; }, P);
+  const click = async () => (await w.mouse.move(x + 3, y), await w.mouse.move(x, y), await w.mouse.click(x, y));
+  await click();
+  await tip.getByText(/^To: pick it/).waitFor();
+  await w.mouse.move(x + 20, y);
+  await w.keyboard.press('Escape');
+  await tip.getByText(/^From: pick it/).waitFor();
+  await click();
+  await tip.getByText(/^To: pick it/).waitFor();
+  // a bad value says so; then relative to the last point
+  await tip.locator('input[aria-label=x]').fill('abc');
+  await tip.locator('input[aria-label=x]').press('Enter');
+  assert.match(await tip.locator('.pick-msg').textContent(), /x, y, z/);
+  await tip.locator('input[aria-label=x]').fill('@12');
+  await tip.locator('input[aria-label=y]').fill('0');
+  await tip.locator('input[aria-label=z]').fill('0');
+  await tip.locator('input[aria-label=z]').press('Enter');
+  const id = await done;
+  assert.ok(id, 'the trench was made');
+  const tr = await w.evaluate((i) => window.mmr.doc.entities.find((e) => e.id === i).derived.params, id);
+  assert.deepEqual(tr.from, { point: ta.id }, 'the picked point by name');
+  assert.ok(Math.abs(tr.to[0] - P[0] - 12) < 1e-6 && Math.abs(tr.to[2] - P[2]) < 1e-6, `typed @12, 0, 0: ${tr.to}`);
+  assert.equal(tr.depth, 1.5, 'the Tool tab option');
+  assert.equal(await tip.count(), 0, 'the tip is gone');
+  assert.equal(await w.locator('#dock-tabs [data-tab=tool]').isHidden(), true, 'and the Tool tab');
+  assert.deepEqual(await w.evaluate(() => JSON.parse(localStorage.getItem('mymodellerreel.toolOptions')).design_trench), { depth: 1.5 }, 'remembered');
+  // next time: remembered, and the modal form is one click away
+  const again = w.evaluate(() => window.mmr.app.ui.commandDialog('design_trench'));
+  await tip.waitFor();
+  assert.equal(await w.locator('.tool-panel [data-field=depth] input').inputValue(), '1.5');
+  await tip.getByRole('button', { name: 'Form' }).click();
+  await w.locator('#modal [data-field=from]').waitFor();
+  await w.locator('#modal').getByRole('button', { name: 'Cancel' }).click();
+  assert.equal(await again, undefined);
+  await ok('set_camera', { projection: 'perspective' });
 });
 
 test('survey code card (#217): click, recall a code, Enter places the point and its object', async () => {
@@ -881,4 +933,245 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   });
   assert.ok(sent, 'the picture went with the message');
   assert.equal(await w.locator('.msg.user img').count(), 1);
+});
+
+test('agent profiles work at once (#243) and Ask at the cursor (#244)', async () => {
+  await ok('new_model');
+  // two scripted local models, told apart by the agent each request names, slow enough that their turns overlap
+  await app.evaluate(({ ipcMain }) => {
+    const call = (name, args) => ({ role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] });
+    const scripts = {
+      plumb: [[300, call('create_box', { width: 1, height: 1, depth: 1, name: 'Plumb box' })], [900, { role: 'assistant', content: 'Plumb done.' }]],
+      helper: [[100, call('create_sphere', { radius: 0.3, position: [3, 0, 0], name: 'Helper ball' })], [500, call('set_material', { ids: ['Plumb box'], color: '#ff0000' })], [100, { role: 'assistant', content: 'Helper done.' }]],
+    };
+    globalThis.agentLog = [];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', async (_, body) => {
+      const id = body.agent?.id;
+      const [ms, message] = scripts[id]?.shift() || [50, { role: 'assistant', content: `Reply from ${id}` }];
+      globalThis.agentLog.push({ id, at: Date.now(), text: JSON.stringify(body.messages.at(-1)) });
+      await new Promise((r) => setTimeout(r, ms));
+      return { provider: 'ollama', data: { message } };
+    });
+  });
+  await ok('save_agent', { name: 'Helper', instructions: 'You help.', color: '#e0a458' });
+  const undoBefore = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  assert.equal((await ok('ask_agent', { text: 'Make a box' })).started, true);
+  assert.equal((await ok('ask_agent', { agent: 'Helper', text: 'Make a ball and paint the box' })).started, true);
+  const both = await ok('list_agents');
+  assert.deepEqual(both.agents.map((a) => a.status), ['working', 'working']);
+  let list;
+  for (let i = 0; i < 100 && (list = await ok('list_agents')).agents.some((a) => a.status === 'working'); i++) await w.waitForTimeout(100);
+  assert.deepEqual(list.agents.map((a) => a.status), ['idle', 'idle']);
+  // both worked on the same document; the paint on Plumb's box clashed and is held for the user
+  const names = await w.evaluate(() => window.mmr.app.store.doc.entities.map((e) => e.name));
+  assert.ok(names.includes('Plumb box') && names.includes('Helper ball'));
+  const journal = await w.evaluate(() => window.mmr.app.store.doc.journal.map((j) => `${j.agent}:${j.command}`));
+  assert.deepEqual(journal, ['Helper:create_sphere', 'Plumb:create_box']);
+  assert.equal(list.held.length, 1);
+  assert.equal(list.held[0].command, 'set_material');
+  assert.equal(list.held[0].owner, 'plumb');
+  // the agents panel shows them and the held change
+  await w.click('[data-tab="agents"]');
+  await w.locator('.agent-row').nth(1).waitFor();
+  assert.equal(await w.locator('.agent-row').count(), 2);
+  await w.locator('.agent-held').getByRole('button', { name: 'Apply' }).click();
+  await w.waitForFunction(() => window.mmr.app.store.doc.entities.find((e) => e.name === 'Plumb box')?.material.color === '#ff0000');
+  // the overlapping turns were one undo step, the applied change another
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length), undoBefore + 2);
+  await ok('undo');
+  await ok('undo');
+  assert.equal(await w.evaluate(() => window.mmr.app.store.doc.entities.length), 0);
+
+  // Ask at the cursor: Ctrl+Space over the view, pick the agent, Enter; the reply comes as a toast and in its thread
+  await ok('create_box', { width: 2, height: 1, depth: 2, name: 'Table' });
+  await ok('set_camera', { position: [0, 10, 0.001], target: [0, 0, 0] });
+  const box = await w.locator('#viewport').boundingBox();
+  await w.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await w.keyboard.press('Control+Space');
+  const pop = w.locator('.ask-pop');
+  await pop.waitFor();
+  assert.match(await pop.innerText(), /at -?0\.\d+, 1\.00, -?0\.\d+/);
+  await pop.locator('select').selectOption('helper');
+  await pop.locator('input').fill('What is this?');
+  await pop.locator('input').press('Enter');
+  await w.locator('.toast', { hasText: 'Helper: Reply from helper' }).waitFor();
+  const asked = await app.evaluate(() => globalThis.agentLog.at(-1).text);
+  assert.match(asked, /What is this\?/);
+  assert.match(asked, /the point under the cursor: \[/);
+  await ok('ask_agent', { agent: 'Helper', text: 'again' });
+  // right-click › Ask… opens the same prompt
+  await w.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
+  await w.waitForTimeout(200);
+  await w.locator('#menu-pop').getByRole('menuitem', { name: 'Ask…' }).click();
+  await pop.waitFor();
+  await w.keyboard.press('Escape');
+  await w.evaluate(() => window.mmr.app.agents.open('helper'));
+  await w.locator('.chat .msg.assistant', { hasText: 'Reply from helper' }).first().waitFor();
+  await w.evaluate(() => window.mmr.app.agents.open('plumb'));
+  await ok('remove_agent', { agent: 'Helper' });
+});
+
+test('help that answers and my own tools (#241, #242): Ask Plumb, F1 over a tool, a turn saved as a tool, My tools', async () => {
+  await ok('new_model');
+  // a scripted local model: one-shot help answers have no tools; copilot turns do
+  await app.evaluate(({ ipcMain }) => {
+    const script = [
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_box', arguments: { width: 3, height: 0.5, depth: 1, name: 'Step' } } }] },
+      { role: 'assistant', content: 'Made a step.' },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'save_tool', arguments: { name: 'Garden step', description: 'A step block' } } }] },
+      { role: 'assistant', content: 'Saved as Garden step.' },
+    ];
+    globalThis.requests = [];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', (_, body) => {
+      globalThis.requests.push(body);
+      if (!body.tools) return { provider: 'ollama', data: { message: { role: 'assistant', content: 'Draw the path with the Curve tool, then sweep a profile along it [1].' } } };
+      return { provider: 'ollama', data: { message: script.shift() } };
+    });
+  });
+  // Ask Plumb in the Help panel: an answer, its cited section, Show me
+  await w.click('[data-tab="help"]');
+  await w.fill('.help-ask input', 'how do I sweep a kerb along a curve');
+  await w.locator('.help-ask').getByRole('button', { name: 'Ask', exact: true }).click();
+  await w.locator('.help-answer', { hasText: 'Curve tool' }).waitFor();
+  await w.locator('.help-ask .chip', { hasText: '[1] Run a kerb along a curve' }).waitFor();
+  const asked = (await app.evaluate(() => globalThis.requests)).at(-1);
+  assert.match(asked.messages[0].content, /Plumb/);
+  assert.match(asked.messages[1].content, /\[1\] Run a kerb along a curve/);
+  await w.locator('.help-ask').getByRole('button', { name: 'Show me' }).click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.id), 'curve');
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  // F1 over a tool button asks about that tool
+  await w.locator('#toolbar button[data-tool="pushpull"]').hover();
+  await w.keyboard.press('F1');
+  await w.waitForFunction(() => window.mmr.app.help.answer?.tool === 'pushpull' && !window.mmr.app.help.answer.busy);
+  assert.match(await w.locator('.help-ask input').inputValue(), /Push/);
+
+  // a copilot turn, then "save what we just did as a tool" in the next one
+  await w.click('[data-tab="ai"]');
+  await w.fill('.chat-input textarea', 'Make a garden step');
+  await w.keyboard.press('Enter');
+  await w.locator('.msg.assistant', { hasText: 'Made a step.' }).waitFor();
+  await w.fill('.chat-input textarea', 'Save what we just did as a tool called Garden step');
+  await w.keyboard.press('Enter');
+  await w.locator('.msg.assistant', { hasText: 'Saved as Garden step.' }).waitFor();
+  const file = path.join(home, 'library', 'mytools', 'garden_step.tool.json');
+  const tool = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(Object.keys(tool.params).sort(), ['depth', 'height', 'width']);
+  assert.deepEqual(tool.steps.map((s) => s.command), ['create_box']);
+  // a command like any other: the API's list, and it runs with other values
+  assert.ok((await w.evaluate(() => window.mmr.list())).some((c) => c.name === 'garden_step'));
+  const made = await ok('garden_step', { width: 5 });
+  assert.equal((await ok('get_entity', { id: made.made[0] })).size[0], 5);
+  // Tools › My tools
+  await w.locator('#menubar button', { hasText: 'Tools' }).click();
+  await w.locator('.menu-pop .has-sub', { hasText: 'My tools' }).hover();
+  await w.locator('#menu-sub').getByText('Garden step…').waitFor();
+  await w.keyboard.press('Escape');
+  await w.evaluate(() => window.mmr.app.ui.closeMenu());
+  // the My tools panel: delete removes the file
+  await w.evaluate(() => window.mmr.app.ui.show('mytools'));
+  const card = w.locator('.card', { hasText: 'Garden step' });
+  await card.waitFor();
+  await card.getByRole('button', { name: 'Delete Garden step' }).click();
+  await w.locator('#modal').getByRole('button', { name: 'Delete' }).click();
+  await w.waitForFunction(() => !window.mmr.app.reg.commands.has('garden_step'));
+  assert.ok(!fs.existsSync(file));
+});
+
+test('OpenUSD: export .usda and .usdz, import them back, reference a published file that follows its changes', async () => {
+  await ok('new_document', { name: 'USD' });
+  await ok('create_box', { width: 2, height: 1, depth: 3, name: 'Slab', color: '#ff0000' });
+  const usda = path.join(home, 'out', 'a.usda').split(path.sep).join('/');
+  const usdz = path.join(home, 'out', 'a.usdz').split(path.sep).join('/');
+  await ok('export', { format: 'usda', path: usda });
+  await ok('export', { format: 'usdz', path: usdz });
+  for (const p of [usda, usdz]) assert.ok((await ok('import', { path: p })).created.parts >= 1, `${p} reads back`);
+  // live reference: publish, reference, edit, the reference follows
+  const live = path.join(home, 'out', 'live.usda').split(path.sep).join('/');
+  await ok('publish_reference', { path: live });
+  await ok('publish_reference', { stop: true }); // one snapshot: a window referencing what it publishes would loop
+  const ref = await ok('reference_file', { path: live, name: 'Live' });
+  assert.ok(ref.parts >= 3);
+  await new Promise((r) => setTimeout(r, 1000)); // the main process has started watching it
+  fs.writeFileSync(live, fs.readFileSync(usda, 'utf8')); // the other window wrote a new version
+  await assert.doesNotReject(async () => {
+    for (let i = 0; i < 100; i++) {
+      if ((await w.evaluate((id) => window.mmr.app.store.doc.entities.filter((e) => e.parent === id).length, ref.id)) === 1) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error('the reference did not follow the file');
+  });
+  await ok('bind_reference', { ids: [ref.id] });
+});
+
+test('surface editing (#239, #240): the Surface panel, a point dragged, one added at a typed height, an outline corner dragged', async () => {
+  await ok('new_model');
+  const rows = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) rows.push(`P${i}${j},${5400000 + i * 10},${650000 + j * 10},${100 + i},GND`);
+  await ok('import_points', { text: rows.join('\n') });
+  await ok('create_surface', { name: 'EG' });
+  await ok('surface_boundary', { id: 'EG', action: 'set', points: [[0, 0], [30, 0], [30, -30], [0, -30]] });
+  await ok('set_view', { preset: 'top' });
+  await ok('zoom_extents', {});
+  await ok('select', { ids: ['EG'] });
+  await w.click('[data-tab="entity"]');
+  await w.locator('.surface-def').waitFor();
+  assert.match(await w.locator('.surface-def').textContent(), /Points · 16/);
+  const screen = (p) => w.evaluate((q) => {
+    const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q));
+    return [s.x, s.y];
+  }, p);
+  // Move, from the panel: drag P11 in plan
+  await w.locator('.surface-def button[title="Move"]').click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'move');
+  const p11 = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'P11').position);
+  await w.mouse.move(...(await screen(p11)));
+  await w.mouse.down();
+  await w.mouse.move(...(await screen([p11[0] + 3, p11[1], p11[2]])), { steps: 5 });
+  await w.mouse.up();
+  await w.waitForFunction(() => window.mmr.doc.entities.find((e) => e.name === 'P11').position[0] > 11);
+  // Add, at a typed elevation
+  await w.keyboard.press('a');
+  await w.fill('#vcb', 'z 120');
+  await w.press('#vcb', 'Enter');
+  await w.mouse.click(...(await screen([25, 2, -25])));
+  await w.waitForFunction(() => window.mmr.doc.entities.filter((e) => e.type === 'point').length === 17);
+  assert.equal((await ok('get_entity', { id: 'EG' })).max[1], 20, 'the surface rose to the new point');
+  // Grips: drag the outline corner at [30, -30] in to [20, -20]
+  await w.locator('.surface-def button[title="Drag the corners in the view"]').first().click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'grips');
+  const corner = await w.evaluate(() => window.mmr.app.tools.tool.rings()[0].pts[2].toArray());
+  await w.mouse.move(...(await screen(corner)));
+  await w.mouse.down();
+  await w.mouse.move(...(await screen([20, corner[1], -20])), { steps: 5 });
+  await w.mouse.up();
+  await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'EG').derived.params.outline[2][0] - 20) < 0.6);
+  // the panel follows; one undo puts the corner back
+  await w.locator('.surface-def', { hasText: 'Points · 17' }).waitFor();
+  await w.keyboard.press('Escape');
+  await ok('undo', {});
+  assert.deepEqual((await ok('surface_definition', { id: 'EG' })).definition.outline[2], [30, -30]);
+});
+
+test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens it there, the state is remembered', async () => {
+  const hidden = () => w.evaluate(() => document.body.classList.contains('no-dock'));
+  const viewW = () => w.evaluate(() => document.getElementById('viewport').getBoundingClientRect().width);
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  const wide = await viewW();
+  await w.keyboard.press('Control+B');
+  assert.equal(await hidden(), true);
+  assert.equal(await w.locator('#dock-body').isHidden(), true);
+  assert.ok((await viewW()) > wide + 200, 'the view takes the width');
+  await w.reload();
+  await w.waitForFunction(() => window.mmr?.app?.tools);
+  assert.equal(await hidden(), true, 'remembered after a reload');
+  await w.click('[data-tab="materials"]');
+  assert.equal(await hidden(), false);
+  assert.equal(await w.locator('#dock-tabs [data-tab="materials"]').getAttribute('aria-selected'), 'true');
+  await w.click('.dock-toggle');
+  assert.equal(await hidden(), true);
+  await w.locator('#viewbar button[aria-label="Side panel (Ctrl+B)"]').click();
+  assert.equal(await hidden(), false);
 });

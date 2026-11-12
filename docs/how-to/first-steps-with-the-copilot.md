@@ -1,8 +1,8 @@
-# First steps with the copilot: set it up, ask, then edit by hand
+# First steps with Plumb: set it up, ask, then edit by hand
 
-MyModellerReel is AI first: you say what you want and the copilot drafts it with the same tools you have. It works like an assistant at the next desk: it lays things out, you check them and change what you want by hand.
+MyModellerReel is AI first: you say what you want and Plumb drafts it with the same tools you have. It works like an assistant at the next desk: it lays things out, you check them and change what you want by hand.
 
-![First steps with the copilot](media/first-steps-with-the-copilot/first-steps-with-the-copilot.gif)
+![First steps with Plumb](media/first-steps-with-the-copilot/first-steps-with-the-copilot.gif)
 
 ## In the app
 
@@ -14,7 +14,7 @@ MyModellerReel is AI first: you say what you want and the copilot drafts it with
    ![Edit what it made by hand](media/first-steps-with-the-copilot/03.jpg)
 4. Carry on in words ("make it 12 m long", "add a door on the south wall") or by hand: both work on the same model. Turn on **Propose** (the review button at the top of the panel) to accept or reject its changes before they apply.
 
-## Ask the copilot
+## Ask Plumb
 
 > Draw a 10 m by 6 m rectangle and pull it up 3 m into a building, then add a pitched roof.
 
@@ -32,10 +32,10 @@ await api.set_params({ id: b.id, params: { width: 12 } });
 ## Good to know
 
 - Small local models do better with short, concrete requests. For long jobs, Claude (Settings › AI) plans further ahead.
-- The copilot keeps what it makes parametric on purpose, so you can change it afterwards; **bake** freezes a shape when you want to edit its faces one by one.
-- Your achievements count copilot requests too (Help › Your achievements).
+- Plumb keeps what it makes parametric on purpose, so you can change it afterwards; **bake** freezes a shape when you want to edit its faces one by one.
+- Your achievements count requests to Plumb too (Help › Your achievements).
 
 ## Related
 
-- [Ask the copilot to build or change something](howto:ask-the-copilot)
+- [Ask Plumb to build or change something](howto:ask-the-copilot)
 - [Model a shape with push / pull, then copy it as a component](howto:push-pull-and-components)

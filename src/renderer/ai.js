@@ -1,6 +1,8 @@
-// The in-app copilot: a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
-// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on.
+// The in-app assistant (Plumb): a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
+// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on. One Assistant per agent
+// profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
 import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
+import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
 import { h, icon } from './ui.js';
 import { sketchPad } from './sketch.js';
 
@@ -22,7 +24,7 @@ export function fitPicture(url, max = 1568) {
 const readFile = (file) => new Promise((resolve) => Object.assign(new FileReader(), { onload: (e) => resolve(e.target.result) }).readAsDataURL(file));
 /** Local models that can see pictures, by name. */
 const SEES = /llava|vision|-vl|vl:|gemma3|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|llama4|mistral-small3/i;
-import { SKILLS } from '../core/skills.js';
+import { SKILLS, USER_SKILLS, skillPrompt } from '../core/skills.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
@@ -34,8 +36,11 @@ const SUGGESTIONS = [
 ];
 
 export class Assistant {
-  constructor(app) {
+  constructor(app, profile, agents) {
     this.app = app;
+    this.profile = profile;
+    this.agents = agents;
+    this.queue = []; // tasks waiting while a turn runs: { text, done }
     this.history = [];
     this.protocol = null;
     this.propose = localStorage.getItem('mymodellerreel.propose') === '1';
@@ -45,15 +50,22 @@ export class Assistant {
   get settings() {
     return this.app.settings.ai;
   }
+  provider() {
+    return this.profile.provider || this.settings.provider;
+  }
   modelName() {
     const s = this.settings;
-    return s.provider === 'anthropic' ? s.anthropic.model : s.provider === 'openai' ? s.openai.model : s.provider === 'builtin' ? s.builtin.model : s.ollama.model;
+    const p = this.provider();
+    return this.profile.model || (p === 'anthropic' ? s.anthropic.model : p === 'openai' ? s.openai.model : p === 'builtin' ? s.builtin.model : s.ollama.model);
+  }
+  get mine() {
+    return this.profile.id === DEFAULT_AGENT;
   }
 
   build() {
     this.head = h('div.chat-head');
     this.log = h('div.chat-log');
-    this.input = h('textarea', { placeholder: 'Describe what to build or animate…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
+    this.input = h('textarea', { placeholder: 'Ask Plumb what to build or animate…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
     this.input.onkeydown = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -91,15 +103,21 @@ export class Assistant {
   }
   renderHead() {
     const s = this.settings;
-    const name = s.provider === 'anthropic' ? 'Claude' : s.provider === 'openai' ? 'API' : 'Local';
-    const ok = s.provider === 'ollama' || s.provider === 'builtin' || s[s.provider]?.hasKey;
+    const p = this.provider();
+    const name = p === 'anthropic' ? 'Claude' : p === 'openai' ? 'API' : 'Local';
+    const ok = p === 'ollama' || p === 'builtin' || s[p]?.hasKey;
+    const others = this.agents.profiles.length > 1;
     this.head.replaceChildren(
-      icon('sparkle'),
-      h(
+      others
+        ? h('select.agent-pick', { title: 'Which agent this thread belongs to', 'aria-label': 'Agent', style: { color: this.profile.color }, onchange: (e) => this.agents.open(e.target.value) }, this.agents.profiles.map((a) => h('option', { value: a.id, selected: a.id === this.profile.id }, a.name)))
+        : icon('sparkle'),
+      !this.mine
+        ? h('span.small.muted.grow', { title: 'The skill of this agent (change it in the Agents panel)' }, this.profile.skill ? SKILLS[this.profile.skill]?.label || this.profile.skill : 'No skill')
+        : h(
         'select.skill-pick.grow',
-        { title: 'Domain skill: know-how the copilot adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
+        { title: 'Domain skill: know-how Plumb adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
         h('option', { value: 'none' }, 'No skill'),
-        Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, s.label)),
+        Object.entries({ ...SKILLS, ...USER_SKILLS }).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, USER_SKILLS[k] ? `${s.label} (mine)` : s.label)),
       ),
       h(
         'button.icon-btn.sm',
@@ -121,8 +139,8 @@ export class Assistant {
       h(
         'div.chat-empty',
         {},
-        (this.settings.provider === 'ollama' || this.settings.provider === 'builtin') && window.native ? this.setupCard({ quiet: true }) : null,
-        h('p.muted', {}, 'Ask in plain words. The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
+        (this.provider() === 'ollama' || this.provider() === 'builtin') && window.native ? this.setupCard({ quiet: true }) : null,
+        h('p.muted', {}, 'Ask in plain words. Plumb drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
         ...SUGGESTIONS.map((s) => h('button.chip', { onclick: () => this.ask(s) }, s)),
       ),
     );
@@ -151,7 +169,7 @@ export class Assistant {
       return this.app.ui.toast(e.message, 'danger');
     }
     this.drawPictures();
-    if ((this.settings.provider === 'ollama' || this.settings.provider === 'builtin') && !SEES.test(this.modelName()) && !this.warnedSight) {
+    if ((this.provider() === 'ollama' || this.provider() === 'builtin') && !SEES.test(this.modelName()) && !this.warnedSight) {
       this.warnedSight = true;
       this.app.ui.toast(`${this.modelName()} may not see pictures. A vision model (gemma3, qwen2.5vl, llava) or Claude reads them; a sketch's cleaned points still go as text.`);
     }
@@ -218,9 +236,9 @@ export class Assistant {
           },
         }, icon('download-simple'), 'Download');
       box.replaceChildren(
-        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `The copilot is ready (${name} on this PC)` : 'Set up the copilot on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `Plumb is ready (${name} on this PC)` : 'Set up Plumb on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
         !s.local
-          ? h('p.small.muted', {}, 'The copilot uses an online model (Settings › AI).')
+          ? h('p.small.muted', {}, 'Plumb uses an online model (Settings › AI).')
           : builtin
             ? h('div.setup-steps', {}, step('download', s.next === 'ready', 'Download the assistant model', `${name}, about ${(s.builtin.bytes / 1e9).toFixed(1)} GB, once. It then runs on this PC, offline: nothing you type leaves it. A paused download resumes.`, download('download_ai_model', { model: s.builtin.model })))
             : h(
@@ -256,7 +274,9 @@ export class Assistant {
   }
   stop() {
     this.stopped = true;
-    window.native?.invoke('ai:abort');
+    this.queue.splice(0).forEach((q) => q.done(''));
+    window.native?.invoke('ai:abort', this.profile.id);
+    this.agents.changed();
   }
 
   add(node) {
@@ -266,8 +286,8 @@ export class Assistant {
     return node;
   }
 
-  /** Start recording from the microphone (hold to talk). */
-  async listen() {
+  /** Start recording from the microphone (hold to talk); the text goes into input (default: this chat's box). */
+  async listen(input = this.input, btn = this.micBtn) {
     if (this.recorder) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -276,21 +296,21 @@ export class Assistant {
       this.recorder.ondataavailable = (e) => chunks.push(e.data);
       this.recorder.onstop = async () => {
         stream.getTracks().forEach((tr) => tr.stop());
-        this.micBtn.classList.remove('rec');
+        btn.classList.remove('rec');
         if (!chunks.length) return;
         try {
           this.app.ui.setStatus('Listening… turning speech into text');
           const wav = await toWav16k(new Blob(chunks));
           const r = await this.app.io.transcribe(wav);
-          if (r.text) this.input.value = `${this.input.value ? `${this.input.value} ` : ''}${r.text}`;
-          this.input.focus();
+          if (r.text) input.value = `${input.value ? `${input.value} ` : ''}${r.text}`;
+          input.focus();
           this.app.ui.setStatus('');
         } catch (e) {
           this.app.ui.toast(e.message, 'danger');
         }
       };
       this.recorder.start();
-      this.micBtn.classList.add('rec');
+      btn.classList.add('rec');
     } catch (e) {
       this.recorder = null;
       this.app.ui.toast(`Microphone: ${e.message}`, 'danger');
@@ -303,14 +323,23 @@ export class Assistant {
     if (r && r.state !== 'inactive') r.stop();
   }
 
-  async send() {
-    const typed = this.input.value.trim();
-    const pics = this.pictures;
-    if ((!typed && !pics.length) || this.busy) return;
-    this.input.value = '';
-    this.pictures = [];
-    this.drawPictures();
-    const protocol = protocolOf(this.settings.provider);
+  /** Send the typed message (or text: a task from Ask, a command or the queue). Resolves with the reply's last words. */
+  async send(task = null) {
+    const typed = (task ?? this.input.value).trim();
+    const pics = task === null ? this.pictures : [];
+    if (!typed && !pics.length) return '';
+    if (this.busy) {
+      // a task given while it works waits its turn (its queue, #243)
+      if (task === null) (this.input.value = ''), this.add(h('div.msg.user.queued', {}, typed, h('span.small.muted', {}, ' · queued')));
+      return new Promise((done) => (this.queue.push({ text: typed, done }), this.agents.changed()));
+    }
+    this.lastTask = typed;
+    if (task === null) {
+      this.input.value = '';
+      this.pictures = [];
+      this.drawPictures();
+    }
+    const protocol = protocolOf(this.provider());
     if (protocol !== this.protocol) (this.history = []), (this.protocol = protocol);
     const text = [typed || 'Look at this and build it.', ...pics.map((p) => p.note).filter(Boolean)].join('\n\n');
     this.add(h('div.msg.user', {}, pics.length ? h('div.msg-pictures', {}, ...pics.map((p) => h('img', { src: p.url, alt: 'Sent picture' }))) : null, typed || 'Look at this and build it.'));
@@ -324,10 +353,16 @@ export class Assistant {
     this.sendBtn.title = 'Stop';
     const thinking = h('div.thinking', {}, h('i'), h('i'), h('i'));
     // The whole turn is one undo step (or one proposal); the view still updates after every tool call.
-    const proposing = this.propose && app.store.beginProposal();
-    if (!proposing) app.store.checkpoint();
-    ctx.batchDepth = (ctx.batchDepth || 0) + 1;
+    // Agents at work together share the batch: the first opens it (and its proposal), the last closes it.
+    const crew = this.agents.crew;
+    const first = crew.start(this.profile.id);
+    const proposing = first && this.propose && app.store.beginProposal();
+    if (first && !proposing) app.store.checkpoint();
+    if (first) ctx.batchDepth = (ctx.batchDepth || 0) + 1;
+    this.agents.changed();
+    let reply = '';
     const turnLength = this.history.length;
+    (ctx.turnStarts ||= []).push(app.store.doc.journal?.length || 0); // "save what we just did as a tool" (#242)
     const had = new Set(app.store.doc.entities.map((e) => e.id));
     const t0 = performance.now();
     const usage = { in: 0, out: 0, calls: 0, steps: 0 };
@@ -337,7 +372,6 @@ export class Assistant {
       usage.out += u.output_tokens ?? u.completion_tokens ?? d?.eval_count ?? 0;
     };
     // text streams into a live bubble; the final text replaces it so nothing shows twice
-    window.native?.onAiDelta && !this.deltaHooked && ((this.deltaHooked = true), window.native.onAiDelta((t) => this.delta?.(t)));
     this.delta = (t) => {
       thinking.remove();
       if (!this.live) this.live = this.add(h('div.msg.assistant.live', {}, ''));
@@ -347,25 +381,18 @@ export class Assistant {
     try {
       await runTurn({
         protocol,
-        chat: (body) => app.chat(body),
-        run: async (name, args) => {
-          const before = JSON.stringify(app.store.doc);
-          try {
-            return await app.reg.run(name, args);
-          } catch (e) {
-            app.store.doc = JSON.parse(before); // a failed call leaves nothing behind for the model to trip over
-            throw e;
-          }
-        },
+        chat: (body) => app.chat({ ...body, agent: { id: this.profile.id, provider: this.profile.provider, model: this.profile.model } }),
+        // a failed call leaves nothing behind for the model to trip over; one touching another agent's work is held
+        run: (name, args) => crewRun(crew, ctx, this.profile, (n, a) => app.reg.run(n, a), name, args),
         list: () => app.reg.list(),
         history: this.history,
         system: () =>
-          systemPrompt({ doc: app.store.doc, selection: app.selection, time: app.timeline.time, vision: protocol === 'anthropic', small: protocol === 'ollama', skill: app.skillPrompt?.() }),
-        toolset: this.settings.toolset || 'auto',
+          systemPrompt({ doc: app.store.doc, selection: app.selection, time: app.timeline.time, vision: protocol === 'anthropic', small: protocol === 'ollama', skill: [this.mine ? app.skillPrompt?.() : skillPrompt(this.profile.skill), this.profile.instructions && `You are ${this.profile.name}. ${this.profile.instructions}`].filter(Boolean).join('\n\n') }),
+        toolset: this.profile.toolset !== 'auto' ? this.profile.toolset : this.settings.toolset || 'auto',
         hooks: {
           stopped: () => this.stopped,
           onThinking: (on) => (on ? this.add(thinking) : thinking.remove()),
-          onText: (t) => (this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
+          onText: (t) => ((reply = t), this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
           onCall: (c) => {
             this.live?.classList.remove('live');
             this.live = null;
@@ -388,8 +415,8 @@ export class Assistant {
       thinking.remove();
       const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
       // cannot reach the local model: the setup card, not a raw network error (#224)
-      const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model|not downloaded yet/i.test(msg) && (this.settings.provider === 'ollama' || this.settings.provider === 'builtin');
-      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'The copilot cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
+      const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model|not downloaded yet/i.test(msg) && (this.provider() === 'ollama' || this.provider() === 'builtin');
+      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'Plumb cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
       if (unreachable) this.add(this.setupCard());
       // keep the history valid for the next turn: drop this turn's dangling user message if nothing came back
       if (this.history.length === turnLength && this.history.at(-1)?.role === 'user') this.history.pop();
@@ -400,7 +427,7 @@ export class Assistant {
       app.onUsage = null;
       const tok = usage.in + usage.out;
       this.add(h('div.turn-stats.muted.small', {}, `${((performance.now() - t0) / 1000).toFixed(1)} s · ${usage.calls} tool call${usage.calls === 1 ? '' : 's'}${tok ? ` · ${tok > 999 ? `${(tok / 1000).toFixed(1)}k` : tok} tokens (${usage.in} in, ${usage.out} out)` : ''}`));
-      ctx.batchDepth--;
+      if (crew.end(this.profile.id)) ctx.batchDepth--;
       app.learning?.aiTurn(usage.calls);
       // what it drafted, ready to change by hand (#225)
       const made = app.store.doc.entities.filter((e) => !had.has(e.id) && !e.parent && e.type !== 'point');
@@ -410,7 +437,11 @@ export class Assistant {
       this.busy = false;
       this.sendBtn.replaceChildren(icon('paper-plane-right'));
       this.sendBtn.title = 'Send (Enter)';
+      this.agents.changed();
+      const next = this.queue.shift();
+      if (next) queueMicrotask(() => this.send(next.text).then(next.done));
     }
+    return reply;
   }
 }
 

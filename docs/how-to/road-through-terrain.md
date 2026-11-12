@@ -21,7 +21,7 @@ You have a terrain and want a road across it: see the trench it cuts through the
 
 When the design is settled, **Site › [Write the road into the ground…](action:applyCorridor)** makes the finished ground the terrain for good (one undo step).
 
-## Ask the copilot
+## Ask Plumb
 
 > Put a 7 m road along Main road over the Ground with 1.5:1 cuts and 2:1 fills, a ditch in the cuts, and show me the road views at station 120.
 

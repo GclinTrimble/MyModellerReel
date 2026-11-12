@@ -70,7 +70,7 @@ Legend: ✅ built · 🤖 doable today through the AI / `run_script` · 🔜 roa
 | | New from template, Purge unused, Print | | 🔜 / ➖ |
 | **Extensions** | Extension Manager / Warehouse, Ruby console | Plugins panel, hot-loaded JS plugins, `run_script`, AI-written plugins | ✅ |
 | | 3D Warehouse | | 🔜 (import from URL) |
-| **AI** | AI Assistant | Copilot panel: Claude, local Mistral (Ollama), any OpenAI-compatible model; acts through every command | ✅ |
+| **AI** | AI Assistant | Plumb panel: Claude, local Mistral (Ollama), any OpenAI-compatible model; acts through every command | ✅ |
 | | Diffusion (AI render) | | 🔜 |
 | **App** | Search, Preferences, Shortcuts, Accessibility | Command palette (Ctrl+K, falls back to "ask AI"), Settings, shortcut sheet | ✅ |
 | | Check for update, Licensing, Sign-in, Analysis hub, PreDesign, Habitat | | ➖ |

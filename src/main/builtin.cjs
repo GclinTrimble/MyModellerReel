@@ -69,6 +69,7 @@ function toHistory(messages) {
 function createBuiltin({ dir, load = () => import('node-llama-cpp') }) {
   const fileOf = (id) => path.join(dir, `${modelOf(id).id}.gguf`);
   let live = null; // { id, llama, model, chat }
+  let queue = Promise.resolve(); // one model, one context: agents asking at once take turns
   const open = async (id) => {
     if (live?.id === modelOf(id).id) return live;
     const file = fileOf(id);
@@ -104,7 +105,12 @@ function createBuiltin({ dir, load = () => import('node-llama-cpp') }) {
       if (signal?.aborted) throw new Error('Download paused: it resumes where it stopped next time.');
       return { model: m.id, status: 'success', path: d.entrypointFilePath };
     },
-    async chat(id, body, onText, signal) {
+    chat(id, body, onText, signal) {
+      const turn = queue.then(() => (signal?.aborted ? Promise.reject(new Error('Stopped.')) : this.answer(id, body, onText, signal)));
+      queue = turn.catch(() => {});
+      return turn;
+    },
+    async answer(id, body, onText, signal) {
       const { chat } = await open(id);
       const functions = Object.fromEntries((body.tools || []).map((t) => [t.function.name, { description: t.function.description, params: toGbnf(t.function.parameters) }]));
       const r = await chat.generateResponse(toHistory(body.messages || []), {

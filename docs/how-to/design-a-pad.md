@@ -15,11 +15,11 @@ You want a flat platform for a building at a set level, with cut and fill slopes
 4. **Site › Cut / fill…** with the design surface: cut, fill and the map.
    ![Site › Cut / fill… with the design surface: cut, fill and the map.](media/design-a-pad/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a building pad at 103.0 inside the outline "Pad outline", with 2:1 cut and 3:1 fill slopes to the existing ground, then tell me the cut and fill.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
