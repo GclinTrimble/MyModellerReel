@@ -408,7 +408,7 @@ window.addEventListener('keydown', (ev) => {
   const A_ = app.ui.actions;
   const combos = {
     'ctrl+z': 'undo', 'ctrl+y': 'redo', 'ctrl+shift+z': 'redo', 'ctrl+s': 'save', 'ctrl+shift+s': 'saveAs', 'ctrl+o': 'open', 'ctrl+n': 'new',
-    'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline',
+    'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline', 'ctrl+b': 'sidePanel',
     'ctrl+c': 'copy', 'ctrl+x': 'cut', 'ctrl+v': 'paste',
     f1: 'howto',
     'shift+z': 'zoomExtents', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',

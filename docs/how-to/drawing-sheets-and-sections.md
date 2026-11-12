@@ -15,11 +15,11 @@ You want to hand someone a drawing: plan and elevations to scale on a sheet with
 4. **File › Export section (SVG, DXF)…** [Section](action:exportSection): the cut, filled and to scale in SVG, or as closed polylines in DXF.
    ![File › Export section (SVG, DXF)… Section: the cut, filled and to scale in SVG, ](media/drawing-sheets-and-sections/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make an A3 PDF sheet of the house with the top, front and right views and the title "Riverside pavilion", then export a plan section at 1.2 m as SVG.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

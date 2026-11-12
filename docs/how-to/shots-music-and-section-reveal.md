@@ -16,11 +16,11 @@ You want a short film of the design: a few camera angles cut together, a soundtr
    ![Animate › Add music or a voiceover… Audio: MP3, WAV, OGG or M4A from the playhea](media/shots-music-and-section-reveal/03.jpg)
 4. **Animate › Render video**: MP4 or WebM with the sound.
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a 12-second film: a wide shot for 4 seconds, a slow push-in to the entrance, then a plan section rising through the house, with C:\music\theme.mp3 fading in.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
