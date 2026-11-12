@@ -398,7 +398,6 @@ const PAGES = {
     await none();
     await shot('Site › Drape: the pavilion sits on the platform');
   },
-<<<<<<< HEAD
   async 'import-survey-points'() {
     await fresh();
     await run('import_points', { path: `${SAMPLES}/site-points.csv` });
@@ -424,7 +423,7 @@ const PAGES = {
     await run('zoom_extents', {});
     await none();
     await shot('JobXML and LandXML points come in through Import points too, with codes and attributes');
-=======
+    },
   async 'feature-code-libraries'() {
     await fresh();
     await run('import_feature_library', { path: `${SAMPLES}/site-codes.fxl`, name: 'Site codes', replace: true });
@@ -450,7 +449,6 @@ const PAGES = {
     await shot('Edit a code: description, type, layer, colour, line style, attributes');
     await js('window.mmr.app.ui.closeModal(); return 1;');
     await run('manage_feature_library', { name: 'Old library', action: 'delete' });
->>>>>>> refs/heads/claude/feature-codes-911a29
   },
   async 'bring-in-field-and-gis-data'() {
     await fresh();

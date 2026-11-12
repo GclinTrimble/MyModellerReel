@@ -546,7 +546,6 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .code-item .ph { color: var(--my-text-faint); }
 .code-item:hover, .code-item[aria-selected='true'] { background: var(--my-accent-tint); }
 .code-empty, .code-keys { font-size: var(--my-text-xs); color: var(--my-text-faint); }
-<<<<<<< HEAD
 /* a surface's members as counts that open grouped lists */
 .surf-counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--my-space-1); margin-top: var(--my-space-2); }
 .surf-count { display: flex; align-items: center; gap: var(--my-space-1); padding: var(--my-space-1) var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); color: var(--my-text); font-size: var(--my-text-sm); cursor: pointer; }
@@ -562,7 +561,6 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .surf-item .icon-btn, .surf-group-head .icon-btn { width: 22px; height: 22px; min-height: 0; padding: 0; }
 .surf-item .btn { padding: 0 var(--my-space-2); min-height: 0; }
 .surf-item:hover, .surf-group-head > span[role='button']:hover, .surf-item:focus-visible { background: var(--my-accent-tint); }
-=======
 .code-card.wide { width: 34rem; }
 .code-title .grow { flex: 1; }
 /* feature codes as a searchable grid: in the code card, code fields and the library manager */
@@ -585,7 +583,6 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .lib-item .grow { flex: 1; }
 .lib-badge { font-size: var(--my-text-xs); padding: 0 var(--my-space-2); border-radius: var(--my-radius-pill); background: var(--my-accent); color: var(--my-on-accent); }
 .lib-detail { display: flex; flex-direction: column; gap: var(--my-space-2); }
->>>>>>> refs/heads/claude/feature-codes-911a29
 /* pick first (#234): the cursor tip with its typed-value box; the Tool tab (#235) */
 .pick-tip { position: fixed; z-index: 55; left: -999px; top: -999px; display: flex; flex-direction: column; gap: var(--my-space-1); max-width: 22rem; padding: var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); box-shadow: var(--my-shadow-2); font-size: var(--my-text-xs); color: var(--my-text); }
 .pick-ins { display: flex; gap: var(--my-space-1); align-items: center; }
