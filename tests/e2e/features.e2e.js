@@ -1120,12 +1120,13 @@ test('surface editing (#239, #240): the Surface panel, a point dragged, one adde
   await ok('select', { ids: ['EG'] });
   await w.click('[data-tab="entity"]');
   await w.locator('.surface-def').waitFor();
-  assert.match(await w.locator('.surface-def').textContent(), /Points · 16/);
+  assert.match(await w.locator('.surface-def').textContent(), /Points\s*16/);
   const screen = (p) => w.evaluate((q) => {
     const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q));
     return [s.x, s.y];
   }, p);
-  // Move, from the panel: drag P11 in plan
+  // Move, from the panel (the Points count opens its list): drag P11 in plan
+  await w.locator('.surface-def .surf-count', { hasText: 'Points' }).click();
   await w.locator('.surface-def button[title="Move"]').click();
   assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'move');
   const p11 = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'P11').position);
@@ -1142,6 +1143,7 @@ test('surface editing (#239, #240): the Surface panel, a point dragged, one adde
   await w.waitForFunction(() => window.mmr.doc.entities.filter((e) => e.type === 'point').length === 17);
   assert.equal((await ok('get_entity', { id: 'EG' })).max[1], 20, 'the surface rose to the new point');
   // Grips: drag the outline corner at [30, -30] in to [20, -20]
+  await w.locator('.surface-def .surf-count', { hasText: 'Boundary' }).click();
   await w.locator('.surface-def button[title="Drag the corners in the view"]').first().click();
   assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'grips');
   const corner = await w.evaluate(() => window.mmr.app.tools.tool.rings()[0].pts[2].toArray());
@@ -1151,7 +1153,7 @@ test('surface editing (#239, #240): the Surface panel, a point dragged, one adde
   await w.mouse.up();
   await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'EG').derived.params.outline[2][0] - 20) < 0.6);
   // the panel follows; one undo puts the corner back
-  await w.locator('.surface-def', { hasText: 'Points · 17' }).waitFor();
+  await w.locator('.surface-def', { hasText: /Points\s*17/ }).waitFor();
   await w.keyboard.press('Escape');
   await ok('undo', {});
   assert.deepEqual((await ok('surface_definition', { id: 'EG' })).definition.outline[2], [30, -30]);
