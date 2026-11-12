@@ -22,7 +22,7 @@ fs.mkdirSync(USER_PLUGINS, { recursive: true });
 const DEFAULTS = {
   ai: {
     provider: 'builtin', // builtin (#238: a model the app runs itself) | ollama | anthropic | openai (any OpenAI-compatible server: Mistral API, LM Studio, vLLM…)
-    builtin: { model: 'qwen3-8b' },
+    builtin: { model: 'qwen3-4b' },
     ollama: { baseUrl: 'http://127.0.0.1:11434', model: 'mistral' },
     anthropic: { apiKey: '', model: 'claude-sonnet-5-5' },
     openai: { baseUrl: 'https://api.mistral.ai/v1', apiKey: '', model: 'mistral-large-latest' },

@@ -5,8 +5,8 @@ const path = require('node:path');
 
 /** Models the app offers. The first is the default (see the PR of #238 for the eval behind the choice). */
 const MODELS = [
-  { id: 'qwen3-8b', label: 'Qwen 3 8B', uri: 'hf:Qwen/Qwen3-8B-GGUF:Q4_K_M', bytes: 5.03e9 },
   { id: 'qwen3-4b', label: 'Qwen 3 4B Instruct', uri: 'hf:unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M', bytes: 2.5e9 },
+  { id: 'qwen3-8b', label: 'Qwen 3 8B', uri: 'hf:Qwen/Qwen3-8B-GGUF:Q4_K_M', bytes: 5.03e9 },
   { id: 'qwen3.5-4b', label: 'Qwen 3.5 4B', uri: 'hf:unsloth/Qwen3.5-4B-GGUF:Q4_K_M', bytes: 2.74e9 },
   { id: 'qwen3.5-9b', label: 'Qwen 3.5 9B', uri: 'hf:unsloth/Qwen3.5-9B-GGUF:Q4_K_M', bytes: 5.68e9 },
   { id: 'llama3.1-8b', label: 'Llama 3.1 8B', uri: 'hf:bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M', bytes: 4.92e9 },

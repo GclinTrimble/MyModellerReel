@@ -3459,7 +3459,7 @@ function registerCore(reg, ctx) {
     s.next = !s.local ? 'ready' : s.local === 'builtin' ? (s.provider === 'builtin' && s.builtin.has_model ? 'ready' : 'download') : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'pull' : 'ready';
     return s;
   });
-  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-8b, about 5 GB, once; a stopped download resumes) and use it for the copilot: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model: qwen3-8b (default), qwen3-4b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b, ministral-8b') }), async (a) => {
+  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-4b, about 2.5 GB, once; a stopped download resumes) and use it for the copilot: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model: qwen3-4b (default), qwen3-8b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b, ministral-8b') }), async (a) => {
     const r = await setupIo()('download', a.model);
     await ctx.io.setSettings?.({ ai: { provider: 'builtin', builtin: { model: r.model } } });
     return r;

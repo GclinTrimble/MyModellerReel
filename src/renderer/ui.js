@@ -2114,7 +2114,7 @@ export class UI {
         : prov === 'openai'
           ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
           : prov === 'builtin'
-            ? [field('Model (qwen3-8b, qwen3-4b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b): the card above downloads it', ai.builtin.model, (e) => save({ ai: { builtin: { model: e.target.value } } }))]
+            ? [field('Model (qwen3-4b, qwen3-8b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b): the card above downloads it', ai.builtin.model, (e) => save({ ai: { builtin: { model: e.target.value } } }))]
             : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
     return h(
       'div.panel',

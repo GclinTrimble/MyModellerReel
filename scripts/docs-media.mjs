@@ -1135,7 +1135,7 @@ const PAGES = {
   },
   async 'first-steps-with-the-copilot'() {
     await fresh();
-    await run('use_ai_model', { provider: 'builtin', model: 'qwen3-8b' });
+    await run('use_ai_model', { provider: 'builtin', model: 'qwen3-4b' });
     await camera([16, 10, 18], [0, 1.5, 0]);
     await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
     await shot('First time: one download and the copilot runs its model on your PC');

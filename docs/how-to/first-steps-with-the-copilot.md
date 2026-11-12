@@ -6,7 +6,7 @@ MyModellerReel is AI first: you say what you want and the copilot drafts it with
 
 ## In the app
 
-1. Open the [AI panel](action:aiPanel). The first time, one step sets up the assistant model on your PC: **Download** (Qwen 3 8B, about 5 GB, once). The app runs it itself, on the graphics card when there is one: no other app to install, and it then works offline; nothing you type leaves your PC. **Pause** stops the download; it resumes where it stopped. Prefer Ollama, LM Studio or Claude? **Other models** opens Settings.
+1. Open the [AI panel](action:aiPanel). The first time, one step sets up the assistant model on your PC: **Download** (Qwen 3 4B, about 2.5 GB, once). The app runs it itself, on the graphics card when there is one: no other app to install, and it then works offline; nothing you type leaves your PC. **Pause** stops the download; it resumes where it stopped. Prefer Ollama, LM Studio or Claude? **Other models** opens Settings.
    ![The setup card: download the assistant model](media/first-steps-with-the-copilot/01.jpg)
 2. Type what you want in plain words and press Enter, for example "Draw a 10 m by 6 m rectangle and pull it up 3 m into a building". It sees what you selected. Each request is one undo step (Ctrl+Z takes it all back).
    ![A request and what it made](media/first-steps-with-the-copilot/02.jpg)
@@ -24,7 +24,7 @@ Then: "Make the building 12 m long instead" changes the parameters rather than d
 
 ```js
 await api.ai_setup_status();          // next: download | ready (Ollama users: start | pull)
-await api.download_ai_model();        // the built-in model, about 5 GB once; pause_ai_download stops it
+await api.download_ai_model();        // the built-in model, about 2.5 GB once; pause_ai_download stops it
 const b = await api.create_box({ width: 10, height: 3, depth: 6, name: 'Building' });
 await api.set_params({ id: b.id, params: { width: 12 } });
 ```
