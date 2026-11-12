@@ -219,6 +219,7 @@ function fillParams(v, params) {
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
+const r3 = (x) => Math.round(x * 1e3) / 1e3;
 /** A time parameter: seconds, or a marker name with an optional offset ("roof", "roof + 1.5"). */
 const T = (d) => ({ description: `${d}: seconds, or a marker name ("roof", "roof + 1.5")` });
 
@@ -1355,7 +1356,7 @@ function registerCore(reg, ctx) {
   const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_edge: num('drop triangles with a side shorter than this, m (slivers)'), outline: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan outline [[x, z], …] (model) the surface stays inside (#212)' }, voids: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, description: 'areas left out: [[[x, z], …], …] (model)' }, min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
   def('terrain', 'create_surface', 'A TIN surface (constrained Delaunay) from survey points, breaklines and boundaries. It stays live: move, add or delete a point or a line and it rebuilds. Several surfaces can live side by side (existing ground, design, as-built).', obj({ name: common.name, ...SRC, color: common.color, tag: common.tag }), (a) => {
     const doc = ctx.doc;
-    const params = surfaceParams(a);
+    const params = SW.migrateSurface(surfaceParams(a));
     R.getGenerator('surface').run({ params, inputs: [], doc }); // bad sources throw before anything changes
     const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag, material: { color: a.color || '#8fae7a', roughness: 0.95 } });
     R.derive(doc, e, 'surface', params, []);
@@ -1401,6 +1402,107 @@ function registerCore(reg, ctx) {
     R.regenerate(doc, s);
     return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
+
+  // ---------------------------------------------------------------- the editable surface definition (#239)
+  /** One edit of a TIN's definition: fn changes a copy of its params, then the surface rebuilds (or the command rolls back). */
+  const editTin = (ref, fn) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(ref);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface (create_surface makes one).`);
+    const p = structuredClone(SW.migrateSurface(s.derived.params));
+    const note = fn(p, s);
+    s.derived.params = p;
+    R.regenerate(doc, s);
+    return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(doc, s), ...(note ? { note } : {}) };
+  };
+  const plan = { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' };
+  const ring = { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan corners [[x, z], …] (model)' };
+  const ringOf = (a) => {
+    if (a.points) return a.points.map((q) => [q[0], q.length === 3 ? q[2] : q[1]].map(r3));
+    if (!a.from) throw new Error('Give points [[x, z], …] or from: a closed curve.');
+    const pts = D.curvePoints(ctx.doc, D.resolve(ctx.doc, a.from)[0], 8).map((q) => [r3(q[0]), r3(q[2])]);
+    if (pts.length > 3 && Math.hypot(pts[0][0] - pts.at(-1)[0], pts[0][1] - pts.at(-1)[1]) < 1e-3) pts.pop();
+    return pts;
+  };
+
+  def('terrain', 'surface_definition', 'What a TIN surface is made of: its points (and those left out), breaklines (linework, curves and drawn ones), outline, voids, max / min edge, swapped edges and deleted triangles.', obj({ id }, ['id']), (a) => {
+    const s = surfaceOf(a.id);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
+    return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(ctx.doc, s) };
+  });
+
+  def('terrain', 'surface_points', 'Edit a TIN surface\'s points; it rebuilds. add: a survey point at a plan point (elevation z, else the surface height there); move: a point to a plan point and / or elevation; delete: remove the survey points; exclude / include: leave points out of this surface or bring them back.', obj({ id, action: str('what to do', ['add', 'move', 'delete', 'exclude', 'include']), at: { ...plan, description: 'add / move: plan point [x, z] (model)' }, z: num('add / move: project elevation'), points: { type: 'array', items: { type: 'string' }, description: 'move / delete / exclude / include: point names or ids' }, name: str('add: its name'), code: str('add: its code') }, ['id', 'action']), (a) => {
+    const doc = ctx.doc;
+    return editTin(a.id, (p, s) => {
+      if (a.action === 'add') {
+        if (!a.at) throw new Error('Give at: [x, z].');
+        const y = a.z === undefined ? surfaceSampler(doc, s).z(a.at[0], a.at[1]) : null;
+        if (a.z === undefined && y === null) throw new Error('That point is outside the surface: give its elevation z.');
+        const pr = S.toProject(doc, [a.at[0], y ?? 0, a.at[1]]);
+        const pt = S.addPoint(doc, { ...pr, z: a.z ?? pr.z, name: a.name, code: a.code ?? p.points?.codes?.[0] ?? '' });
+        if (Array.isArray(p.points)) p.points.push(pt.id);
+        return `Added point ${pt.name}.`;
+      }
+      const pts = pointsByRefs(a.points);
+      const ids = new Set(pts.map((x) => x.id));
+      if (a.action === 'move') {
+        if (!a.at && a.z === undefined) throw new Error('Give at: [x, z] and / or z.');
+        for (const pt of pts) {
+          if (a.at) Object.assign(pt.point, (({ n, e }) => ({ n, e }))(S.toProject(doc, [a.at[0], 0, a.at[1]])));
+          if (a.z !== undefined) pt.point.z = a.z;
+          pt.position = D.round3(S.toLocal(doc, pt.point));
+        }
+      } else if (a.action === 'delete') {
+        for (const pt of pts) D.removeEntity(doc, pt);
+        if (Array.isArray(p.points)) p.points = p.points.filter((x) => !ids.has(x));
+        p.exclude = p.exclude.filter((x) => !ids.has(x));
+      } else if (a.action === 'exclude') p.exclude = [...new Set([...p.exclude, ...ids])];
+      else if (a.action === 'include') p.exclude = p.exclude.filter((x) => !ids.has(x));
+      else throw new Error(`Unknown action "${a.action}".`);
+    });
+  }, true);
+
+  def('terrain', 'surface_breaklines', 'Add or remove a TIN surface\'s breaklines; it rebuilds. add: an existing line (linework or a curve, which stays live) or one drawn through points [[x, y, z], …] (model); remove: a line, or a drawn one by its index.', obj({ id, action: str('what to do', ['add', 'remove']), line: str('a linework or curve id / name'), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'add: a drawn breakline [[x, y, z], …] (model)' }, index: num('remove: which drawn breakline (0 first)') }, ['id', 'action']), (a) =>
+    editTin(a.id, (p, s) => {
+      const listed = () => SW.surfaceSources(ctx.doc, p).breaklines.map((x) => x.id); // "all" as the explicit list it stands for
+      if (a.action === 'add' && a.points) {
+        if (a.points.length < 2) throw new Error('A breakline needs at least 2 points.');
+        p.lines.push(a.points.map((q) => q.map(r3)));
+      } else if (a.line) {
+        const [l] = D.resolve(ctx.doc, a.line);
+        if (!S.isLinework(l) && !l.curve) throw new Error(`${l.name} is not a line.`);
+        const now = listed();
+        if (a.action === 'add') p.breaklines = now.includes(l.id) ? now : [...now, l.id];
+        else if (!now.includes(l.id)) throw new Error(`${l.name} is not a breakline of ${s.name}.`);
+        else p.breaklines = now.filter((x) => x !== l.id);
+      } else if (a.action === 'remove' && a.index !== undefined) {
+        if (!p.lines[a.index]) throw new Error(`There is no drawn breakline ${a.index} (${p.lines.length} drawn).`);
+        p.lines.splice(a.index, 1);
+      } else throw new Error('Give line (a line to add or remove), points (to draw one) or index (a drawn one to remove).');
+    }),
+  true);
+
+  def('terrain', 'surface_boundary', 'Edit a TIN surface\'s outline (the boundary it stays inside) and voids (holes); it rebuilds. set / add_void: corners [[x, z], …] or from a closed curve; clear / remove_void; move_vertex, insert_vertex (splits the nearest edge unless index is given), remove_vertex. void picks the hole (0 first); without it the outline is edited.', obj({ id, action: str('what to do', ['set', 'clear', 'add_void', 'remove_void', 'move_vertex', 'insert_vertex', 'remove_vertex']), points: ring, from: str('set / add_void: a closed curve id / name'), void: num('which void (0 first); omit for the outline'), index: num('vertex index (0 first)'), to: plan }, ['id', 'action']), (a) =>
+    editTin(a.id, (p) => {
+      const v = a.void;
+      if (v !== undefined && !p.voids[v]) throw new Error(`There is no void ${v} (${p.voids.length}).`);
+      if (a.action === 'set') p.outline = ringOf(a);
+      else if (a.action === 'add_void') p.voids.push(ringOf(a));
+      else if (a.action === 'clear') delete p.outline;
+      else if (a.action === 'remove_void') {
+        if (v === undefined) throw new Error('Give void: which one (0 first).');
+        p.voids.splice(v, 1);
+      } else {
+        const r = v === undefined ? p.outline : p.voids[v];
+        if (!r) throw new Error('The surface has no outline yet: set one first.');
+        if (a.action !== 'remove_vertex' && !a.to) throw new Error('Give to: [x, z].');
+        const op = { action: a.action.replace('_vertex', ''), index: a.action === 'insert_vertex' ? (a.index ?? SW.ringInsertIndex(r, a.to)) : a.index, to: a.to?.map(r3) };
+        if (v === undefined) p.outline = SW.editRing(r, op);
+        else p.voids[v] = SW.editRing(r, op);
+      }
+      if ((p.outline && p.outline.length < 3) || p.voids.some((x) => x.length < 3)) throw new Error('An outline or void needs at least 3 corners.');
+    }),
+  true);
 
   def('terrain', 'check_surface', 'Quality checks on a surface: spikes and pits (points far off their neighbours), duplicate points, crossing breaklines, long thin triangles. Each issue names the points to fix (edit_points, delete, or set_surface_sources exclude).', obj({ id, spike: num('flag points more than this far off their neighbours, m (default: automatic)'), min_angle: num('thin-triangle limit, degrees (default 2)') }, ['id']), (a) => {
     const doc = ctx.doc;

@@ -882,3 +882,52 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   assert.ok(sent, 'the picture went with the message');
   assert.equal(await w.locator('.msg.user img').count(), 1);
 });
+
+test('surface editing (#239, #240): the Surface panel, a point dragged, one added at a typed height, an outline corner dragged', async () => {
+  await ok('new_model');
+  const rows = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) rows.push(`P${i}${j},${5400000 + i * 10},${650000 + j * 10},${100 + i},GND`);
+  await ok('import_points', { text: rows.join('\n') });
+  await ok('create_surface', { name: 'EG' });
+  await ok('surface_boundary', { id: 'EG', action: 'set', points: [[0, 0], [30, 0], [30, -30], [0, -30]] });
+  await ok('set_view', { preset: 'top' });
+  await ok('zoom_extents', {});
+  await ok('select', { ids: ['EG'] });
+  await w.click('[data-tab="entity"]');
+  await w.locator('.surface-def').waitFor();
+  assert.match(await w.locator('.surface-def').textContent(), /Points · 16/);
+  const screen = (p) => w.evaluate((q) => {
+    const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q));
+    return [s.x, s.y];
+  }, p);
+  // Move, from the panel: drag P11 in plan
+  await w.locator('.surface-def button[title="Move"]').click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'move');
+  const p11 = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'P11').position);
+  await w.mouse.move(...(await screen(p11)));
+  await w.mouse.down();
+  await w.mouse.move(...(await screen([p11[0] + 3, p11[1], p11[2]])), { steps: 5 });
+  await w.mouse.up();
+  await w.waitForFunction(() => window.mmr.doc.entities.find((e) => e.name === 'P11').position[0] > 11);
+  // Add, at a typed elevation
+  await w.keyboard.press('a');
+  await w.fill('#vcb', 'z 120');
+  await w.press('#vcb', 'Enter');
+  await w.mouse.click(...(await screen([25, 2, -25])));
+  await w.waitForFunction(() => window.mmr.doc.entities.filter((e) => e.type === 'point').length === 17);
+  assert.equal((await ok('get_entity', { id: 'EG' })).max[1], 20, 'the surface rose to the new point');
+  // Grips: drag the outline corner at [30, -30] in to [20, -20]
+  await w.locator('.surface-def button[title="Drag the corners in the view"]').first().click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.tool.mode), 'grips');
+  const corner = await w.evaluate(() => window.mmr.app.tools.tool.rings()[0].pts[2].toArray());
+  await w.mouse.move(...(await screen(corner)));
+  await w.mouse.down();
+  await w.mouse.move(...(await screen([20, corner[1], -20])), { steps: 5 });
+  await w.mouse.up();
+  await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'EG').derived.params.outline[2][0] - 20) < 0.6);
+  // the panel follows; one undo puts the corner back
+  await w.locator('.surface-def', { hasText: 'Points · 17' }).waitFor();
+  await w.keyboard.press('Escape');
+  await ok('undo', {});
+  assert.deepEqual((await ok('surface_definition', { id: 'EG' })).definition.outline[2], [30, -30]);
+});

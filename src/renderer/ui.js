@@ -10,6 +10,8 @@ import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES } from './forms.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
+import * as SW from '../core/sitework.js';
+import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
@@ -1510,6 +1512,55 @@ export class UI {
   }
 
   /** An analysis legend (#121) under a coloured surface. */
+  /** A TIN's definition (#240): what it is made of, each part with its own remove / show button, and its options. */
+  surfaceDefinitionCard(e, run) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const d = SW.surfaceDefinition(doc, e);
+    const st = TR.surfaceStats(D.worldMesh(doc, e));
+    const base = S.geo(doc).base?.[2] || 0;
+    const id = e.id;
+    const btn = (label, ic, onclick, title = label) => h('button.btn', { onclick, title, 'aria-label': title }, icon(ic), label);
+    const x = (title, onclick) => h('button.icon-btn', { onclick, title, 'aria-label': title }, icon('x'));
+    const edit = (mode) => () => (app.tools.set('surfedit'), app.tools.tool.setMode?.(mode));
+    const item = (label, ...actions) => h('div.row.small', {}, h('span.grow', {}, label), ...actions);
+    const head = (label) => h('div.small.muted', { style: { marginTop: '6px' } }, label);
+    // show / hide what the surface is made from (the points, the breakline entities)
+    const pointIds = SW.surfaceSources(doc, e.derived.params).points.map((p) => p.id);
+    const lineIds = d.breaklines.map((l) => l.id);
+    const shown = (ids) => ids.some((i) => app.entity(i)?.visible !== false);
+    const toggle = (ids) => () => run('set_properties', { ids, visible: !shown(ids) });
+    return h(
+      'div.surface-def',
+      {},
+      h('div.small', {}, `Area ${fmt(st.area_2d)} m² (3D ${fmt(st.area_3d)}) · elevation ${fmt(st.min_y + base)} to ${fmt(st.max_y + base)}`),
+      head(`Points · ${d.points} (${d.point_source === 'all' ? 'every survey point' : d.point_source === 'codes' ? 'by code' : 'chosen'})`),
+      h('div.row.wrap', {}, btn('Add', 'plus', edit('add')), btn('Move', 'hand-pointing', edit('move')), pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null),
+      ...d.excluded.map((n) => item(`Left out: ${n}`, h('button.btn', { onclick: () => run('surface_points', { id, action: 'include', points: [n] }) }, 'Bring back'))),
+      head(`Breaklines · ${d.breaklines.length + d.drawn_breaklines}`),
+      ...d.breaklines.map((l) => item(l.name, x(`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })))),
+      ...Array.from({ length: d.drawn_breaklines }, (_, i) => item(`Drawn line ${i + 1}`, x(`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })))),
+      h('div.row.wrap', {}, btn('Draw', 'line-segments', edit('breakline')), lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null),
+      head(`Outline · ${d.outline ? `${d.outline.length} corners` : 'none'}${d.boundaries.length ? ` · ${d.boundaries.length} boundary line${d.boundaries.length > 1 ? 's' : ''}` : ''}`),
+      h('div.row.wrap', {}, btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')), d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null, d.outline ? btn('Clear', 'selection-slash', () => run('surface_boundary', { id, action: 'clear' })) : null),
+      head(`Holes · ${d.voids.length}`),
+      ...d.voids.map((r, i) => item(`Hole ${i + 1} · ${r.length} corners`, x(`Remove hole ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })))),
+      h('div.row.wrap', {}, btn('Draw', 'polygon', edit('void')), d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null),
+      head('Triangles'),
+      h('label.row.small', {}, h('span.grow', {}, 'Longest side (m, 0: any)'), h('input', { type: 'number', min: 0, step: 1, value: d.max_edge, style: { width: '72px' }, 'aria-label': 'Longest triangle side', onchange: (ev) => run('set_surface_sources', { id, max_edge: +ev.target.value }) })),
+      d.swaps.length || d.deleted_triangles ? item(`${d.swaps.length} swapped, ${d.deleted_triangles} deleted by hand`, h('button.btn', { onclick: () => run('edit_triangles', { id, action: 'restore' }) }, icon('arrow-counter-clockwise'), 'Restore')) : null,
+      h('div.row.wrap', {}, btn('Swap an edge', 'triangle', edit('swap'))),
+      head('Contours and analysis'),
+      h('label.row.small', {}, h('span.grow', {}, 'Contours every (m)'), h('input', { type: 'number', min: 0.1, step: 0.5, value: 1, style: { width: '72px' }, 'aria-label': 'Contour interval', onchange: (ev) => run('surface_contours', { id, interval: +ev.target.value }) })),
+      h(
+        'label.row.small',
+        {},
+        h('span.grow', {}, 'Colour by'),
+        h('select', { 'aria-label': 'Analysis colours', onchange: (ev) => run('analyze_surface', { id, kind: ev.target.value }) }, ...['none', 'elevation', 'slope', 'aspect'].map((k) => h('option', { value: k, selected: (e.analysis?.kind || 'none') === k }, k))),
+      ),
+    );
+  }
+
   legend(e) {
     const a = e.analysis;
     if (!a?.legend) return null;
@@ -1830,6 +1881,7 @@ export class UI {
         h('div.overline', {}, `Surface · ${tri} triangles · ${e.derived.report.points} points`),
         this.legend(e),
         e.derived.error ? h('div.small.param-error', { role: 'alert' }, e.derived.error) : null,
+        e.derived.generator === 'surface' ? this.surfaceDefinitionCard(e, run) : null,
         h('div.row.wrap', {}, h('button.btn', { onclick: () => this.checkSurfaceDialog(e.id) }, icon('list-checks'), 'Check'), h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: e.id }) }, icon('chart-bar'), 'Cut / fill…')),
       );
     }
