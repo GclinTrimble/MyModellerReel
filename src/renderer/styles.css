@@ -146,16 +146,20 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .axis-legend .x { color: var(--axis-x); } .axis-legend .y { color: var(--axis-y); } .axis-legend .z { color: var(--axis-z); }
 /* multiple views (#160) */
 .pane-canvas { position: absolute; display: block; outline: none; cursor: default; }
-.viewport-wrap.multi #viewport, .viewport-wrap.multi .pane-canvas { box-shadow: inset 0 0 0 1px var(--my-border); }
-.pane-head {
-  position: absolute; z-index: 3; display: flex; align-items: center; gap: var(--my-space-0); padding: 2px var(--my-space-1);
-  background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-1);
-  font: var(--my-text-xs) var(--my-font-ui); opacity: 0.88;
+/* a frame over each pane (the canvas would paint over its own border); the active one in the accent */
+.pane-frame { position: absolute; z-index: 1; pointer-events: none; box-shadow: inset 0 0 0 1px var(--my-border-strong); }
+.pane-frame.focused { box-shadow: inset 0 0 0 1px var(--my-accent-line), inset 0 0 0 2px var(--my-accent-tint-strong); }
+.pane-frame .pane-num { position: absolute; left: var(--my-space-2); top: var(--my-space-1); font: var(--my-text-xs) var(--my-font-mono); color: var(--my-text-muted); }
+.pane-frame.focused .pane-num { color: var(--my-accent-text); }
+/* the one floating bar of a multi-pane view: the pane's own controls, then the view bar */
+.pane-toolbar {
+  position: absolute; z-index: 3; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: var(--my-space-0); padding: var(--my-space-1);
+  background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2);
 }
-.pane-head:hover, .pane-head:focus-within { opacity: 1; }
-.pane-head.focused { border-color: var(--my-accent); }
-.pane-head .pane-num { min-width: 16px; text-align: center; font-family: var(--my-font-mono); color: var(--my-text-muted); }
-.pane-head.focused .pane-num { color: var(--my-accent-text); }
+.pane-toolbar .viewbar { display: contents; } /* its buttons wrap one by one in a narrow pane */
+.pane-head { display: flex; align-items: center; gap: var(--my-space-0); font: var(--my-text-xs) var(--my-font-ui); }
+.pane-head .pane-num { min-width: 16px; text-align: center; font-family: var(--my-font-mono); color: var(--my-accent-text); }
+.pane-head .sep { align-self: stretch; width: 1px; background: var(--my-border); margin: var(--my-space-1); }
 .pane-head select { font: inherit; background: transparent; color: var(--my-text); border: 0; padding: 2px; }
 
 .pane-split { position: absolute; z-index: 2; background: transparent; }

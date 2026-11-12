@@ -3836,10 +3836,10 @@ function registerCore(reg, ctx) {
     const n = LY.normalize(ctx.doc.settings.layout).count;
     return Array.from({ length: n }, (_, i) => inPane(i + 1, fit));
   });
-  def('view', 'set_layout', 'Split the view into 1 to 4 panes, each with its own camera: columns (side by side), rows (stacked), grid (2 × 2), main_left / main_right / main_top / main_bottom (one big pane, the others beside it). split: [x, y] where the bars are (fractions 0.15–0.85). max: maximise a pane (1–4), 0 restores. New panes show top, front and right (parallel). show_camera: draw the main camera in the other panes.', obj({ count: num('panes, 1–4'), arrangement: str('how they sit', LY.ARRANGEMENTS), split: { type: 'array', items: { type: 'number' }, description: '[x, y] fractions' }, max: num('maximise pane 1–4; 0 restores'), show_camera: bool('the main camera drawn in the other panes (default true)') }), (a) => {
+  def('view', 'set_layout', 'Split the view into 1 to 4 panes, each with its own camera: columns (side by side), rows (stacked), grid (2 × 2), main_left / main_right / main_top / main_bottom (one big pane, the others beside it). split: [x, y] where the bars are (fractions 0.15–0.85). max: maximise a pane (1–4), 0 restores. New panes show top, front and right (parallel). show_camera: draw the main camera in the other panes (off by default).', obj({ count: num('panes, 1–4'), arrangement: str('how they sit', LY.ARRANGEMENTS), split: { type: 'array', items: { type: 'number' }, description: '[x, y] fractions' }, max: num('maximise pane 1–4; 0 restores'), show_camera: bool('the main camera drawn in the other panes (default false)') }), (a) => {
     const s = ctx.doc.settings;
     const cur = LY.normalize(s.layout);
-    const next = { ...cur, show_camera: s.layout?.show_camera };
+    const next = { ...cur, show_camera: s.layout?.camera_mark };
     if (a.count !== undefined) {
       if (a.count !== cur.count && a.arrangement === undefined) next.arrangement = undefined; // the usual arrangement for that many
       next.count = a.count;
@@ -3850,7 +3850,7 @@ function registerCore(reg, ctx) {
     if (a.split) next.split = a.split;
     if (a.max !== undefined) next.max = a.max > 0 ? a.max - 1 : null;
     if (a.show_camera !== undefined) next.show_camera = a.show_camera;
-    s.layout = { ...LY.normalize(next), show_camera: next.show_camera !== false };
+    s.layout = { ...LY.normalize(next), camera_mark: next.show_camera === true };
     ctx.view?.syncPanes?.();
     return ctx.view?.layoutInfo?.() ?? s.layout;
   }, true);
@@ -3896,7 +3896,7 @@ function registerCore(reg, ctx) {
     ctx.doc.settings.layout = {
       ...LY.normalize({ count: 4, arrangement: 'grid', panes: [cur.panes[0], { view: 'top', projection: 'parallel' }, { view: 'profile', corridor: c.id }, { view: 'section', corridor: c.id }] }),
       station: a.station ?? Math.round(len / 2),
-      show_camera: ctx.doc.settings.layout?.show_camera !== false,
+      camera_mark: ctx.doc.settings.layout?.camera_mark === true,
     };
     if (ctx.view?.syncPanes) {
       ctx.view.syncPanes();

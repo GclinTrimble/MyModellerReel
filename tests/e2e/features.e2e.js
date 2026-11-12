@@ -550,7 +550,9 @@ test('multiple views: four panes, drawing in the plan, maximise, a detached wind
   assert.equal(l.arrangement, 'grid');
   assert.deepEqual(l.panes.map((p) => p.view), ['perspective', 'top', 'front', 'right']);
   assert.equal(await w.locator('.pane-canvas').count(), 3);
-  assert.equal(await w.locator('.pane-head').count(), 4);
+  assert.equal(await w.locator('.pane-frame').count(), 4);
+  assert.equal(await w.locator('.pane-toolbar .pane-head').count(), 1, 'one floating bar, on the pane last hovered');
+  assert.equal(await w.locator('.pane-toolbar #viewbar').count(), 1);
   await ok('zoom_extents', { pane: 'all' });
   // a rectangle drawn with the mouse in the plan (pane 2) lands flat on the ground, in plan proportions
   await w.evaluate(() => window.mmr.app.tools.set('rectangle'));

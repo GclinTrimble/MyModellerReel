@@ -329,10 +329,15 @@ export class Tools {
     const face = { v: e.mesh.f[hit.faceIndex].map((i) => e.mesh.v[i]), f: [e.mesh.f[hit.faceIndex].map((_, k) => k)] };
     this.ghost(face, hit.object.matrixWorld, HIGHLIGHT, 0.45);
   }
+  /** What a transform can take under the mouse: a survey point wins over the surface under it, then faces, then lines. */
+  hitAt(ev) {
+    const mesh = this.vp.pick(ev); // also aims the ray for the two below
+    return this.vp.pickPoint() || mesh || this.vp.pickCurve();
+  }
   /** Ids to act on: the selection, else what is under the mouse. */
   targetsAt(ev) {
     if (this.app.selection.length) return this.app.selection;
-    const hit = this.vp.pick(ev);
+    const hit = this.hitAt(ev);
     return hit ? [this.app.pickTarget(hit.entityId)] : [];
   }
   run(name, args) {
@@ -1060,7 +1065,7 @@ class ScaleTool {
     this.prev = t.app.store.doc.settings.gizmo || null;
   }
   async down(ev) {
-    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+    const hit = this.t.hitAt(ev);
     if (!hit) return this.t.app.select([]);
     const id = this.t.app.pickTarget(hit.entityId);
     const e = this.t.app.entity(id);
