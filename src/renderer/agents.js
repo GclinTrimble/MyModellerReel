@@ -159,14 +159,21 @@ export class Agents {
     const name = h('input', { value: p?.name || '', placeholder: 'e.g. Site surveyor', disabled: p?.id === DEFAULT_AGENT });
     const provider = h('select', {}, [['', 'AI settings'], ['builtin', 'Built-in model (offline)'], ['ollama', 'Local (Ollama)'], ['openai', 'OpenAI-compatible'], ['anthropic', 'Claude']].map(([v, l]) => h('option', { value: v, selected: (p?.provider || '') === v }, l)));
     const model = h('input', { value: p?.model || '', placeholder: 'empty: the one in AI settings' });
+    // the built-in model is picked from its list, not typed (#255)
+    const builtins = (await this.app.reg.run('list_ai_models', {}).catch(() => null))?.models || [];
+    const builtinModel = h('select', {}, h('option', { value: '' }, 'The one in AI settings'), builtins.map((m) => h('option', { value: m.id, selected: p?.model === m.id }, `${m.label} · ${(m.bytes / 1e9).toFixed(1)} GB${m.downloaded ? '  ✓' : ''}`)));
+    const modelField = h('div');
+    const showModel = () => modelField.replaceChildren(provider.value === 'builtin' && builtins.length ? builtinModel : model);
+    provider.addEventListener('change', showModel);
+    showModel();
     const skill = h('select', {}, h('option', { value: '' }, 'No skill'), Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: p?.skill === k }, s.label)));
     if (p?.skill && !SKILLS[p.skill]) skill.append(h('option', { value: p.skill, selected: true }, p.skill)); // a user skill (#242)
     const toolset = h('select', {}, ['auto', ...Object.keys(TOOLSETS)].map((k) => h('option', { value: k, selected: (p?.toolset || 'auto') === k }, k)));
     const instructions = h('textarea', { rows: 4, placeholder: 'What it always keeps in mind, e.g. "You check levels and drainage; answer in short lists."' }, p?.instructions || '');
     const color = h('input', { type: 'color', value: p?.color || '#7aa2f7' });
-    const body = h('div.agent-form', {}, f('Name', name), f('Provider', provider), f('Model', model), f('Skill', skill), f('Tools', toolset), f('Instructions', instructions), f('Colour', color));
+    const body = h('div.agent-form', {}, f('Name', name), f('Provider', provider), f('Model', modelField), f('Skill', skill), f('Tools', toolset), f('Instructions', instructions), f('Colour', color));
     if ((await this.app.ui.modal(p ? `Edit ${p.name}` : 'New agent', body, [['Save', 'save'], ['Cancel', null]])) !== 'save') return;
-    const args = { name: name.value.trim(), provider: provider.value, model: model.value.trim(), skill: skill.value, toolset: toolset.value, instructions: instructions.value, color: color.value };
+    const args = { name: name.value.trim(), provider: provider.value, model: provider.value === 'builtin' && builtins.length ? builtinModel.value : model.value.trim(), skill: skill.value, toolset: toolset.value, instructions: instructions.value, color: color.value };
     if (p) args.id = p.id;
     this.app.reg.run('save_agent', args).catch((e) => this.app.ui.toast(e.message, 'danger'));
   }

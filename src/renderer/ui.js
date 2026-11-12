@@ -35,6 +35,31 @@ export function h(sel, attrs = {}, ...kids) {
   return el;
 }
 export const icon = (name, fill = false) => h(`i.ph${fill ? '-fill' : ''}.ph-${name}`, { 'aria-hidden': 'true' });
+/**
+ * An ⓘ that keeps explanations out of the way (#255): a short card on hover, focus or tap, placed inside the window.
+ * text: a string, or [title, body…]. Screen readers get the same text from the button itself.
+ */
+export function infoTip(text, label = 'More information') {
+  const [title, ...body] = Array.isArray(text) ? text : [null, text];
+  const pop = h('div.info-pop', { 'aria-hidden': 'true' }, title ? h('strong', {}, title) : null, ...body.map((b) => h('p', {}, b)));
+  const btn = h('button.info-tip', { type: 'button', 'aria-label': label }, icon('info'), h('span.sr-only', {}, [title, ...body].filter(Boolean).join('. ')));
+  const show = () => {
+    if (pop.isConnected) return;
+    document.body.append(pop);
+    const r = btn.getBoundingClientRect();
+    const { offsetWidth: w, offsetHeight: ht } = pop;
+    pop.style.left = `${Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8))}px`;
+    pop.style.top = `${r.bottom + 8 + ht < innerHeight ? r.bottom + 8 : Math.max(8, r.top - ht - 8)}px`;
+  };
+  const hide = () => pop.remove();
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
+  btn.addEventListener('keydown', (e) => e.key === 'Escape' && hide());
+  btn.addEventListener('click', (e) => (e.preventDefault(), e.stopPropagation(), pop.isConnected ? hide() : show()));
+  return btn;
+}
 /** The Survey tab's two views (#228): the points, and COGO. */
 export const surveyViews = (ui, current) =>
   h('div.segmented.survey-views', { role: 'tablist', 'aria-label': 'Survey' }, ...[['survey', 'Points', 'map-pin'], ['cogo', 'COGO', 'compass-tool']].map(([tab, label, ic]) => h('button.seg', { type: 'button', role: 'tab', 'aria-selected': String(tab === current), 'aria-pressed': String(tab === current), onclick: () => ui.show(tab) }, icon(ic), label)));
@@ -2444,7 +2469,7 @@ export class UI {
       app.ai.renderHead();
       this.renderDock();
     };
-    const field = (label, value, onchange, attrs = {}) => h('label.field', {}, h('span', {}, label), h('input', { value: value ?? '', onchange, ...attrs }));
+    const field = (label, value, onchange, attrs = {}, tip = null) => h('label.field', {}, h('span', {}, label, tip ? infoTip(tip) : null), h('input', { value: value ?? '', onchange, ...attrs }));
     const prov = ai.provider;
     const cfg =
       prov === 'anthropic'
@@ -2452,23 +2477,23 @@ export class UI {
         : prov === 'openai'
           ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
           : prov === 'builtin'
-            ? [field('Model (qwen3-4b, qwen3-8b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b): the card above downloads it', ai.builtin.model, (e) => save({ ai: { builtin: { model: e.target.value } } }))]
-            : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
+            ? [] // the model list is in the card above (#255)
+            : [field('Ollama address', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } }), {}, 'On this PC it is http://127.0.0.1:11434. Change it only when Ollama runs on another computer.'), field('Model', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }), {}, 'An Ollama model that can call tools: mistral, mistral-small, qwen2.5, llama3.1…')];
     return h(
       'div.panel',
       {},
       ...this.accountCard(),
       h('h3', {}, 'AI'),
       ai.provider === 'ollama' || ai.provider === 'builtin' ? app.ai.setupCard() : null,
-      this.aiFinder(),
+      prov === 'builtin' ? null : this.aiFinder(), // finding other models matters once you leave the built-in one
       h(
         'label.field',
         {},
-        h('span', {}, 'Provider'),
+        h('span', {}, 'Provider', infoTip(['Where Plumb’s model runs', 'Built-in: the app runs it on this PC, offline. Ollama or LM Studio: another app on this PC. Claude or an API: online, with your key.', 'Keys stay on this PC and are only used by the app itself; the page never sees them.'])),
         h(
           'select',
           { onchange: (e) => save({ ai: { provider: e.target.value } }) },
-          [['builtin', 'Built-in model (runs in the app, offline)'], ['ollama', 'Ollama (Mistral, Qwen…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
+          [['builtin', 'Built-in model (offline)'], ['ollama', 'Ollama (Mistral, Qwen…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
         ),
       ),
       ...cfg,
@@ -2476,19 +2501,18 @@ export class UI {
         h(
           'label.field',
           {},
-          h('span', {}, 'Tools for local models (small models do better with fewer)'),
+          h('span', {}, 'Tools', infoTip('Local models do better with fewer tools. Auto gives each request the best matches.')),
           h(
             'select',
             { onchange: (e) => save({ ai: { toolset: e.target.value } }) },
             [['auto', 'Auto: the best matches for each request'], ['all', 'All commands'], ['modelling', 'Modelling'], ['animation', 'Animation'], ['query', 'Scene queries'], ['files', 'Files']].map(([v, l]) => h('option', { value: v, selected: v === (ai.toolset || 'auto') }, l)),
           ),
         ),
-      h('p.small.muted', {}, 'Keys are stored on this PC and only used by the app itself; the page never sees them.'),
       h('h3', {}, 'Image model (AI render, AI textures)'),
       h('label.field', {}, h('span', {}, 'Provider'), h('select', { onchange: (e) => save({ ai: { image: { provider: e.target.value } } }) }, [['comfyui', 'ComfyUI on this PC (Stable Diffusion, Flux…)'], ['openai', 'OpenAI-compatible images API']].map(([v, l]) => h('option', { value: v, selected: v === ai.image.provider }, l)))),
       ...(ai.image.provider === 'openai'
         ? [field('Base URL', ai.image.openai.baseUrl, (e) => save({ ai: { image: { openai: { baseUrl: e.target.value } } } })), field('Model', ai.image.openai.model, (e) => save({ ai: { image: { openai: { model: e.target.value } } } })), field(`API key ${ai.image.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { image: { openai: { apiKey: e.target.value } } } }), { type: 'password' })]
-        : [field('ComfyUI URL', ai.image.comfyui.baseUrl, (e) => save({ ai: { image: { comfyui: { baseUrl: e.target.value } } } })), field('Checkpoint (a model file in ComfyUI/models/checkpoints)', ai.image.comfyui.checkpoint, (e) => save({ ai: { image: { comfyui: { checkpoint: e.target.value } } } }), { placeholder: 'sd_xl_base_1.0.safetensors' })]),
+        : [field('ComfyUI URL', ai.image.comfyui.baseUrl, (e) => save({ ai: { image: { comfyui: { baseUrl: e.target.value } } } })), field('Checkpoint', ai.image.comfyui.checkpoint, (e) => save({ ai: { image: { comfyui: { checkpoint: e.target.value } } } }), { placeholder: 'sd_xl_base_1.0.safetensors' }, 'A model file in ComfyUI/models/checkpoints.')]),
       h('h3', {}, 'API and MCP'),
       h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
       h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),

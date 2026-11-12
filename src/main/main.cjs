@@ -228,6 +228,7 @@ ipcMain.handle('ai:ollama-pull', async (event, model) => {
   pulling = null;
   return { model, status: last.status || 'success' };
 });
+ipcMain.handle('ai:builtin-delete', (_, id) => builtin.remove(id));
 ipcMain.handle('ai:ollama-pull-cancel', () => (pulling?.abort(), downloading?.abort()));
 
 ipcMain.handle('settings:set', (_, patch) => {

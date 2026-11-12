@@ -72,7 +72,7 @@ function fakeLlama(log) {
 test('the built-in provider: download with progress, then a turn in the Ollama shape the agent loop parses', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-builtin-'));
   const log = [];
-  const rt = B.createBuiltin({ dir, load: async () => fakeLlama(log) });
+  const rt = B.createBuiltin({ dir, load: async () => fakeLlama(log), check: async () => true });
   assert.equal(protocolOf('builtin'), 'ollama');
   assert.equal(rt.status().model, B.MODELS[0].id);
   assert.equal(rt.status().has_model, false);
@@ -81,20 +81,20 @@ test('the built-in provider: download with progress, then a turn in the Ollama s
   // paused: the part file stays for the next try
   const stop = new AbortController();
   stop.abort();
-  await assert.rejects(rt.download('qwen3-8b', () => {}, stop.signal), /resumes/);
+  await assert.rejects(rt.download('ministral3-8b', () => {}, stop.signal), /resumes/);
   assert.equal(log.find((x) => x[0] === 'downloader')[1].deleteTempFileOnCancel, false);
 
   const progress = [];
-  const r = await rt.download('qwen3-8b', (p) => progress.push(p.completed / p.total), new AbortController().signal);
-  assert.deepEqual(progress, [0.4, 1]);
+  const r = await rt.download('ministral3-8b', (p) => progress.push(p.completed / p.total), new AbortController().signal);
+  assert.deepEqual(progress, [0.4, 1, 1], 'then checking the file');
   assert.equal(r.status, 'success');
-  assert.equal(rt.status('qwen3-8b').has_model, true);
+  assert.equal(rt.status('ministral3-8b').has_model, true);
 
   const { reg } = makeCtx();
   const tools = toolDefs('ollama', reg.list().filter((c) => c.name === 'create_box'));
   const history = [{ role: 'user', content: 'a box' }];
   const texts = [];
-  const data = await rt.chat('qwen3-8b', buildRequest('ollama', { system: 'sys', tools, history }), (t) => texts.push(t));
+  const data = await rt.chat('ministral3-8b', buildRequest('ollama', { system: 'sys', tools, history }), (t) => texts.push(t));
   const { calls, message } = parseReply('ollama', data);
   assert.deepEqual(calls.map((c) => [c.name, c.args]), [['create_box', { width: 2 }]], 'nulls of optional arguments dropped');
   assert.deepEqual(texts, ['Making it.']);
@@ -104,7 +104,7 @@ test('the built-in provider: download with progress, then a turn in the Ollama s
   assert.equal(log.find((x) => x[0] === 'getLlama')[1].build, 'never', 'never compiles on the user PC');
 
   history.push(message, { role: 'tool', tool_name: 'create_box', content: '{"id":"e1"}' });
-  const next = parseReply('ollama', await rt.chat('qwen3-8b', buildRequest('ollama', { system: 'sys', tools, history })));
+  const next = parseReply('ollama', await rt.chat('ministral3-8b', buildRequest('ollama', { system: 'sys', tools, history })));
   assert.equal(next.text, 'Done.');
   assert.equal(log.filter((x) => x[0] === 'load').length, 1, 'the model stays loaded between requests');
 });
@@ -144,4 +144,40 @@ test('agents asking the built-in model at once take turns', async () => {
   const replies = await Promise.all([rt.chat('qwen3-4b', { messages: [] }), rt.chat('qwen3-4b', { messages: [] }), rt.chat('qwen3-4b', { messages: [] })]);
   assert.deepEqual(replies.map((r) => r.message.content), ['ok', 'ok', 'ok']);
   assert.equal(overlap, false);
+});
+
+test('the model list is Apache 2.0 only, pinned by size and SHA-256; a file that does not match is deleted', async () => {
+  for (const m of B.MODELS) {
+    assert.match(m.sha256, /^[0-9a-f]{64}$/, m.id);
+    assert.ok(m.bytes > 1e9 && m.file.endsWith('.gguf') && /Apache 2.0/.test(m.about), m.id);
+  }
+  assert.equal(B.MODELS[0].id, 'qwen3-4b', 'the default');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-builtin-'));
+  const f = path.join(dir, 'x.gguf');
+  fs.writeFileSync(f, 'abc');
+  assert.equal(await B.verifyFile(f, 3, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'), true);
+  assert.equal(await B.verifyFile(f, 3, '0'.repeat(64)), false);
+  assert.equal(await B.verifyFile(f, 4, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'), false, 'size first');
+
+  const rt = B.createBuiltin({ dir, load: async () => fakeLlama([]), check: async () => false });
+  await assert.rejects(rt.download('ministral3-3b', () => {}, new AbortController().signal), /not the expected one/);
+  assert.equal(fs.existsSync(path.join(dir, 'ministral3-3b.gguf')), false, 'the bad file is gone');
+
+  fs.writeFileSync(path.join(dir, 'qwen3-4b.gguf'), 'gguf');
+  fs.writeFileSync(path.join(dir, 'ministral3-8b.gguf.ipull'), 'part');
+  const list = rt.models();
+  assert.deepEqual(list.map((m) => [m.id, m.downloaded]), [['qwen3-4b', true], ['ministral3-3b', false], ['ministral3-8b', false], ['ministral3-14b', false]]);
+  assert.ok(list[0].recommended && typeof list[0].fits === 'boolean');
+  await rt.remove('qwen3-4b');
+  await rt.remove('ministral3-8b');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['x.gguf'], 'the model and a part file are deleted');
+});
+
+test('list_ai_models and delete_ai_model', async () => {
+  const { reg, ctx } = makeCtx();
+  const calls = [];
+  ctx.io = { ...(ctx.io || {}), aiSetup: async (step, arg) => (calls.push([step, arg]), step === 'status' ? { provider: 'builtin', builtin: { model: 'qwen3-4b', models: [{ id: 'qwen3-4b', downloaded: true }] } } : { removed: true }) };
+  assert.deepEqual(await reg.run('list_ai_models', {}), { in_use: 'qwen3-4b', models: [{ id: 'qwen3-4b', downloaded: true }] });
+  await reg.run('delete_ai_model', { model: 'qwen3-4b' });
+  assert.deepEqual(calls.at(-1), ['delete', 'qwen3-4b']);
 });

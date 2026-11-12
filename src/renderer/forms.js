@@ -2,7 +2,7 @@
 // right control for each value — the model's points to choose from, numbers with their unit and default, bearings in
 // degrees or DMS, colours with swatches, choices as buttons — checked as you type, help in the ⓘ tooltip, alternative
 // inputs as modes (params.ui.modes), required fields first and the rest folded under "More options".
-import { h, icon } from './ui.js';
+import { h, icon, infoTip } from './ui.js';
 import { kindOf, defaultOf, exampleOf, tupleLabels, readPoint, readAngle, readNumber } from '../core/fields.js';
 import * as S from '../core/survey.js';
 import { featureType } from '../core/trimble.js';
@@ -86,7 +86,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   const needed = (k) => req.has(k) || (modes.length && modes[mode].fields.includes(k) && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
   const fields = {};
 
-  const tip = (s) => (s.description ? h('span.form-tip', { title: s.description, 'aria-label': s.description, tabindex: 0 }, icon('info')) : null);
+  const tip = (s) => (s.description ? infoTip(s.description) : null);
   const field = (k, s) => {
     const v = preset[k];
     const kind = kindOf(s);
