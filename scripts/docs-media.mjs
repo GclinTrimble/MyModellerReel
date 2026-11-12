@@ -1178,10 +1178,10 @@ const PAGES = {
   },
   async 'first-steps-with-the-copilot'() {
     await fresh();
-    await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
+    await run('use_ai_model', { provider: 'builtin', model: 'qwen3-4b' });
     await camera([16, 10, 18], [0, 1.5, 0]);
     await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
-    await shot('First time: Plumb sets up its model on your PC (install, start, download)');
+    await shot('First time: one download and Plumb runs its model on your PC');
     // what a turn leaves: the shapes it drafted (here made by the same commands), listed to select or edit
     const b = await run('create_box', { width: 10, height: 3, depth: 6, name: 'Building' });
     await js(`const ai = window.mmr.app.ai; const m = (c, t) => Object.assign(document.createElement('div'), { className: c, textContent: t }); ai.add(m('msg user', 'Draw a 10 m by 6 m rectangle and pull it up 3 m into a building')); ai.add(m('msg assistant', 'Done: a 10 × 6 × 3 m building, Building. Change its sizes in the Entity panel or ask me.')); ai.add(ai.madeList([window.mmr.doc.entities.find((e) => e.id === '${b.id}')])); return 1;`);

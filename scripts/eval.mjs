@@ -2,11 +2,12 @@
 // npm run eval -- --model ollama:mistral --model anthropic:claude-sonnet-5-5 [--routing off] [--task table] [--json out.json]
 // Runs the eval tasks (scripts/eval-tasks.js) against each model with the same agent loop the copilot uses, and
 // scores the resulting scene. Models: mock (replays the reference solutions), ollama:<model>, anthropic:<model>,
-// openai:<model>[@<base url>]. Keys come from ANTHROPIC_API_KEY / OPENAI_API_KEY, else the app's settings.json.
+// openai:<model>[@<base url>], builtin:<model id> (the model the app runs itself, #238; downloaded into <data>/models). Keys come from ANTHROPIC_API_KEY / OPENAI_API_KEY, else the app's settings.json.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { Store, newDoc } from '../src/core/document.js';
 import { createRegistry } from '../src/core/commands.js';
 import { runTurn, systemPrompt, protocolOf } from '../src/core/agent.js';
@@ -21,6 +22,7 @@ const settings = () => {
   }
 };
 
+let builtin = null;
 /** A chat function for one model spec. Returns { provider, chat(body) }. */
 export function provider(spec, task = null) {
   const [kind, rest = ''] = spec.split(/:(.*)/s);
@@ -39,6 +41,12 @@ export function provider(spec, task = null) {
     if (!res.ok) throw new Error(`${kind} ${res.status}: ${text.slice(0, 300)}`);
     return JSON.parse(text);
   };
+  if (kind === 'builtin') {
+    builtin ||= createRequire(import.meta.url)('../src/main/builtin.cjs').createBuiltin({ dir: path.join(DATA, 'models') });
+    const id = rest || undefined;
+    const progress = (p) => process.stdout.write(`${p.model} ${((p.completed / p.total) * 100 || 0).toFixed(0)} %`);
+    return { provider: 'builtin', chat: async (body) => (builtin.status(id).has_model || (await builtin.download(id, progress)), builtin.chat(id, body)) };
+  }
   if (kind === 'ollama') {
     const base = (s.ollama?.baseUrl || 'http://127.0.0.1:11434').replace(/\/(v1|api)?\/?$/, '');
     return { provider: 'ollama', chat: (body) => post(`${base}/api/chat`, {}, { model: rest || 'mistral', ...body }) };
@@ -53,7 +61,7 @@ export function provider(spec, task = null) {
     const key = process.env.OPENAI_API_KEY || s.openai?.apiKey;
     return { provider: 'openai', chat: (body) => post(`${base.replace(/\/$/, '')}/chat/completions`, key ? { authorization: `Bearer ${key}` } : {}, { model, ...body }) };
   }
-  throw new Error(`Unknown model "${spec}". Use mock, ollama:<model>, anthropic:<model> or openai:<model>[@<base url>].`);
+  throw new Error(`Unknown model "${spec}". Use mock, builtin:<model>, ollama:<model>, anthropic:<model> or openai:<model>[@<base url>].`);
 }
 
 /** Run one task with one model. Returns { task, model, score, failed, calls, errors, steps, seconds }. */

@@ -17,7 +17,7 @@ export function normalizeProfile(p = {}, i = 0) {
   return {
     id: String(p.id || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `agent-${i + 1}`),
     name,
-    provider: ['anthropic', 'openai', 'ollama'].includes(p.provider) ? p.provider : null,
+    provider: ['anthropic', 'openai', 'ollama', 'builtin'].includes(p.provider) ? p.provider : null,
     model: p.model ? String(p.model) : null,
     skill: p.skill && p.skill !== 'none' ? String(p.skill) : null,
     toolset: p.toolset ? String(p.toolset) : 'auto',

@@ -3607,8 +3607,8 @@ function registerCore(reg, ctx) {
       : r.installed.length
         ? r.installed.map((x) => `${x.name} is installed${x.models.length ? ` with ${x.models.join(', ')}` : ''} but not running. ${x.start}`).join(' ')
         : r.huggingface.length
-        ? 'Models are downloaded from Hugging Face, but no server is running them: install Ollama (ollama.com) or LM Studio, load the model, then detect again.'
-        : 'No local AI found. Install Ollama (ollama.com) and run "ollama pull mistral", or use Claude or an OpenAI-compatible API key.';
+        ? 'Models are downloaded from Hugging Face, but no server is running them: load one in LM Studio or Ollama and detect again, or download_ai_model gets the built-in model.'
+        : 'No local AI server found. download_ai_model gets the built-in model (one download, no other app); or use Claude or an OpenAI-compatible API key.';
     return r;
   });
   // local AI setup (#224): the steps the setup card shows, for the API and MCP too
@@ -3616,15 +3616,23 @@ function registerCore(reg, ctx) {
     if (!ctx.io?.aiSetup) throw new Error('Needs the desktop app.');
     return ctx.io.aiSetup;
   };
-  def('ai', 'ai_setup_status', 'Where Plumb\'s local model stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
+  def('ai', 'ai_setup_status', 'Where Plumb\'s local model stands: the built-in model (downloaded or not), or Ollama (running, stopped or not installed, its models); local says which one the setup uses and next what to do (download | start | pull | ready).', obj({}), async () => {
     const s = await setupIo()('status');
-    s.next = s.provider !== 'ollama' ? 'ready' : s.ollama === 'missing' ? 'install' : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'download' : 'ready';
+    // without Ollama installed, the built-in model (#238) is the way: one download, no second app
+    s.local = s.provider === 'builtin' || (s.provider === 'ollama' && s.ollama === 'missing' && s.builtin) ? 'builtin' : s.provider === 'ollama' ? 'ollama' : null;
+    s.next = !s.local ? 'ready' : s.local === 'builtin' ? (s.provider === 'builtin' && s.builtin.has_model ? 'ready' : 'download') : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'pull' : 'ready';
     return s;
   });
+  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-4b, about 2.5 GB, once; a stopped download resumes) and use it for Plumb: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model: qwen3-4b (default), qwen3-8b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b, ministral-8b') }), async (a) => {
+    const r = await setupIo()('download', a.model);
+    await ctx.io.setSettings?.({ ai: { provider: 'builtin', builtin: { model: r.model } } });
+    return r;
+  });
+  def('ai', 'pause_ai_download', 'Stop the model download in progress (download_ai_model or pull_ai_model); the built-in model resumes where it stopped next time.', obj({}), () => setupIo()('cancel'));
   def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
   def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
   def('ai', 'pull_ai_model', 'Download a model into Ollama (default: Plumb\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
-  def('ai', 'use_ai_model', 'Use a model for Plumb: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
+  def('ai', 'use_ai_model', 'Use a model for Plumb: provider builtin (the model the app runs itself, see download_ai_model), ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('builtin | ollama | openai | anthropic', ['builtin', 'ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };
     await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
@@ -3698,7 +3706,7 @@ function registerCore(reg, ctx) {
   };
   const agent = str('agent id or name (default: Plumb)');
   def('ai', 'list_agents', 'The agent profiles (Plumb is the default) with what each is doing (idle, working, queued tasks), and the changes held because two agents touched the same thing.', obj({}), () => crew().list());
-  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb') }), (a) => crew().save(a));
+  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('builtin | anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb') }), (a) => crew().save(a));
   def('ai', 'remove_agent', 'Delete an agent profile (not Plumb).', obj({ agent }, ['agent']), (a) => crew().remove(a.agent));
   def('ai', 'ask_agent', 'Give an agent a task: it joins that agent\'s queue and runs when the agent is free, alongside other agents. Returns at once (the reply goes to its thread).', obj({ agent, text: str('the task'), ids: { ...ids, description: 'entities to point it at' }, point: v3('a point in the model, world metres') }, ['text']), (a) => crew().ask(a.agent, a.text, { ids: a.ids, point: a.point }));
   def('ai', 'stop_agent', 'Stop an agent\'s running turn and clear its queue (what it did so far stays; undo removes it).', obj({ agent }), (a) => crew().stop(a.agent));

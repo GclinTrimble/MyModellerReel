@@ -56,7 +56,7 @@ export class Assistant {
   modelName() {
     const s = this.settings;
     const p = this.provider();
-    return this.profile.model || (p === 'anthropic' ? s.anthropic.model : p === 'openai' ? s.openai.model : s.ollama.model);
+    return this.profile.model || (p === 'anthropic' ? s.anthropic.model : p === 'openai' ? s.openai.model : p === 'builtin' ? s.builtin.model : s.ollama.model);
   }
   get mine() {
     return this.profile.id === DEFAULT_AGENT;
@@ -105,7 +105,7 @@ export class Assistant {
     const s = this.settings;
     const p = this.provider();
     const name = p === 'anthropic' ? 'Claude' : p === 'openai' ? 'API' : 'Local';
-    const ok = p === 'ollama' || s[p]?.hasKey;
+    const ok = p === 'ollama' || p === 'builtin' || s[p]?.hasKey;
     const others = this.agents.profiles.length > 1;
     this.head.replaceChildren(
       others
@@ -139,7 +139,7 @@ export class Assistant {
       h(
         'div.chat-empty',
         {},
-        this.settings.provider === 'ollama' && window.native ? this.setupCard({ quiet: true }) : null,
+        (this.provider() === 'ollama' || this.provider() === 'builtin') && window.native ? this.setupCard({ quiet: true }) : null,
         h('p.muted', {}, 'Ask in plain words. Plumb drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
         ...SUGGESTIONS.map((s) => h('button.chip', { onclick: () => this.ask(s) }, s)),
       ),
@@ -169,7 +169,7 @@ export class Assistant {
       return this.app.ui.toast(e.message, 'danger');
     }
     this.drawPictures();
-    if (this.settings.provider === 'ollama' && !SEES.test(this.modelName()) && !this.warnedSight) {
+    if ((this.provider() === 'ollama' || this.provider() === 'builtin') && !SEES.test(this.modelName()) && !this.warnedSight) {
       this.warnedSight = true;
       this.app.ui.toast(`${this.modelName()} may not see pictures. A vision model (gemma3, qwen2.5vl, llava) or Claude reads them; a sketch's cleaned points still go as text.`);
     }
@@ -186,8 +186,8 @@ export class Assistant {
   }
 
   /**
-   * Local AI setup (#224): install Ollama, start it, download the model, try it, with the step done ticked. quiet:
-   * nothing shows when all is ready (the empty chat).
+   * Local AI setup (#224, #238): one step, download the assistant model the app runs itself; or, for Ollama users,
+   * start it and pull its model. The step done is ticked. quiet: nothing shows when all is ready (the empty chat).
    */
   setupCard({ quiet = false } = {}) {
     const app = this.app;
@@ -207,51 +207,54 @@ export class Assistant {
         if (quiet) return box.remove();
       }
       box.hidden = false;
+      const builtin = s.local === 'builtin';
+      const name = builtin ? s.builtin.label : s.model;
       const step = (key, done, title, text, btn) =>
         h(`div.setup-step${done ? '.done' : s.next === key ? '.now' : ''}`, {}, icon(done ? 'check-circle' : 'circle', done), h('div.grow', {}, h('strong', {}, title), text ? h('div.small.muted', {}, text) : null), !done && s.next === key ? btn : null);
-      const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${s.model}` }, h('i'));
+      const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${name}` }, h('i'));
       const note = h('div.small.muted');
+      const pause = h('button.btn.sm', { hidden: true, onclick: () => run('pause_ai_download') }, icon('pause'), 'Pause');
+      const download = (command, args) =>
+        h('button.btn.sm.primary', {
+          onclick: async (ev) => {
+            ev.currentTarget.disabled = true;
+            bar.hidden = pause.hidden = false;
+            window.native?.onPullProgress && !this.pullHooked && ((this.pullHooked = true), window.native.onPullProgress((p) => this.onPull?.(p)));
+            this.onPull = (p) => {
+              const pct = p.total ? Math.round((p.completed / p.total) * 100) : 0;
+              bar.firstChild.style.width = `${pct}%`;
+              bar.setAttribute('aria-valuenow', pct);
+              note.textContent = `${p.status}${p.total ? ` · ${pct}% of ${(p.total / 1e9).toFixed(1)} GB` : ''}`;
+            };
+            const r = await run(command, args);
+            this.onPull = null;
+            if (r) {
+              if (builtin) (app.settings = await window.native.invoke('settings:get')), this.renderHead();
+              app.ui.toast(`${name} is downloaded.`);
+            }
+            draw();
+          },
+        }, icon('download-simple'), 'Download');
       box.replaceChildren(
-        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `Plumb is ready (${s.model} on this PC)` : 'Set up Plumb on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
-        s.next === 'ready' ? null : h('p.small', {}, 'Plumb runs a free AI model on your own PC (nothing leaves it). Three steps, once:'),
-        s.provider !== 'ollama'
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `Plumb is ready (${name} on this PC)` : 'Set up Plumb on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
+        !s.local
           ? h('p.small.muted', {}, 'Plumb uses an online model (Settings › AI).')
-          : h(
-              'div.setup-steps',
-              {},
-              step('install', s.ollama !== 'missing', 'Install Ollama', 'The free app that runs AI models. A window opens; follow it, then come back.', h('button.btn.sm.primary', { onclick: async () => (await run('install_local_ai')) && ((note.textContent = 'Installing… this card ticks itself when Ollama is there.'), watch(5000)) }, icon('download-simple'), 'Install')),
-              step('start', s.ollama === 'running', 'Start Ollama', 'It then runs in the background (tray icon).', h('button.btn.sm.primary', { onclick: async () => (await run('start_local_ai')) && ((note.textContent = 'Starting…'), watch(1500)) }, icon('play'), 'Start')),
-              step(
-                'download',
-                s.has_model,
-                `Download ${s.model}`,
-                'About 4 GB, once. Mistral works well with the app\'s tools.',
-                h('button.btn.sm.primary', {
-                  onclick: async (ev) => {
-                    ev.target.disabled = true;
-                    bar.hidden = false;
-                    window.native?.onPullProgress && !this.pullHooked && ((this.pullHooked = true), window.native.onPullProgress((p) => this.onPull?.(p)));
-                    this.onPull = (p) => {
-                      const pct = p.total ? Math.round((p.completed / p.total) * 100) : 0;
-                      bar.firstChild.style.width = `${pct}%`;
-                      bar.setAttribute('aria-valuenow', pct);
-                      note.textContent = `${p.status}${p.total ? ` · ${pct}% of ${(p.total / 1e9).toFixed(1)} GB` : ''}`;
-                    };
-                    const r = await run('pull_ai_model', { model: s.model });
-                    this.onPull = null;
-                    if (r) app.ui.toast(`${s.model} is downloaded.`);
-                    draw();
-                  },
-                }, icon('download-simple'), 'Download'),
+          : builtin
+            ? h('div.setup-steps', {}, step('download', s.next === 'ready', 'Download the assistant model', `${name}, about ${(s.builtin.bytes / 1e9).toFixed(1)} GB, once. It then runs on this PC, offline: nothing you type leaves it. A paused download resumes.`, download('download_ai_model', { model: s.builtin.model })))
+            : h(
+                'div.setup-steps',
+                {},
+                step('start', s.ollama === 'running', 'Start Ollama', 'It then runs in the background (tray icon).', h('button.btn.sm.primary', { onclick: async () => (await run('start_local_ai')) && ((note.textContent = 'Starting…'), watch(1500)) }, icon('play'), 'Start')),
+                step('pull', s.has_model, `Download ${s.model} into Ollama`, 'A few GB, once.', download('pull_ai_model', { model: s.model })),
               ),
-            ),
         bar,
         note,
         h(
           'div.row.wrap',
           {},
           s.next === 'ready' ? h('button.btn.sm.primary', { onclick: () => this.ask('Hello! In two lines, what can you do for me here?') }, icon('chat-circle'), 'Try it') : null,
-          h('button.btn.sm', { onclick: () => app.ui.show('settings') }, icon('gear'), 'Other models (Claude, LM Studio…)'),
+          pause,
+          h('button.btn.sm', { onclick: () => app.ui.show('settings') }, icon('gear'), 'Other models (Ollama, LM Studio, Claude…)'),
           h('button.btn.sm', { onclick: () => app.help.open('first-steps-with-the-copilot') }, icon('book-open'), 'How it works'),
         ),
       );
@@ -412,7 +415,7 @@ export class Assistant {
       thinking.remove();
       const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
       // cannot reach the local model: the setup card, not a raw network error (#224)
-      const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model/i.test(msg) && this.settings.provider === 'ollama';
+      const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model|not downloaded yet/i.test(msg) && (this.provider() === 'ollama' || this.provider() === 'builtin');
       this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'Plumb cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
       if (unreachable) this.add(this.setupCard());
       // keep the history valid for the next turn: drop this turn's dangling user message if nothing came back

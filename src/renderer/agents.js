@@ -157,7 +157,7 @@ export class Agents {
   async editDialog(p = null) {
     const f = (label, el) => h('label.field', {}, h('span', {}, label), el);
     const name = h('input', { value: p?.name || '', placeholder: 'e.g. Site surveyor', disabled: p?.id === DEFAULT_AGENT });
-    const provider = h('select', {}, [['', 'AI settings'], ['ollama', 'Local (Ollama)'], ['openai', 'OpenAI-compatible'], ['anthropic', 'Claude']].map(([v, l]) => h('option', { value: v, selected: (p?.provider || '') === v }, l)));
+    const provider = h('select', {}, [['', 'AI settings'], ['builtin', 'Built-in model (offline)'], ['ollama', 'Local (Ollama)'], ['openai', 'OpenAI-compatible'], ['anthropic', 'Claude']].map(([v, l]) => h('option', { value: v, selected: (p?.provider || '') === v }, l)));
     const model = h('input', { value: p?.model || '', placeholder: 'empty: the one in AI settings' });
     const skill = h('select', {}, h('option', { value: '' }, 'No skill'), Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: p?.skill === k }, s.label)));
     if (p?.skill && !SKILLS[p.skill]) skill.append(h('option', { value: p.skill, selected: true }, p.skill)); // a user skill (#242)

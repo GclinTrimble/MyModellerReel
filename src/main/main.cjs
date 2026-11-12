@@ -21,7 +21,8 @@ fs.mkdirSync(USER_PLUGINS, { recursive: true });
 
 const DEFAULTS = {
   ai: {
-    provider: 'ollama', // ollama | anthropic | openai (any OpenAI-compatible server: Mistral API, LM Studio, vLLM…)
+    provider: 'builtin', // builtin (#238: a model the app runs itself) | ollama | anthropic | openai (any OpenAI-compatible server: Mistral API, LM Studio, vLLM…)
+    builtin: { model: 'qwen3-4b' },
     ollama: { baseUrl: 'http://127.0.0.1:11434', model: 'mistral' },
     anthropic: { apiKey: '', model: 'claude-sonnet-5-5' },
     openai: { baseUrl: 'https://api.mistral.ai/v1', apiKey: '', model: 'mistral-large-latest' },
@@ -173,7 +174,18 @@ ipcMain.handle('ai:setup-status', async () => {
   const models = (running?.models || []).map((m) => m.name);
   const want = settings.ai.ollama.model;
   const has = models.some((m) => m === want || m.split(':')[0] === want.split(':')[0]);
-  return { provider: settings.ai.provider, ollama: running ? 'running' : installed ? 'stopped' : 'missing', models, model: want, has_model: has, platform: process.platform };
+  return { provider: settings.ai.provider, ollama: running ? 'running' : installed ? 'stopped' : 'missing', models, model: want, has_model: has, platform: process.platform, builtin: builtin.status(settings.ai.builtin.model) };
+});
+// the built-in model (#238): one download into the app data folder, then it runs offline in this process
+const builtin = require('./builtin.cjs').createBuiltin({ dir: path.join(USER, 'models') });
+let downloading = null;
+ipcMain.handle('ai:builtin-download', async (event, id) => {
+  downloading = new AbortController();
+  try {
+    return await builtin.download(id || settings.ai.builtin.model, (p) => event.sender.send('ai:pull-progress', p), downloading.signal);
+  } finally {
+    downloading = null;
+  }
 });
 ipcMain.handle('ai:ollama-start', () => {
   const gui = path.join(OLLAMA_DIR, 'ollama app.exe');
@@ -216,7 +228,7 @@ ipcMain.handle('ai:ollama-pull', async (event, model) => {
   pulling = null;
   return { model, status: last.status || 'success' };
 });
-ipcMain.handle('ai:ollama-pull-cancel', () => pulling?.abort());
+ipcMain.handle('ai:ollama-pull-cancel', () => (pulling?.abort(), downloading?.abort()));
 
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
@@ -385,6 +397,15 @@ ipcMain.handle('ai:chat', async (event, { agent: who, ...body }) => {
   const aiAbort = new AbortController();
   aiAborts.get(key)?.abort();
   aiAborts.set(key, aiAbort);
+  if (ai.provider === 'builtin') {
+    // the built-in model (#238): its own runtime, one request at a time
+    try {
+      return { provider: 'builtin', data: await builtin.chat(who?.model || ai.builtin.model, body, (t) => event.sender.send('ai:delta', t, key), aiAbort.signal) };
+    } catch (e) {
+      if (aiAbort.signal.aborted) throw new Error('Stopped.');
+      throw e;
+    }
+  }
   let url;
   let headers = { 'content-type': 'application/json' };
   if (ai.provider === 'anthropic') {
