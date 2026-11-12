@@ -1,11 +1,12 @@
 // The copilot's agent loop, free of DOM and Electron: the in-app copilot and the eval harness (npm run eval) share it.
-// Three wire protocols: Anthropic Messages (Claude), Ollama native chat (local models), OpenAI-compatible chat.
+// Three wire protocols: Anthropic Messages (Claude), Ollama native chat (local models, the built-in one too), OpenAI-compatible chat.
 import { GUIDE } from './commands.js';
 import { routeTools, describe } from './routing.js';
 
 export const MAX_STEPS = 40;
 
-export const protocolOf = (provider) => (provider === 'anthropic' ? 'anthropic' : provider === 'ollama' ? 'ollama' : 'openai');
+// the built-in model (#238) takes and answers the Ollama chat shape
+export const protocolOf = (provider) => (provider === 'anthropic' ? 'anthropic' : provider === 'ollama' || provider === 'builtin' ? 'ollama' : 'openai');
 
 export function systemPrompt({ doc, selection = [], time = 0, vision = false, skill = null, small = false }) {
   const list = doc.entities.slice(0, 80).map((e) => `${e.id} "${e.name}"${e.parent ? ` in ${e.parent}` : ''}`).join(', ');

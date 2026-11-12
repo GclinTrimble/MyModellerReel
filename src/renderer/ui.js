@@ -2113,13 +2113,15 @@ export class UI {
         ? [field('Model', ai.anthropic.model, (e) => save({ ai: { anthropic: { model: e.target.value } } })), field(`API key ${ai.anthropic.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { anthropic: { apiKey: e.target.value } } }), { type: 'password', placeholder: 'sk-ant-…' })]
         : prov === 'openai'
           ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
-          : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
+          : prov === 'builtin'
+            ? [field('Model (qwen3-8b, qwen3-4b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b): the card above downloads it', ai.builtin.model, (e) => save({ ai: { builtin: { model: e.target.value } } }))]
+            : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
     return h(
       'div.panel',
       {},
       ...this.accountCard(),
       h('h3', {}, 'AI'),
-      ai.provider === 'ollama' ? app.ai.setupCard() : null,
+      ai.provider === 'ollama' || ai.provider === 'builtin' ? app.ai.setupCard() : null,
       this.aiFinder(),
       h(
         'label.field',
@@ -2128,11 +2130,11 @@ export class UI {
         h(
           'select',
           { onchange: (e) => save({ ai: { provider: e.target.value } }) },
-          [['ollama', 'Local model (Ollama: Mistral…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
+          [['builtin', 'Built-in model (runs in the app, offline)'], ['ollama', 'Ollama (Mistral, Qwen…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
         ),
       ),
       ...cfg,
-      prov === 'ollama' &&
+      (prov === 'ollama' || prov === 'builtin') &&
         h(
           'label.field',
           {},

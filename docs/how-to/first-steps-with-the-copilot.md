@@ -6,8 +6,8 @@ MyModellerReel is AI first: you say what you want and the copilot drafts it with
 
 ## In the app
 
-1. Open the [AI panel](action:aiPanel). The first time, a card sets up the local model on your PC, once: **Install** Ollama (the free app that runs AI models), **Start** it, **Download** Mistral (about 4 GB). Each step ticks itself when it is done; nothing you type leaves your PC. Prefer Claude or LM Studio? **Other models** opens Settings.
-   ![The setup card: install, start, download](media/first-steps-with-the-copilot/01.jpg)
+1. Open the [AI panel](action:aiPanel). The first time, one step sets up the assistant model on your PC: **Download** (Qwen 3 8B, about 5 GB, once). The app runs it itself, on the graphics card when there is one: no other app to install, and it then works offline; nothing you type leaves your PC. **Pause** stops the download; it resumes where it stopped. Prefer Ollama, LM Studio or Claude? **Other models** opens Settings.
+   ![The setup card: download the assistant model](media/first-steps-with-the-copilot/01.jpg)
 2. Type what you want in plain words and press Enter, for example "Draw a 10 m by 6 m rectangle and pull it up 3 m into a building". It sees what you selected. Each request is one undo step (Ctrl+Z takes it all back).
    ![A request and what it made](media/first-steps-with-the-copilot/02.jpg)
 3. Under its answer, **Made** lists what it drafted. **Select** shows it; **Edit** opens its parameters (width, height, steps, profile…) in the Entity panel: change a number and the shape rebuilds. Anything else you edit by hand like your own work.
@@ -23,9 +23,8 @@ Then: "Make the building 12 m long instead" changes the parameters rather than d
 ## From a script, the HTTP API or MCP
 
 ```js
-await api.ai_setup_status();          // next: install | start | download | ready
-await api.start_local_ai();
-await api.pull_ai_model({ model: 'mistral' });
+await api.ai_setup_status();          // next: download | ready (Ollama users: start | pull)
+await api.download_ai_model();        // the built-in model, about 5 GB once; pause_ai_download stops it
 const b = await api.create_box({ width: 10, height: 3, depth: 6, name: 'Building' });
 await api.set_params({ id: b.id, params: { width: 12 } });
 ```

@@ -349,7 +349,7 @@ export class IO {
   }
   /** Local AI setup (#224): one call per step. */
   aiSetup(step, arg) {
-    return native().invoke({ status: 'ai:setup-status', start: 'ai:ollama-start', install: 'ai:ollama-install', pull: 'ai:ollama-pull', cancel: 'ai:ollama-pull-cancel' }[step], arg);
+    return native().invoke({ status: 'ai:setup-status', start: 'ai:ollama-start', install: 'ai:ollama-install', pull: 'ai:ollama-pull', download: 'ai:builtin-download', cancel: 'ai:ollama-pull-cancel' }[step], arg);
   }
   transcribe(input, lang) {
     return native().invoke('voice:transcribe', input, lang);
