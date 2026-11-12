@@ -14,7 +14,7 @@ You want someone without the app to look at the design, to see it on a table thr
    ![Export a web viewer: one HTML file anyone can open and orbit](media/share-viewer-ar-print/03.jpg)
 4. **[Export USDZ](action:exportUsdz)** for AR Quick Look on an iPhone or iPad, **[Export 3MF](action:export3mf)** for a slicer (units in metres, colours kept), and **[Compress a GLB](action:compress)** (meshopt or Draco) to make a GLB much smaller.
 
-## Ask the copilot
+## Ask Plumb
 
 > Save this as version "Scheme A", then export a web viewer and a 3MF of the house to my desktop.
 

@@ -93,7 +93,7 @@ const RESOURCES = [
   { uri: 'mmr://quantities', name: 'Quantities', description: 'Count, area, volume, length and cost per material', run: ['report_quantities', {}] },
   { uri: 'mmr://commands', name: 'Commands', description: 'Every command with its JSON Schema', run: ['list_commands', {}] },
   // help by intent (#158): read without starting the app
-  ...HOWTOS.map((x) => ({ uri: `mmr://howto/${x.id}`, name: `How to: ${x.title}`, description: `${x.area}. The clicks, a copilot prompt and the commands (${x.commands.join(', ')}).`, mimeType: 'text/markdown', howto: x.id })),
+  ...HOWTOS.map((x) => ({ uri: `mmr://howto/${x.id}`, name: `How to: ${x.title}`, description: `${x.area}. The clicks, a prompt for Plumb and the commands (${x.commands.join(', ')}).`, mimeType: 'text/markdown', howto: x.id })),
 ];
 
 async function readResource(uri) {

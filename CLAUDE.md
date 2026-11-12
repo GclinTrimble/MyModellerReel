@@ -5,7 +5,7 @@ AI-first 3D modeller + animation sequencer. Electron 45, three.js 0.187, plain E
 ## The one rule
 
 Every capability is a command in `src/core/commands.js` (or a plugin's `registerCommand`). UI tools commit through
-`app.reg.run(...)`; the copilot, HTTP API and MCP list and call the same registry. Never add a feature that only the
+`app.reg.run(...)`; Plumb, HTTP API and MCP list and call the same registry. Never add a feature that only the
 UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `run_script` and AI turns batch).
 
 ## Layout
@@ -14,7 +14,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   triangulation), `document.js` (doc JSON, Store with snapshot undo and proposals, transforms), `animation.js` (keys,
   easing, evaluate), `commands.js` (registry + GUIDE text sent to AIs), `schema.js` (argument checking),
   `routing.js` (toolsets, ranking, examples), `query.js` (selection, raycast, free space, placement maths),
-  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `curves.js` (curves,
+  `agent.js` (provider protocols and the turn loop shared by Plumb and `npm run eval`), `usd.js` (the .usda writer, live references and their overrides), `curves.js` (curves,
   sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
   `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
@@ -83,7 +83,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 ## Help pages
 
 - A new user-facing workflow gets a how-to page: an entry in `src/core/howto.js`, `docs/how-to/<id>.md` (In the app with
-  `[Do it](action:… | tool:… | do:…)` links, Ask the copilot, From a script), and a scenario in
+  `[Do it](action:… | tool:… | do:…)` links, Ask Plumb, From a script), and a scenario in
   `scripts/docs-media.mjs`. Run the app, `node scripts/docs-media.mjs <id>`, and look at every frame.
   `tests/howto.test.js` fails when a page names a command, tool, action or image that does not exist.
 

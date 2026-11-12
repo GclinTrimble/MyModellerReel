@@ -17,11 +17,11 @@ You want a door (or a gate, a lid, a window) to swing on its hinge in a presenta
 4. Play it (Shift+Space), then **File › Export video** [Export video](action:exportVideo) for an MP4.
    ![Play it (Shift+Space), then File › Export video Export video for an MP4.](media/hinge-a-door/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Hinge the front door on its left side and animate it opening 100° over 2 seconds.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

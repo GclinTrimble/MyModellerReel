@@ -15,11 +15,11 @@ You want the model to look its best for a client: a drawing-like style or a soft
 4. **View › Render photoreal still…** [Render](action:renderImage): the view path-traced (real reflections, glass, soft shadows), saved as PNG.
    ![View › Render photoreal still… Render: the view path-traced (real reflections, g](media/present-a-design/05.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Show the house in a sketchy style with a 24 mm lens and two-point perspective, then switch to a studio environment with soft shadows and render a 1920 × 1080 photoreal still.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

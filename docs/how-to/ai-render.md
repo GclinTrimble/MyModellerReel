@@ -10,11 +10,11 @@ You want a quick mood picture of the design: materials, planting, people and lig
 2. Frame the view, **View › AI render…** [AI render](action:aiRender): describe the look; strength says how far it may move from the view.
    ![Frame the view, View › AI render… AI render: describe the look; strength says ho](media/ai-render/01.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Render this view as a warm summer evening with a landscaped garden and people walking, keeping the building as it is.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

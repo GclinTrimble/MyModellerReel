@@ -15,11 +15,11 @@ You have surveyed points (a CSV or text file with number, northing, easting, ele
 4. **Site › Check surface** [Check surface](action:checkSurface) flags spikes, pits, duplicates and thin triangles, with the points to fix.
    ![Site › Check surface Check surface flags spikes, pits, duplicates and thin trian](media/survey-points-to-surface/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\survey\site.csv (PNEZD), make KERB a breakline and TREE a tree, then build the existing ground surface and check it.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

@@ -1129,6 +1129,13 @@ const PAGES = {
     await shot('Draw a hole (H): a pond or a building left out of the surface');
     await run('set_surface_sources', { id: 'Existing ground', outline: [[0, -2], [25, 0], [25, -25], [3, -22]] });
     await shot('Draw the outline (B); "max 30" or "min 0.5" limits the triangle sides');
+    await run('surface_breaklines', { id: 'Existing ground', action: 'add', points: [[2, 1.5, -20], [12, 1.5, -12], [22, 1.5, -4]] });
+    await camera([12.5, 22, 18], [12.5, 0, -12.5]);
+    await run('set_camera', { projection: 'perspective' });
+    await shot('Draw a breakline (L): the triangles follow it');
+    await camera([12.5, 45, -12.49], [12.5, 0, -12.5]);
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select([window.mmr.doc.entities.find((e) => e.name === 'Existing ground').id]); window.mmr.app.ui.show('entity'); window.mmr.app.tools.set('surfedit'); window.mmr.app.tools.tool.setMode('grips'); return 1;");
+    await shot('The Entity panel lists the points, breaklines, outline and holes; G drags their corners');
     await run('set_camera', { projection: 'perspective' });
     await js("window.mmr.app.tools.set('select'); return 1;");
   },
@@ -1150,12 +1157,31 @@ const PAGES = {
     await shot('Each step moves on when you have done it; the lesson earns its points');
     await js('window.mmr.app.learning.stop(); return 1;');
   },
+  async 'my-tools-and-skills'() {
+    await fresh();
+    await camera([6, 5, 9], [2, 0, 2]);
+    // the answer comes from the configured model; here a scripted one stands in so the page does not need a model
+    await js(`const a = window.mmr.app; a.realChat = a.chat; a.chat = async () => { const t = '1. Draw the path with the **Curve** tool (U): click the points, press Enter [1].\\n2. **Tools › Sweep a profile along a path…** and pick the kerb profile [1].\\n3. Move the curve points later: the kerb follows [1].'; const p = a.settings.ai.provider; return p === 'anthropic' ? { content: [{ type: 'text', text: t }] } : p === 'ollama' ? { message: { role: 'assistant', content: t } } : { choices: [{ message: { role: 'assistant', content: t } }] }; }; await a.help.ask('how do I run a kerb along a curve'); a.chat = a.realChat; return 1;`);
+    await shot('Help › Ask Plumb: an answer from the help pages, with its sources');
+    const c = await run('create_curve', { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' });
+    await run('sweep', { path: c.id, profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' });
+    await run('save_tool', { name: 'Kerb return', description: 'A kerb round a corner', steps: [{ command: 'create_curve', args: { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' }, made: 'k1' }, { command: 'sweep', args: { path: 'k1', profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' } }] });
+    await run('save_skill', { name: 'Site kerbs', description: 'Kerbs and returns the way our office draws them', prompt: 'Kerbs are 150 mm upstands; returns have a 6 m radius.', toolset: ['create_curve', 'sweep'] });
+    await panel('mytools');
+    await shot('My tools: run, edit, export or delete what Plumb saved');
+    await js("window.mmr.app.ui.runMyTool('kerb_return'); return 1;");
+    await shot('Run it with other values');
+    await clean();
+    // the docs run against a real library: leave nothing behind
+    await run('delete_my_tool', { name: 'kerb_return' });
+    await run('delete_my_tool', { name: 'site_kerbs' });
+  },
   async 'first-steps-with-the-copilot'() {
     await fresh();
     await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
     await camera([16, 10, 18], [0, 1.5, 0]);
     await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
-    await shot('First time: the copilot sets up its model on your PC (install, start, download)');
+    await shot('First time: Plumb sets up its model on your PC (install, start, download)');
     // what a turn leaves: the shapes it drafted (here made by the same commands), listed to select or edit
     const b = await run('create_box', { width: 10, height: 3, depth: 6, name: 'Building' });
     await js(`const ai = window.mmr.app.ai; const m = (c, t) => Object.assign(document.createElement('div'), { className: c, textContent: t }); ai.add(m('msg user', 'Draw a 10 m by 6 m rectangle and pull it up 3 m into a building')); ai.add(m('msg assistant', 'Done: a 10 × 6 × 3 m building, Building. Change its sizes in the Entity panel or ask me.')); ai.add(ai.madeList([window.mmr.doc.entities.find((e) => e.id === '${b.id}')])); return 1;`);

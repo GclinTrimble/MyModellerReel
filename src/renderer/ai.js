@@ -1,5 +1,5 @@
-// The in-app copilot: a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
-// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on. One Assistant per agent
+// The in-app assistant (Plumb): a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
+// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on.
 // profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
 import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
@@ -24,7 +24,7 @@ export function fitPicture(url, max = 1568) {
 const readFile = (file) => new Promise((resolve) => Object.assign(new FileReader(), { onload: (e) => resolve(e.target.result) }).readAsDataURL(file));
 /** Local models that can see pictures, by name. */
 const SEES = /llava|vision|-vl|vl:|gemma3|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|llama4|mistral-small3/i;
-import { SKILLS, skillPrompt } from '../core/skills.js';
+import { SKILLS, USER_SKILLS, skillPrompt } from '../core/skills.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
@@ -65,7 +65,7 @@ export class Assistant {
   build() {
     this.head = h('div.chat-head');
     this.log = h('div.chat-log');
-    this.input = h('textarea', { placeholder: 'Describe what to build or animate…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
+    this.input = h('textarea', { placeholder: 'Ask Plumb what to build or animate…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
     this.input.onkeydown = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -115,9 +115,9 @@ export class Assistant {
         ? h('span.small.muted.grow', { title: 'The skill of this agent (change it in the Agents panel)' }, this.profile.skill ? SKILLS[this.profile.skill]?.label || this.profile.skill : 'No skill')
         : h(
         'select.skill-pick.grow',
-        { title: 'Domain skill: know-how the copilot adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
+        { title: 'Domain skill: know-how Plumb adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
         h('option', { value: 'none' }, 'No skill'),
-        Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, s.label)),
+        Object.entries({ ...SKILLS, ...USER_SKILLS }).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, USER_SKILLS[k] ? `${s.label} (mine)` : s.label)),
       ),
       h(
         'button.icon-btn.sm',
@@ -140,7 +140,7 @@ export class Assistant {
         'div.chat-empty',
         {},
         this.settings.provider === 'ollama' && window.native ? this.setupCard({ quiet: true }) : null,
-        h('p.muted', {}, 'Ask in plain words. The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
+        h('p.muted', {}, 'Ask in plain words. Plumb drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
         ...SUGGESTIONS.map((s) => h('button.chip', { onclick: () => this.ask(s) }, s)),
       ),
     );
@@ -212,10 +212,10 @@ export class Assistant {
       const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${s.model}` }, h('i'));
       const note = h('div.small.muted');
       box.replaceChildren(
-        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `The copilot is ready (${s.model} on this PC)` : 'Set up the copilot on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
-        s.next === 'ready' ? null : h('p.small', {}, 'The copilot runs a free AI model on your own PC (nothing leaves it). Three steps, once:'),
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `Plumb is ready (${s.model} on this PC)` : 'Set up Plumb on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
+        s.next === 'ready' ? null : h('p.small', {}, 'Plumb runs a free AI model on your own PC (nothing leaves it). Three steps, once:'),
         s.provider !== 'ollama'
-          ? h('p.small.muted', {}, 'The copilot uses an online model (Settings › AI).')
+          ? h('p.small.muted', {}, 'Plumb uses an online model (Settings › AI).')
           : h(
               'div.setup-steps',
               {},
@@ -359,6 +359,7 @@ export class Assistant {
     this.agents.changed();
     let reply = '';
     const turnLength = this.history.length;
+    (ctx.turnStarts ||= []).push(app.store.doc.journal?.length || 0); // "save what we just did as a tool" (#242)
     const had = new Set(app.store.doc.entities.map((e) => e.id));
     const t0 = performance.now();
     const usage = { in: 0, out: 0, calls: 0, steps: 0 };
@@ -412,7 +413,7 @@ export class Assistant {
       const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
       // cannot reach the local model: the setup card, not a raw network error (#224)
       const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model/i.test(msg) && this.settings.provider === 'ollama';
-      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'The copilot cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
+      this.add(h(msg === 'Stopped.' ? 'div.msg.muted' : 'div.msg.error', {}, msg === 'Stopped.' ? 'Stopped. What is done so far stays (undo removes it).' : unreachable ? 'Plumb cannot reach its AI model on this PC yet. Set it up below (once), then ask again.' : msg));
       if (unreachable) this.add(this.setupCard());
       // keep the history valid for the next turn: drop this turn's dangling user message if nothing came back
       if (this.history.length === turnLength && this.history.at(-1)?.role === 'user') this.history.pop();

@@ -1,4 +1,4 @@
-// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in the copilot and readable
+// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in Plumb and readable
 // by any client (list_skills). Workflows (#97) are the step-by-step prompts the MCP server offers as MCP prompts.
 // Plain data, no dependencies: the MCP server imports this file directly.
 
@@ -68,11 +68,19 @@ find_free_space for a new piece. Materials: Oak, Walnut, Steel, Glass, Plaster.`
   },
 };
 
-/** The text added to the copilot's system prompt for a skill (or '' for none). */
+/**
+ * The user's own skills (#242), saved with save_skill and loaded from the user library at startup. Same shape as a
+ * SKILLS entry plus `toolset` (command names it uses): { name, label, description, prompt, toolset, examples }.
+ * See usertools.js for the file format.
+ */
+export const USER_SKILLS = {};
+
+/** The text added to Plumb's system prompt for a skill (or '' for none). */
 export function skillPrompt(name) {
-  const s = SKILLS[name];
+  const s = SKILLS[name] || USER_SKILLS[name];
   if (!s) return '';
-  return `${s.prompt}\nExamples (run_script):\n${s.examples.map((x) => `// ${x.title}\n${x.code}`).join('\n')}`;
+  const ex = s.examples?.length ? `\nExamples (run_script):\n${s.examples.map((x) => `// ${x.title}\n${x.code}`).join('\n')}` : '';
+  return `${s.prompt}${s.toolset?.length ? `\nCommands for this work: ${s.toolset.join(', ')}.` : ''}${ex}`;
 }
 
 /** Common workflows, offered to MCP clients as prompts. {{arg}} placeholders are filled from the prompt's arguments. */

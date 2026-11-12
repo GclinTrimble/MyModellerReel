@@ -15,11 +15,11 @@ You want to shape ground by hand for a concept: mounds, hollows, a terraced slop
 4. **Site › Drape onto a surface…** [Drape](action:drape): things sit on the ground, lines take its heights.
    ![Site › Drape onto a surface… Drape: things sit on the ground, lines take its hei](media/sculpt-a-terrain/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a 60 by 60 m terrain, raise a gentle mound in the middle, flatten a 12 m square platform on it at 2 m, and put the pavilion on top.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
