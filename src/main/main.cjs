@@ -66,7 +66,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin|usd|usda|usdc|usdz)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
 
 let win;
 function createWindow(page) {
@@ -271,6 +271,14 @@ ipcMain.handle('mytools:write', (_, item) => {
   return file;
 });
 ipcMain.handle('mytools:delete', (_, kind, name) => fs.rmSync(myToolFile(kind, name), { force: true }));
+// feature code libraries: one SQLite store in the data folder, opened on first use
+let codeLibs = null;
+ipcMain.handle('codelib:call', (_, op, ...args) => {
+  const { CodeLibs, OPS } = require('./codelibs.cjs');
+  if (!OPS.includes(op)) throw new Error(`Unknown library operation ${op}`);
+  codeLibs ||= new CodeLibs(path.join(USER, 'featurecodes.sqlite'));
+  return codeLibs[op](...args);
+});
 const startupState = () => ({ supported: app.isPackaged, enabled: app.getLoginItemSettings().openAtLogin });
 ipcMain.handle('startup:get', () => startupState());
 ipcMain.handle('startup:set', (_, on) => {

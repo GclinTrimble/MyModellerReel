@@ -115,7 +115,7 @@ export class CogoPanel {
       };
       dist.onkeydown = next;
       dz.onkeydown = next;
-      dir.onkeydown = (e) => e.key === 'Enter' && !e.ctrlKey && (e.preventDefault(), dist.focus());
+      dir.onkeydown = (e) => void (e.key === 'Enter' && !e.ctrlKey && (e.preventDefault(), dist.focus()));
       dir.oninput = () => dir.setAttribute('aria-invalid', String(!!(dir.value.trim() && readAngle(dir.value).error)));
       tr.read = () => {
         if (!dir.value.trim() && !dist.value.trim()) return null;

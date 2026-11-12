@@ -7,7 +7,7 @@ import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profil
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
-import { buildForm, SWATCHES } from './forms.js';
+import { buildForm, SWATCHES, codeGrid } from './forms.js';
 import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
@@ -207,9 +207,24 @@ export class UI {
             h('div.code-item', { role: 'option', 'aria-selected': String(i === hi), onpointerdown: (e) => (e.preventDefault(), done(x.code)) }, icon(x.recent ? 'clock-counter-clockwise' : 'tag'), h('b', {}, x.code), h('span', {}, x.action)),
           ),
         );
-        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one.'));
+        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one, or Enter for a point without a code.'));
       };
-      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), title), inp, list, h('div.code-keys', {}, '↑↓ choose · Enter OK · Esc cancel · Tab completes'));
+      // Browse: the whole library as a searchable grid inside the card
+      let grid = null;
+      const lib = doc.featureCodes || {};
+      const browse = Object.keys(lib).length
+        ? h('button.icon-btn.sm.code-browse', { title: `Browse the ${Object.keys(lib).length} codes${doc.featureLibrary ? ` of ${doc.featureLibrary.name}` : ''}`, 'aria-label': 'Browse the feature codes', 'aria-expanded': 'false', onclick: () => {
+            if (grid) return (grid.el.remove(), (grid = null), card.classList.remove('wide'), browse.setAttribute('aria-expanded', 'false'), inp.focus());
+            grid = codeGrid(lib, (c) => done(c), { query: inp.value === current ? '' : inp.value });
+            grid.search.addEventListener('keydown', (e) => e.key === 'Escape' && done(null));
+            card.classList.add('wide');
+            list.after(grid.el);
+            browse.setAttribute('aria-expanded', 'true');
+            grid.search.focus();
+            place();
+          } }, icon('squares-four'))
+        : null;
+      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), h('span.grow', {}, title), browse), inp, list, h('div.code-keys', {}, `↑↓ choose · Enter OK (empty: no code) · Esc cancel · Tab completes${browse ? ' · ▦ browse' : ''}`));
       const away = (e) => !card.contains(e.target) && done(null);
       const done = (code) => {
         card.remove();
@@ -242,9 +257,12 @@ export class UI {
       draw();
       document.body.append(card);
       // next to the click, inside the window
-      const r = card.getBoundingClientRect();
-      card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
-      card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      const place = () => {
+        const r = card.getBoundingClientRect();
+        card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
+        card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      };
+      place();
       // after the click that opened it: its mousedown would take the focus back and close the card
       setTimeout(() => {
         window.addEventListener('pointerdown', away, true);
@@ -397,7 +415,7 @@ export class UI {
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
       myTools: { label: 'Manage my tools and skills…', icon: 'toolbox', run: () => this.show('mytools') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
-      importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
+      importPoints: { label: 'Import points (CSV, TXT, JobXML, LandXML)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
       importPdf: { label: 'Import PDF drawing…', icon: 'file-pdf', run: async () => {
         const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'PDF drawing', extensions: ['pdf'] }] });
         if (path) this.commandDialog('import_pdf', { path, scale: '1:500', pages: [1] });
@@ -595,14 +613,12 @@ export class UI {
       offsetSurface: { label: 'Design: offset surface…', icon: 'stack', run: form('design_offset_surface') },
       road: { label: 'Design: road…', icon: 'road-horizon', run: form('design_road') },
       featureCode: { label: 'Define feature code…', icon: 'tag', run: form('define_feature_code') },
-      loadLibrary: { label: 'Load feature library…', icon: 'books', run: async () => {
-        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library', extensions: ['json'] }] });
-        if (path) run('load_feature_library', { path })();
-      } },
+      loadLibrary: { label: 'Feature code libraries…', icon: 'books', run: () => this.featureLibrariesDialog() },
       processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
       coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
       editSurface: { label: 'Edit surface by hand: swap, delete, points, outline, holes', icon: 'triangle', run: () => app.tools.set('surfedit') },
       basePoint: { label: 'Base point: click a point, type its coordinates', icon: 'crosshair', run: () => app.tools.set('basepoint') },
+      mapPick: { label: 'Base point from a map…', icon: 'map-trifold', run: () => app.pickLocation() },
       units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
       survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
@@ -632,7 +648,7 @@ export class UI {
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
@@ -983,7 +999,8 @@ export class UI {
         const one = ents.length === 1 ? ents[0] : null;
         const pts = ents.filter((e) => e.type === 'point');
         const extra = [];
-        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
+        const brk = ents.filter((e) => S.isLinework(e) || e.curve);
+        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points${brk.length ? ` and ${brk.length} line${brk.length > 1 ? 's' : ''}` : ''}`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), ...(brk.length ? { breaklines: brk.map((l) => l.id) } : {}), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
         if (one?.derived?.generator === 'corridor') extra.push(a('roadViews'), a('corridorSurface'), a('corridorVolumes'), a('corridorSolids'));
         if (one?.alignment) extra.push({ label: 'Corridor along this alignment…', icon: 'road-horizon', run: () => this.commandDialog('create_corridor', { alignment: one.name }) });
         if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('editSurface'), a('contours'), a('analyze'));
@@ -1123,10 +1140,10 @@ export class UI {
       h('p.small.muted', {}, `Where is the project? Give its latitude and longitude (from a map, or the geolocation), or words such as a country. ${cur ? `Now: ${cur.epsg ? `EPSG:${cur.epsg} ` : ''}${cur.name || ''}.` : ''}`),
       h('div.row', {}, h('label.field.grow', {}, h('span', {}, 'Latitude'), lat), h('label.field.grow', {}, h('span', {}, 'Longitude'), lon)),
       h('label.field', {}, h('span', {}, 'Or words'), words),
-      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest')),
+      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest'), h('button.btn.sm', { onclick: () => (this.closeModal(), app.pickLocation()) }, icon('map-trifold'), 'Pick on a map…')),
       list,
     );
-    for (const el of [lat, lon, words]) el.onkeydown = (e) => e.key === 'Enter' && find();
+    for (const el of [lat, lon, words]) el.onkeydown = (e) => void (e.key === 'Enter' && find()); // void: an onkeydown returning false swallows the key
     if (geo.latitude !== undefined || words.value) find();
     this.modal('Coordinate system', body);
   }
@@ -1264,7 +1281,7 @@ export class UI {
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint'],
+      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
       Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
@@ -1667,6 +1684,151 @@ export class UI {
   }
 
   /** An analysis legend (#121) under a coloured surface. */
+  /** Light up parts of a surface in the view without selecting them: entities, and a drawn path (points, voids). */
+  peek(ids = [], path = null, closed = false) {
+    this.app.viewport.peek(ids, path, closed);
+  }
+
+  /**
+   * What a TIN is made of as counts (Points 120 · Breaklines 4 · Voids 1 · Boundary): each opens a list grouped by code
+   * or layer; an item or a group lights up in the view, with its remove button; members are added from the selection.
+   */
+  surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const id = e.id;
+    const p = SW.migrateSurface(e.derived.params);
+    const open = this.surfOpen?.id === id ? this.surfOpen.kind : null;
+    const zAt = SW.surfaceSampler(doc, e).z;
+    const top = TR.surfaceStats(D.worldMesh(doc, e)).max_y;
+    const onGround = (ring) => ring.map(([px, pz]) => [px, zAt(px, pz) ?? top, pz]);
+    const selected = (test) => app.selection.map((i) => app.entity(i)).filter((x) => x && test(x));
+    // the lists, grouped: [{ group, items: [{ label, ids?, path?, closed?, remove? }] }]
+    const groupBy = (list, keyOf) => {
+      const m = new Map();
+      for (const it of list) (m.get(keyOf(it)) || m.set(keyOf(it), []).get(keyOf(it))).push(it);
+      return [...m].sort((a, b) => a[0].localeCompare(b[0])).map(([group, items]) => ({ group, items }));
+    };
+    const pts = SW.surfaceSources(doc, p).points;
+    const kinds = {
+      points: {
+        label: 'Points',
+        count: d.points,
+        groups: [
+          ...groupBy(pts, (q) => S.parseCode(q.point.code).code || 'No code').map((g) => ({ ...g, items: g.items.map((q) => ({ label: q.name, ids: [q.id], remove: [`Leave ${q.name} out of this surface`, () => run('surface_points', { id, action: 'exclude', points: [q.id] })] })) })),
+          ...(p.exclude.length ? [{ group: 'Left out', items: p.exclude.map((pid) => ({ label: app.entity(pid)?.name || pid, ids: [pid], bring: () => run('surface_points', { id, action: 'include', points: [pid] }) })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', () => {
+            const sel = selected(S.isPoint);
+            if (!sel.length) return this.toast('Select survey points first, then Add selected.');
+            run('surface_points', { id, action: 'include', points: sel.map((q) => q.id) });
+          }, 'Add the selected survey points'),
+          btn('New', 'plus', edit('add'), 'Click to add a new point on the surface'),
+          btn('Move', 'hand-pointing', edit('move')),
+          pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null,
+        ],
+      },
+      breaklines: {
+        label: 'Breaklines',
+        count: d.breaklines.length + d.drawn_breaklines,
+        groups: [
+          ...groupBy(d.breaklines.map((l) => app.entity(l.id)).filter(Boolean), (l) => l.tag || 'No layer').map((g) => ({ ...g, items: g.items.map((l) => ({ label: l.name, ids: [l.id], remove: [`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })] })) })),
+          ...(p.lines.length ? [{ group: 'Drawn on the surface', items: p.lines.map((path, i) => ({ label: `Drawn line ${i + 1}`, path, remove: [`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })] })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', async () => {
+            const sel = selected((l) => S.isLinework(l) || l.curve);
+            if (!sel.length) return this.toast('Select lines (linework or curves) first, then Add selected.');
+            for (const l of sel) await run('surface_breaklines', { id, action: 'add', line: l.id });
+          }, 'Use the selected lines as breaklines'),
+          btn('Draw', 'line-segments', edit('breakline')),
+          lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null,
+        ],
+      },
+      voids: {
+        label: 'Voids',
+        count: d.voids.length,
+        groups: d.voids.length ? [{ group: 'Drawn', items: d.voids.map((r, i) => ({ label: `Void ${i + 1} · ${r.length} corners`, path: onGround(r), closed: true, remove: [`Remove void ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })] })) }] : [],
+        actions: [
+          btn('Draw', 'polygon', edit('void'), 'Draw a closed outline: the surface is cut along it'),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'add_void', from: c.id });
+          }, 'A void from the selected closed curve'),
+          d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+      boundary: {
+        label: 'Boundary',
+        count: d.outline ? null : d.boundaries.length || null,
+        groups: [
+          ...(d.outline ? [{ group: 'Outline', items: [{ label: `Outline · ${d.outline.length} corners`, path: onGround(d.outline), closed: true, remove: ['Clear the outline', () => run('surface_boundary', { id, action: 'clear' })] }] }] : []),
+          ...(d.boundaries.length ? [{ group: 'Boundary lines', items: d.boundaries.map((b) => ({ label: `${b.name} (${b.kind})`, ids: [b.id] })) }] : []),
+        ],
+        actions: [
+          btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'set', from: c.id });
+          }, 'The outline from the selected closed curve'),
+          d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+    };
+    const toggleKind = (k) => {
+      this.surfOpen = open === k ? null : { id, kind: k };
+      if (open === k) this.peek();
+      redraw();
+    };
+    const redraw = () => box.replaceWith(this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }));
+    const LIMIT = 200; // a group of thousands of points lists its first ones
+    const row = (it) =>
+      h(
+        'div.surf-item',
+        { role: 'button', tabindex: 0, title: 'Show it in the view', onclick: () => this.peek(it.ids || [], it.path, it.closed), onkeydown: (ev) => ev.key === 'Enter' && this.peek(it.ids || [], it.path, it.closed) },
+        h('span.grow', {}, it.label),
+        it.remove ? x(it.remove[0], (ev) => (ev.stopPropagation(), it.remove[1]())) : null,
+        it.bring ? h('button.btn', { onclick: (ev) => (ev.stopPropagation(), it.bring()) }, 'Bring back') : null,
+      );
+    const k = open && kinds[open];
+    const box = h(
+      'div.surf-members',
+      {},
+      h(
+        'div.surf-counts',
+        { role: 'group', 'aria-label': 'What the surface is made of' },
+        ...Object.entries(kinds).map(([key, v]) => h('button.surf-count', { 'aria-expanded': String(open === key), onclick: () => toggleKind(key) }, h('span', {}, v.label), h('b', {}, v.count === null ? (key === 'boundary' && d.outline ? '✓' : '–') : String(v.count)), icon(open === key ? 'caret-up' : 'caret-down'))),
+      ),
+      k
+        ? h(
+            'div.surf-pop',
+            { role: 'region', 'aria-label': k.label },
+            ...(k.groups.length
+              ? k.groups.map((g, _, all, listed = this.surfOpen.groups?.has(g.group) || (all.length === 1 && g.items.length <= 12)) =>
+                  h(
+                    'div.surf-group',
+                    {},
+                    h(
+                      'div.surf-group-head',
+                      {},
+                      h('button.icon-btn', { 'aria-expanded': String(listed), 'aria-label': `List ${g.group}`, title: 'List them', onclick: () => (((this.surfOpen.groups ||= new Set()).has(g.group) ? this.surfOpen.groups.delete(g.group) : this.surfOpen.groups.add(g.group)), redraw()) }, icon(listed ? 'caret-down' : 'caret-right')),
+                      h('span.grow', { role: 'button', tabindex: 0, title: 'Show the whole group in the view', onclick: () => this.peek(g.items.flatMap((it) => it.ids || []), g.items.length === 1 ? g.items[0].path : null, g.items[0]?.closed) }, g.group),
+                      h('span.muted', {}, String(g.items.length)),
+                    ),
+                    ...(listed ? [...g.items.slice(0, LIMIT).map(row), g.items.length > LIMIT ? h('div.small.muted', {}, `and ${g.items.length - LIMIT} more`) : null] : []),
+                  ),
+                )
+              : [h('div.small.muted', {}, `No ${k.label.toLowerCase()} yet.`)]),
+            h('div.row.wrap', {}, ...k.actions),
+          )
+        : null,
+    );
+    return box;
+  }
+
   /** A TIN's definition (#240): what it is made of, each part with its own remove / show button, and its options. */
   surfaceDefinitionCard(e, run) {
     const app = this.app;
@@ -1689,19 +1851,9 @@ export class UI {
       'div.surface-def',
       {},
       h('div.small', {}, `Area ${fmt(st.area_2d)} m² (3D ${fmt(st.area_3d)}) · elevation ${fmt(st.min_y + base)} to ${fmt(st.max_y + base)}`),
-      head(`Points · ${d.points} (${d.point_source === 'all' ? 'every survey point' : d.point_source === 'codes' ? 'by code' : 'chosen'})`),
-      h('div.row.wrap', {}, btn('Add', 'plus', edit('add')), btn('Move', 'hand-pointing', edit('move')), pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null),
-      ...d.excluded.map((n) => item(`Left out: ${n}`, h('button.btn', { onclick: () => run('surface_points', { id, action: 'include', points: [n] }) }, 'Bring back'))),
-      head(`Breaklines · ${d.breaklines.length + d.drawn_breaklines}`),
-      ...d.breaklines.map((l) => item(l.name, x(`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })))),
-      ...Array.from({ length: d.drawn_breaklines }, (_, i) => item(`Drawn line ${i + 1}`, x(`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })))),
-      h('div.row.wrap', {}, btn('Draw', 'line-segments', edit('breakline')), lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null),
-      head(`Outline · ${d.outline ? `${d.outline.length} corners` : 'none'}${d.boundaries.length ? ` · ${d.boundaries.length} boundary line${d.boundaries.length > 1 ? 's' : ''}` : ''}`),
-      h('div.row.wrap', {}, btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')), d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null, d.outline ? btn('Clear', 'selection-slash', () => run('surface_boundary', { id, action: 'clear' })) : null),
-      head(`Holes · ${d.voids.length}`),
-      ...d.voids.map((r, i) => item(`Hole ${i + 1} · ${r.length} corners`, x(`Remove hole ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })))),
-      h('div.row.wrap', {}, btn('Draw', 'polygon', edit('void')), d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null),
+      this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }),
       head('Triangles'),
+      h('div.row.wrap', {}, btn(e.show_triangles ? 'Hide triangles' : 'Show triangles', 'triangle', () => run('show_triangles', { ids: [id], show: !e.show_triangles }), 'Draw the triangle edges over the surface'), btn('Offset…', 'stack', () => this.commandDialog('offset_surfaces', { surface: e.name, distance: -0.3, count: 1 }), 'Offset surfaces or layers to another surface')),
       h('label.row.small', {}, h('span.grow', {}, 'Longest side (m, 0: any)'), h('input', { type: 'number', min: 0, step: 1, value: d.max_edge, style: { width: '72px' }, 'aria-label': 'Longest triangle side', onchange: (ev) => run('set_surface_sources', { id, max_edge: +ev.target.value }) })),
       d.swaps.length || d.deleted_triangles ? item(`${d.swaps.length} swapped, ${d.deleted_triangles} deleted by hand`, h('button.btn', { onclick: () => run('edit_triangles', { id, action: 'restore' }) }, icon('arrow-counter-clockwise'), 'Restore')) : null,
       h('div.row.wrap', {}, btn('Swap an edge', 'triangle', edit('swap'))),
@@ -1778,7 +1930,7 @@ export class UI {
       list.replaceChildren(h('p.small.muted', {}, 'Searching…'));
       app.reg.run('search_assets', { query: q.value, type: type.value }).then((r) => list.replaceChildren(...(r.length ? r.map((x) => h('div.legend-row', {}, h('span.grow', {}, `${x.name} `, h('span.small.muted', {}, x.categories.slice(0, 3).join(', '))), h('button.btn.sm', { onclick: () => (this.closeModal(), app.reg.run('import_asset', { id: x.id, type: type.value }).then(() => this.toast(`${x.name} imported (CC0)`)).catch((e) => this.toast(e.message, 'danger'))) }, 'Import'))) : [h('p.small.muted', {}, 'Nothing found.')]))).catch((e) => list.replaceChildren(h('p.small', {}, e.message)));
     };
-    q.onkeydown = (e) => e.key === 'Enter' && go();
+    q.onkeydown = (e) => void (e.key === 'Enter' && go());
     this.modal('Free assets', h('div', {}, h('div.row', {}, q, type, h('button.btn.primary.sm', { onclick: go }, 'Search')), list));
   }
   /** Versions saved in the file: save, restore, compare. */
@@ -1942,6 +2094,7 @@ export class UI {
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
+        ...Object.entries(p.attrs || {}).map(([k, v]) => h('label.row.small.param-row', {}, h('span', { title: 'Attribute' }, k), h('input.grow', { value: String(v), 'aria-label': `Attribute ${k}`, onchange: (ev) => run('edit_points', { points: [e.id], attrs: { [k]: typeof v === 'number' && Number.isFinite(+ev.target.value) ? +ev.target.value : ev.target.value } }) }))),
       );
     }
     if (e.alignment) {
@@ -2467,10 +2620,57 @@ export class UI {
     if ((await done) === 'fix' && (r.issues.length || r.critique)) app.ai.ask(`Fix these review findings where they are real mistakes, leave design choices alone:\n${r.issues.map((i) => `- ${i.message}`).join('\n')}${r.critique ? `\n${r.critique}` : ''}`);
   }
 
-  /** Import points: a file, its column order and units. */
-  async importPointsDialog() {
-    const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd'] }] });
-    if (path) this.commandDialog('import_points', { path, format: 'PNEZD' });
+  /** Import points: JobXML / LandXML through the import registry; a text file through a live preview of how it splits. */
+  async importPointsDialog(path) {
+    const app = this.app;
+    path ||= await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd', 'jxl', 'xml'] }] });
+    if (!path) return;
+    const fail = (e) => this.toast(e.message, 'danger');
+    if (/\.(jxl|xml)$/i.test(path)) return app.reg.run('import', { path }).then((r) => this.importReport(r)).catch(fail);
+    const ROLES = { name: 'Point name', e: 'Easting (X)', n: 'Northing (Y)', z: 'Elevation (Z)', code: 'Code', desc: 'Description', attr: 'Attribute', ignore: 'Ignore' };
+    const o = { path, delimiter: 'auto', header: undefined, columns: undefined, units: S.geo(app.store.doc).units || 'm' };
+    const sel = (label, value, opts, onchange) => h('label.field', {}, h('span', {}, label), h('select', { 'aria-label': label, onchange: (ev) => onchange(ev.target.value) }, Object.entries(opts).map(([v, l]) => h('option', { value: v, selected: v === value }, l))));
+    const custom = h('input', { 'aria-label': 'Custom delimiter', placeholder: '|', size: 3, style: { display: 'none' }, oninput: (ev) => ev.target.value && ((o.delimiter = ev.target.value), (o.columns = undefined), draw()) });
+    const opts = h('div.points-wizard-opts');
+    const status = h('p.small', { role: 'status' });
+    const table = h('div.qty.points-wizard');
+    const draw = async () => {
+      let r;
+      try {
+        r = await app.reg.run('preview_points', { ...o, rows: 30 });
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+      o.columns = r.columns;
+      const dKey = ['auto', 'comma', 'tab', 'semicolon', 'space'].includes(o.delimiter) ? o.delimiter : 'custom';
+      custom.style.display = dKey === 'custom' ? '' : 'none';
+      opts.replaceChildren(
+        sel('Delimiter', dKey, { auto: `Detect (${r.delimiter.length > 1 ? r.delimiter : `"${r.delimiter}"`})`, comma: 'Comma', tab: 'Tab', semicolon: 'Semicolon', space: 'Space', custom: 'Other…' }, (v) => (v === 'custom' ? ((custom.style.display = ''), custom.focus()) : ((o.delimiter = v), (o.columns = undefined), draw()))),
+        custom,
+        sel('First line', o.header === undefined ? 'auto' : String(o.header), { auto: `Detect (${r.header ? 'header' : 'data'})`, true: 'Column names', false: 'Data' }, (v) => ((o.header = v === 'auto' ? undefined : v === 'true'), (o.columns = undefined), draw())),
+        sel('Units', o.units, { m: 'Metres', ft: 'Feet', usft: 'US survey feet' }, (v) => ((o.units = v), draw())),
+      );
+      const setCol = (i, c) => ((o.columns = o.columns.map((x, k) => (k === i ? c : x))), draw());
+      const headCell = (c, i) =>
+        h(
+          'th',
+          {},
+          h('select', { 'aria-label': `Column ${i + 1}`, onchange: (ev) => setCol(i, ev.target.value === 'attr' ? { role: 'attr', name: r.labels[i] || `col${i + 1}` } : { role: ev.target.value }) }, Object.entries(ROLES).map(([v, l]) => h('option', { value: v, selected: v === c.role }, l))),
+          c.role === 'attr' ? h('input', { 'aria-label': `Attribute name of column ${i + 1}`, value: c.name, onchange: (ev) => setCol(i, { role: 'attr', name: ev.target.value.trim() || `col${i + 1}` }) }) : null,
+        );
+      const rows = r.sample.map((cells, k) => h(`tr${r.header && k === 0 ? '.is-header' : ''}`, {}, r.columns.map((c, i) => h(`td${c.role === 'ignore' ? '.muted' : ''}`, {}, cells[i] ?? ''))));
+      table.replaceChildren(h('table', {}, h('thead', {}, h('tr', {}, r.columns.map(headCell))), h('tbody', {}, rows)));
+      status.textContent = `${r.points} of ${r.lines - (r.header ? 1 : 0)} lines read as points${r.skipped_lines.length ? `; lines ${r.skipped_lines.slice(0, 8).join(', ')}${r.skipped_lines.length > 8 ? '…' : ''} are skipped (no numbers where northing and easting are)` : ''}.`;
+    };
+    await draw();
+    const body = h('div.panel.form.points-wizard-body', { style: { padding: 0 } }, h('p.small.muted', {}, path), opts, h('p.small.muted', {}, 'Pick what each column holds. Attribute columns are kept on every point under the name you give.'), table, status);
+    if ((await this.modal('Import points', body, [['Import', 'go'], ['Cancel', null]])) !== 'go') return;
+    const { path: p, delimiter, header, columns, units } = o;
+    return app.reg
+      .run('import_points', { path: p, delimiter, ...(header === undefined ? {} : { header }), columns, units })
+      .then((r) => this.toast(`${r.imported} points imported${r.renamed_duplicates.length ? `, ${r.renamed_duplicates.length} renamed (names in use)` : ''}.`))
+      .catch(fail);
   }
 
   /** Surface checks (#130) with one-click fixes. */
@@ -2523,7 +2723,7 @@ export class UI {
       h('h3', {}, 'Coordinates'),
       h('div.small', {}, g.base ? `Base point E ${g.base[0]} · N ${g.base[1]} · Z ${g.base[2]}` : 'No base point yet: the first point sets it.'),
       h('div.small.muted', {}, `${g.crs?.name || 'No coordinate system'}${g.crs?.epsg ? ` (EPSG:${g.crs.epsg})` : ''} · units ${g.units || 'm'} · angles ${g.angles || 'deg'}`),
-      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
+      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.mapPick.run }, icon('map-trifold'), 'Map…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
       h('div.row', {}, h('h3.grow', {}, `Points · ${pts.length}`), h('button.btn', { onclick: this.actions.importPoints.run }, icon('tray-arrow-down'), 'Import…'), h('button.icon-btn.sm', { title: 'Export points', 'aria-label': 'Export points', onclick: this.actions.exportPoints.run }, icon('export'))),
       filter,
       h(
@@ -2564,10 +2764,104 @@ export class UI {
             ),
           )
         : h('p.small.muted', {}, 'Import points, then Surface… makes a live TIN.'),
-      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Load library', 'aria-label': 'Load feature library', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Feature code libraries', 'aria-label': 'Feature code libraries', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      doc.featureLibrary ? h('p.small.muted', {}, icon('books'), ` Library: ${doc.featureLibrary.name}`) : null,
       h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.type}` : ''))),
       h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
     );
+  }
+
+  /** Feature code libraries: the ones kept on this computer (import FXL / JSON), the model's, their codes to search and edit. */
+  async featureLibrariesDialog(open = null) {
+    const app = this.app;
+    const run = (name, args) => app.reg.run(name, args);
+    const fail = (e) => this.toast(e.message, 'danger');
+    const body = h('div.panel.libs', { style: { padding: 0 } }, h('p.muted', {}, 'Reading the libraries…'));
+    let sel = open;
+    let mode = null; // 'rename' | 'duplicate' | 'delete': the selected library's pending action
+    const again = (fn) => async () => {
+      try {
+        await fn();
+      } catch (e) {
+        fail(e);
+      }
+      draw();
+    };
+    // a code edit is a form of its own; the manager comes back after it
+    const editCode = (code, d = {}) => async () => {
+      this.modalClosing = true; // its close event comes later: not the form's Cancel
+      this.closeModal();
+      await this.commandDialog('edit_library_code', { library: sel, ...(code ? { code } : {}), ...Object.fromEntries(Object.entries({ description: d.description, type: d.type, category: d.category, layer: d.layer, color: d.color, line_style: d.lineStyle, breakline: d.breakline, object: d.object, attrs: d.attrs }).filter(([, v]) => v !== undefined)) }, { form: true });
+      this.featureLibrariesDialog(sel);
+    };
+    const draw = async () => {
+      const { libraries, in_use } = await run('feature_libraries', {});
+      if (!libraries.some((l) => l.name === sel)) sel = libraries.find((l) => l.name === in_use)?.name || libraries[0]?.name || null;
+      const lib = sel ? await run('feature_library', { name: sel, limit: 1e6 }) : null;
+      const codes = lib ? Object.fromEntries(lib.codes.map(({ code, ...d }) => [code, d])) : {};
+      const doc = app.store.doc;
+      const nameBox = (verb) => {
+        const inp = h('input', { value: verb === 'rename' ? sel : `${sel} copy`, 'aria-label': 'New name' });
+        const ok = again(() => run('manage_feature_library', { name: sel, action: verb, to: inp.value.trim() }).then((r) => ((sel = r.name), (mode = null))));
+        inp.onkeydown = (e) => (e.stopPropagation(), e.key === 'Enter' ? ok() : e.key === 'Escape' && ((mode = null), draw()));
+        setTimeout(() => (inp.focus(), inp.select()));
+        return h('div.row', {}, inp, h('button.btn.primary', { onclick: ok }, verb === 'rename' ? 'Rename' : 'Duplicate'), h('button.btn', { onclick: () => ((mode = null), draw()) }, 'Cancel'));
+      };
+      body.replaceChildren(
+        h(
+          'div.row.wrap',
+          {},
+          h('button.btn.primary', { onclick: again(async () => {
+            const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library (FXL, JSON)', extensions: ['fxl', 'json'] }] });
+            if (!path) return;
+            const r = await run('import_feature_library', { path });
+            sel = r.name;
+            this.toast(`${r.name}: ${r.codes} codes (${Object.entries(r.types).map(([k, n]) => `${n} ${k}`).join(', ')})`);
+          }) }, icon('download-simple'), 'Import FXL or JSON…'),
+          Object.keys(doc.featureCodes || {}).length && !libraries.some((l) => l.name === in_use)
+            ? h('button.btn', { title: 'Keep the codes of this model as a library on this computer', onclick: again(async () => (sel = (await run('import_feature_library', { name: in_use || app.file?.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'From the model' })).name)) }, icon('floppy-disk'), "Keep this model's codes")
+            : null,
+        ),
+        libraries.length
+          ? h('div.lib-list', { role: 'listbox', 'aria-label': 'Libraries' }, libraries.map((l) => h('button.lib-item', { role: 'option', 'aria-selected': String(l.name === sel), onclick: () => ((sel = l.name), (mode = null), draw()) }, icon('books'), h('b.grow', {}, l.name), l.name === in_use ? h('span.lib-badge', {}, 'In use') : null, h('span.small.muted', {}, `${l.codes} codes`))))
+          : h('p.muted', {}, 'No libraries yet. Import a Trimble FXL (Feature Definition Manager) or a JSON library.'),
+        lib
+          ? h(
+              'div.lib-detail',
+              {},
+              mode === 'rename' || mode === 'duplicate'
+                ? nameBox(mode)
+                : h(
+                    'div.row.wrap',
+                    {},
+                    h('button.btn.primary', { disabled: lib.name === in_use, onclick: again(async () => {
+                      const r = await run('use_feature_library', { name: lib.name });
+                      this.toast(`This model uses ${r.in_use}: ${r.codes} codes, ${r.processed.lines} lines`);
+                    }) }, icon('check-circle'), lib.name === in_use ? 'In use' : 'Use in this model'),
+                    h('button.btn', { onclick: () => ((mode = 'rename'), draw()) }, icon('pencil-simple'), 'Rename'),
+                    h('button.btn', { onclick: () => ((mode = 'duplicate'), draw()) }, icon('copy'), 'Duplicate'),
+                    h('button.btn', { onclick: again(async () => {
+                      const path = await window.native.invoke('file:save-dialog', { defaultPath: `${lib.name}.fxl`, filters: [{ name: 'Trimble FXL', extensions: ['fxl'] }, { name: 'JSON', extensions: ['json'] }, { name: 'CSV', extensions: ['csv'] }] });
+                      if (path) this.toast(`Exported ${(await run('export_feature_library', { library: lib.name, path })).codes} codes`);
+                    }) }, icon('export'), 'Export…'),
+                    mode === 'delete'
+                      ? h('button.btn.danger', { onclick: again(() => run('manage_feature_library', { name: lib.name, action: 'delete' }).then(() => (mode = null))) }, icon('trash'), `Delete ${lib.name}?`)
+                      : h('button.btn', { onclick: () => ((mode = 'delete'), draw()) }, icon('trash'), 'Delete'),
+                  ),
+              h('div.row', {}, h('span.small.muted.grow', {}, `${lib.total} codes${lib.source && !/^(fxl|json|model)$/.test(lib.source) ? ` · from ${lib.source.split(/[\\/]/).pop()}` : ''}`), h('button.btn.sm', { onclick: editCode(null) }, icon('plus'), 'Code…')),
+              codeGrid(codes, (c) => editCode(c, codes[c])(), {
+                extra: (r) => [
+                  h('button.icon-btn.sm', { title: `Edit ${r.code}`, 'aria-label': `Edit ${r.code}`, onclick: (e) => (e.stopPropagation(), editCode(r.code, codes[r.code])()) }, icon('pencil-simple')),
+                  h('button.icon-btn.sm', { title: `Remove ${r.code}`, 'aria-label': `Remove ${r.code}`, onclick: (e) => (e.stopPropagation(), again(() => run('edit_library_code', { library: lib.name, code: r.code, remove: true }))()) }, icon('trash')),
+                ],
+              }).el,
+            )
+          : null,
+      );
+    };
+    const shown = this.modal('Feature code libraries', body);
+    draw().catch(fail);
+    return shown;
   }
 
   /** Quantities report (#53): pick the grouping, read the table, export CSV. */

@@ -13,6 +13,7 @@ import { parseLength } from '../core/fields.js';
 import * as MD from '../core/modeling.js';
 import * as SW from '../core/sitework.js';
 import { floorAt, blocked } from './scale.js';
+import { previewTies } from '../core/ties.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -39,8 +40,8 @@ const HIGHLIGHT = 0xe8bc5e;
 const TX_NAMES = new Set(Object.keys(TX_LIBRARY));
 
 /** Snap kinds (#180) and their defaults; doc.settings.snaps overrides them (set_snaps). */
-export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true };
-export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
+export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, survey: true, tie: true };
+export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points', survey: 'Survey points', tie: 'Tie lines to survey points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
 export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], 'paint', 'eraser', 'section'];
@@ -258,17 +259,18 @@ export class Tools {
     // which snaps are on (#180): the model's settings, or only one kind for the next click
     const S = { ...SNAPS, ...(this.app.store.doc.settings.snaps || {}) };
     const on = (k) => (this.only ? this.only === k : S[k] !== false);
-    const cat = (kind) => (/Mid|middle/.test(kind) ? 'midpoint' : kind === 'Point cloud' ? 'cloud' : 'endpoint');
+    const cat = (kind) => (/Mid|middle/.test(kind) ? 'midpoint' : kind === 'Point cloud' ? 'cloud' : kind === 'Survey point' ? 'survey' : 'endpoint');
     if (from && this.lock) return done({ point: closestOnLine(ray, from, AXES[this.lock]), kind: `On ${AXIS_NAME[this.lock]} axis`, axis: this.lock, hit });
     let best = null;
     let bestD = SNAP_PX;
     for (const s of [...extra.map((p) => ({ p, kind: 'Endpoint' })), ...vp.snapPoints()]) {
       if (!on(cat(s.kind))) continue;
       const sp = vp.toScreen(s.p);
-      const d = Math.hypot(sp.x - mx, sp.y - my);
+      const d = Math.hypot(sp.x - mx, sp.y - my) - (s.point ? 4 : 0); // a survey point wins over a vertex on it
       if (!sp.behind && d < bestD) (bestD = d), (best = s);
     }
-    if (best) return done({ point: best.p.clone(), kind: best.kind, hit, snapped: true });
+    // pointId: what a vertex placed here ties to (unless set_snaps tie: false)
+    if (best) return done({ point: best.p.clone(), kind: best.kind, label: best.label, pointId: best.point && on('tie') ? best.point : null, hit, snapped: true });
     if (from && on('axis'))
       for (const k of ['x', 'z', 'y']) {
         const p = closestOnLine(ray, from, AXES[k]);
@@ -291,7 +293,7 @@ export class Tools {
     const wrap = this.vp.canvas.parentElement.getBoundingClientRect(); // the view area: every docked pane is inside it
     if (this.vp.input.ownerDocument !== document) return void (this.label.hidden = true); // a detached pane
     Object.assign(this.label.style, { left: `${s.x - wrap.left}px`, top: `${s.y - wrap.top}px` });
-    this.label.textContent = r.kind;
+    this.label.textContent = r.label ? `${r.kind} ${r.label}` : r.kind;
     this.label.dataset.kind = r.axis || r.kind.split(' ')[0].toLowerCase();
     this.label.hidden = false;
   }
@@ -329,10 +331,15 @@ export class Tools {
     const face = { v: e.mesh.f[hit.faceIndex].map((i) => e.mesh.v[i]), f: [e.mesh.f[hit.faceIndex].map((_, k) => k)] };
     this.ghost(face, hit.object.matrixWorld, HIGHLIGHT, 0.45);
   }
+  /** What a transform can take under the mouse: a survey point wins over the surface under it, then faces, then lines. */
+  hitAt(ev) {
+    const mesh = this.vp.pick(ev); // also aims the ray for the two below
+    return this.vp.pickPoint() || mesh || this.vp.pickCurve();
+  }
   /** Ids to act on: the selection, else what is under the mouse. */
   targetsAt(ev) {
     if (this.app.selection.length) return this.app.selection;
-    const hit = this.vp.pick(ev);
+    const hit = this.hitAt(ev);
     return hit ? [this.app.pickTarget(hit.entityId)] : [];
   }
   run(name, args) {
@@ -440,6 +447,7 @@ class SelectTool {
     const g = this.grip;
     const inf = this.t.infer(ev, { from: g.p, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(V(0, 1, 0), g.p) });
     g.to = inf.point.clone();
+    g.pin = inf.pointId;
     this.t.vp.overlay.clear();
     this.t.lines([g.p, g.to], inf.axis ? AXIS_COLORS[inf.axis] : ACCENT);
     this.t.status(`Move the ${g.kind === 'edge' ? 'edge' : g.kind === 'point' ? 'curve point' : 'corner'} ${fmt(g.to.distanceTo(g.p))}. Let go where it goes.`);
@@ -453,7 +461,7 @@ class SelectTool {
     if (g.kind === 'point') {
       const m = new THREE.Matrix4().fromArray(D.worldMatrix(this.t.app.store.doc, g.e).elements);
       const pts = g.e.curve.points.map((p, i) => (i === g.ids[0] ? to.toArray() : V(...p).applyMatrix4(m).toArray()));
-      await this.t.run('set_curve', { id: g.e.id, points: pts });
+      await this.t.run('set_curve', { id: g.e.id, points: pts, ...(g.pin ? { ties: [{ vertex: g.ids[0], point: g.pin }] } : {}) });
     } else await this.t.run('move_elements', { id: g.e.id, vertices: g.ids, by });
     this.gripKey = null;
   }
@@ -638,14 +646,23 @@ class LineTool extends DrawBase {
   cancel() {
     if (this.pts.length >= 2) this.t.guard(() => this.finish());
     this.pts = [];
+    this.pins = [];
     this.t.clear();
   }
-  async finish() {
-    const pts = this.pts.filter((p, i, a) => !i || p.distanceTo(a[i - 1]) > 1e-6).map((p) => p.toArray());
+  /** The points without repeats, and the ties of those that were snapped to survey points. */
+  kept() {
+    const keep = this.pts.map((p, i) => i).filter((i) => !i || this.pts[i].distanceTo(this.pts[i - 1]) > 1e-6);
+    const ties = keep.flatMap((i, k) => (this.pins?.[i] ? [{ vertex: k, point: this.pins[i] }] : []));
+    const pts = keep.map((i) => this.pts[i].toArray());
     this.pts = [];
+    this.pins = [];
     this.t.clear();
+    return { pts, ties: ties.length ? ties : undefined };
+  }
+  async finish() {
+    const { pts, ties } = this.kept();
     if (pts.length < 2) return;
-    await this.t.run('create_curve', { points: pts, kind: 'polyline', name: 'Line' });
+    await this.t.run('create_curve', { points: pts, kind: 'polyline', name: 'Line', ties });
     this.t.status(`Line of ${pts.length - 1} segment${pts.length > 2 ? 's' : ''} kept. ${this.hint}`);
   }
   dbl() {
@@ -696,6 +713,7 @@ class LineTool extends DrawBase {
       this.pts.push(...arc.slice(0, -1).map((p) => p.clone()));
     }
     await this.add(inf.point);
+    if (inf.pointId && this.pts.at(-1)?.equals(inf.point)) (this.pins ||= [])[this.pts.length - 1] = inf.pointId;
   }
   async add(p) {
     if (this.pts.length >= 3 && p.distanceTo(this.pts[0]) < 1e-4) {
@@ -720,6 +738,7 @@ class LineTool extends DrawBase {
   }
   async commit(points, name) {
     this.pts = [];
+    this.pins = [];
     return DrawBase.prototype.commit.call(this, points, name);
   }
 }
@@ -947,6 +966,7 @@ class MoveTool extends XformBase {
     this.previewWorld((m) => new THREE.Matrix4().makeTranslation(this.delta.x, this.delta.y, this.delta.z).multiply(m));
     for (const l of this.t.vp.overlay.children.slice()) this.t.vp.overlay.remove(l);
     this.t.lines([this.base, this.base.clone().add(this.delta)], axis ? AXIS_COLORS[axis] : 0x1d262c);
+    if (!this.t.copy) for (const c of previewTies(this.t.app.store.doc, this.ids, this.delta.toArray())) this.t.lines(c.points, 0xe0782f); // tied lines follow live
     this.t.status(`${this.t.copy ? 'Copy' : 'Move'} ${fmt(this.delta.length())}`);
   }
   async down(ev) {
@@ -1060,7 +1080,7 @@ class ScaleTool {
     this.prev = t.app.store.doc.settings.gizmo || null;
   }
   async down(ev) {
-    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+    const hit = this.t.hitAt(ev);
     if (!hit) return this.t.app.select([]);
     const id = this.t.app.pickTarget(hit.entityId);
     const e = this.t.app.entity(id);
@@ -1618,15 +1638,14 @@ class PathTool extends LineTool {
     return fillet2d(pts.map((p) => [p[0], p[2]]), this.radius).map(([x, z]) => [x, y, z]);
   }
   async finish(alignment = false) {
-    const pts = this.pts.filter((p, i, a) => !i || p.distanceTo(a[i - 1]) > 1e-6).map((p) => p.toArray());
-    this.pts = [];
-    this.t.clear();
+    const { pts, ties } = this.kept();
     if (pts.length < 2) return;
     if (alignment) {
       const r = await this.t.run('create_alignment', { points: pts, radii: pts.slice(1, -1).map(() => this.radius), name: 'Alignment' });
       return this.t.status(`${r.name}: ${fmt(r.length ?? 0)} long. Change its radii in the Entity panel; Site › Corridor puts a road on it.`);
     }
-    await this.t.run('create_curve', { points: this.smooth ? pts : this.rounded(pts), kind: this.smooth ? 'spline' : 'polyline', name: 'Path' });
+    const round = !this.smooth && this.radius && pts.length > 2; // rounding adds points: the ties would land on the wrong ones
+    await this.t.run('create_curve', { points: this.smooth ? pts : this.rounded(pts), kind: this.smooth ? 'spline' : 'polyline', name: 'Path', ties: round ? undefined : ties });
     this.t.status(`Path kept. ${this.hint}`);
   }
 }

@@ -4,6 +4,37 @@
 // inputs as modes (params.ui.modes), required fields first and the rest folded under "More options".
 import { h, icon, infoTip } from './ui.js';
 import { kindOf, defaultOf, exampleOf, tupleLabels, readPoint, readAngle, readNumber } from '../core/fields.js';
+import * as S from '../core/survey.js';
+import { featureType } from '../core/trimble.js';
+
+const TYPE_ICON = { point: 'map-pin-simple', line: 'line-segments', polygon: 'polygon' };
+/**
+ * A feature library's codes as a searchable grid: colour, point / line / polygon, code, description, layer. Clicking a
+ * row (or Enter in the search) gives onPick(code); extra(row) adds buttons to a row.
+ */
+export function codeGrid(codes, onPick, { extra, query = '' } = {}) {
+  const search = h('input', { type: 'search', value: query, placeholder: 'Search code, description, layer…', 'aria-label': 'Search the codes', autocomplete: 'off', spellcheck: false });
+  const list = h('div.code-grid', { role: 'listbox', 'aria-label': 'Feature codes' });
+  const lib = { featureCodes: codes };
+  const draw = () => {
+    const rows = S.searchCodes(codes, search.value);
+    list.replaceChildren(
+      ...rows.slice(0, 400).map((r) => {
+        const type = featureType(r);
+        return h('div.code-row', { role: 'option', title: [r.category, r.lineStyle && `line style ${r.lineStyle}`, r.attrs?.length && `attributes: ${r.attrs.map((a) => a.name).join(', ')}`].filter(Boolean).join(' · '), onclick: () => onPick?.(r.code) }, h('i.code-swatch', { style: { background: S.codeColor(lib, r.code) } }), h('span.code-type', { title: type, 'aria-label': type }, icon(TYPE_ICON[type])), h('b', {}, r.code), h('span.code-desc', {}, r.description || ''), h('span.code-layer', {}, r.layer || ''), extra ? h('span.code-acts', {}, extra(r)) : null);
+      }),
+      ...(rows.length > 400 ? [h('div.code-empty', {}, `${rows.length - 400} more: search to narrow.`)] : rows.length ? [] : [h('div.code-empty', {}, Object.keys(codes).length ? 'No code matches.' : 'No codes in this library yet.')]),
+    );
+  };
+  search.oninput = draw;
+  search.onkeydown = (e) => {
+    e.stopPropagation();
+    const first = e.key === 'Enter' && S.searchCodes(codes, search.value)[0];
+    if (first) (e.preventDefault(), onPick?.(first.code));
+  };
+  draw();
+  return { el: h('div.code-browser', {}, search, list), search, draw };
+}
 
 export const SWATCHES = ['#c8553d', '#e8bc5e', '#4c7a5a', '#2f6f86', '#1e3a4c', '#7a5c8c', '#b5492b', '#8a6d3b', '#9aa3ab', '#3c3f44', '#d9d4c7', '#ffffff'];
 const ENTITY_KEYS = new Set(['id', 'corridor', 'alignment', 'surface', 'existing', 'design', 'from_face', 'from', 'to', 'target', 'path', 'profile_from', 'parent', 'of', 'curve', 'outline']);
@@ -120,7 +151,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
         show();
       };
       inp.onchange = add; // a choice from the list, or typed and left
-      inp.onkeydown = (e) => e.key === 'Enter' && (e.preventDefault(), add());
+      inp.onkeydown = (e) => void (e.key === 'Enter' && (e.preventDefault(), add()));
       const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) { const v = coords ? r3(p) : snapName(p); if (!(s.ui?.names && Array.isArray(v))) vals.push(v); } show(); } }, icon('crosshair'), 'Pick in the view');
       control = h('div.form-stack', {}, chips, h('div.form-row.form-grow', {}, inp, pb));
       show();
@@ -204,6 +235,18 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       // which thing: click it in the view (#220), the list stays for those who know the name
       const pb = isThing && pickEntity && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const id = await pickEntity(`Click the ${human(k).toLowerCase()} in the view`); const e = id && app.store.doc.entities.find((x) => x.id === id); if (e) inp.value = e.name; } }, icon('cursor-click'), 'Pick in the view');
       control = pb ? h('div.form-row.form-grow', {}, pb, inp, dl) : h('div.form-stack', {}, inp, dl);
+      // a feature code: Browse opens the library's codes to pick from
+      if (s.ui?.kind === 'code' && Object.keys(doc.featureCodes || {}).length) {
+        let grid;
+        const bb = h('button.btn.sm', { type: 'button', 'aria-expanded': 'false', onclick: () => {
+          if (grid) return (grid.el.remove(), (grid = null), bb.setAttribute('aria-expanded', 'false'));
+          grid = codeGrid(doc.featureCodes, (c) => ((inp.value = c), grid.el.remove(), (grid = null), bb.setAttribute('aria-expanded', 'false')), { query: inp.value });
+          control.append(grid.el);
+          bb.setAttribute('aria-expanded', 'true');
+          grid.search.focus();
+        } }, icon('squares-four'), 'Browse');
+        control = h('div.form-stack', {}, h('div.form-row.form-grow', {}, inp, bb), dl);
+      }
       read = () => {
         const t = inp.value.trim();
         if (!t) return undefined;

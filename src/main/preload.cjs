@@ -7,7 +7,7 @@ const CHANNELS = new Set([
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
   'ai:image', 'library:list', 'library:path', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
   'ai:setup-status', 'ai:ollama-start', 'ai:ollama-install', 'ai:ollama-pull', 'ai:ollama-pull-cancel', 'ai:builtin-download', 'ai:builtin-delete', 'ref:watch',
-  'mytools:list', 'mytools:write', 'mytools:delete',
+  'mytools:list', 'mytools:write', 'mytools:delete', 'codelib:call',
 ]);
 
 contextBridge.exposeInMainWorld('native', {
