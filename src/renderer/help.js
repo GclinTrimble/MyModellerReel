@@ -85,6 +85,47 @@ export class Help {
     if (kind === 'tool') return app.tools.set(arg);
     if (kind === 'do') return ui.commandDialog(arg);
     if (kind === 'howto') return this.open(arg);
+    if (kind === 'guide') return app.learning?.start(arg);
+  }
+
+  /** Ask Plumb (#241): an answer from the help pages and the commands, with its sources, Show me and Do it for me. */
+  async ask(question, tool = null) {
+    question = String(question || '').trim();
+    if (!question) return;
+    this.page = null;
+    this.answer = { question, tool, busy: true };
+    this.app.ui.show('help');
+    try {
+      this.answer = { question, tool, ...(await this.app.reg.run('ask_help', { question, ...(tool ? { tool } : {}) })) };
+    } catch (e) {
+      this.answer = { question, error: e.message };
+    }
+    if (this.app.ui.tab === 'help' && !this.page) this.app.ui.show('help');
+    return this.answer;
+  }
+
+  askCard() {
+    const a = this.answer;
+    const input = h('input', { type: 'search', placeholder: 'Ask Plumb: how do I…?', value: a?.question || '', 'aria-label': 'Ask Plumb a question', onkeydown: (e) => e.key === 'Enter' && this.ask(input.value) });
+    const out = [];
+    if (a?.busy) out.push(h('p.muted', { role: 'status' }, 'Plumb is reading the help pages…'));
+    else if (a?.error) out.push(h('p', { role: 'alert' }, a.error));
+    else if (a) {
+      if (a.answer) out.push(h('div.help-page.help-answer', {}, ...renderMarkdown(a.answer, (k, x) => this.act(k, x))));
+      else out.push(h('p.small.muted', {}, a.ai_error ? `Plumb could not answer (${a.ai_error}). Here is what the help says:` : 'Here is what the help says:'), ...a.sources.slice(0, 3).map((s) => h('div.help-page.help-inline', {}, h('strong', {}, `${s.title} › ${s.section}`), ...renderMarkdown(s.text, (k, x) => this.act(k, x)))));
+      const used = a.cited?.length ? a.sources.filter((s) => a.cited.includes(s.n)) : a.sources.slice(0, 3);
+      if (used.length) out.push(h('div.small.muted', {}, 'Sources'), h('div.row.wrap', {}, ...used.map((s) => h('button.chip', { title: 'Open this page', onclick: () => this.open(s.id) }, icon('book-open'), `${a.answer ? `[${s.n}] ` : ''}${s.title} › ${s.section}`))));
+      out.push(
+        h(
+          'div.row.wrap',
+          {},
+          a.show ? h('button.btn.sm.primary', { title: a.show.kind === 'guide' ? 'Guided steps: where to click' : a.show.kind === 'tool' ? 'Start the tool' : 'Open the command form', onclick: () => this.act(a.show.kind, a.show.arg) }, icon('hand-pointing'), 'Show me') : null,
+          h('button.btn.sm', { title: 'Plumb does it in the AI panel (one undo step)', onclick: () => this.app.ai.ask(a.question) }, icon('sparkle'), 'Do it for me'),
+          h('button.icon-btn.sm', { title: 'Clear the answer', 'aria-label': 'Clear the answer', onclick: () => ((this.answer = null), this.app.ui.show('help')) }, icon('x')),
+        ),
+      );
+    }
+    return h('div.card.help-ask', {}, h('div.row', {}, icon('sparkle'), h('strong.grow', {}, 'Ask Plumb')), h('div.row', {}, input, h('button.btn.sm.primary', { onclick: () => this.ask(input.value) }, 'Ask')), ...out);
   }
 
   async open(id) {
@@ -108,7 +149,7 @@ export class Help {
     const listEl = h('div.help-list');
     this.renderList(listEl, list);
     queueMicrotask(() => search.focus({ preventScroll: true }));
-    return h('div.panel.help', {}, this.startHere(), app.learning ? app.learning.card() : null, app.learning ? app.learning.insightsCard() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Click a topic to read it here; every page shows the clicks, a prompt for Plumb, and the commands for scripts and MCP.'));
+    return h('div.panel.help', {}, this.askCard(), this.startHere(), app.learning ? app.learning.card() : null, app.learning ? app.learning.insightsCard() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Click a topic to read it here; every page shows the clicks, a prompt for Plumb, and the commands for scripts and MCP.'));
   }
 
   /** New here (#223): the app is AI first, so the first steps are Plumb's, with the way back to editing by hand. */

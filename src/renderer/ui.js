@@ -15,6 +15,8 @@ import * as SW from '../core/sitework.js';
 import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
+import { parseUserFile, fileName } from '../core/usertools.js';
+import { USER_SKILLS } from '../core/skills.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
 /** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
@@ -368,6 +370,7 @@ export class UI {
       recordMacro: { label: 'Record macro', icon: 'record', checked: () => !!app.ctx.macro, run: () => (app.ctx.macro ? app.reg.run('stop_macro', {}).then((r) => this.toast(`Saved recipe "${r.name}" (${r.steps} steps)`)) : app.reg.run('record_macro', {})).catch((e) => this.toast(e.message, 'danger')) },
       saveRecipe: { label: 'Save recipe of this model…', icon: 'floppy-disk-back', run: form('save_recipe') },
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
+      myTools: { label: 'Manage my tools and skills…', icon: 'toolbox', run: () => this.show('mytools') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
       importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
       importPdf: { label: 'Import PDF drawing…', icon: 'file-pdf', run: async () => {
@@ -600,7 +603,7 @@ export class UI {
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
@@ -630,7 +633,7 @@ export class UI {
       return h('button', { role: 'menuitem', 'aria-checked': a.checked ? String(!!on) : undefined, onclick: click }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
     };
     // a long menu (#208): the items under each heading go into a sub-menu that opens beside it
-    const list = this.menus[name];
+    const list = name === 'Tools' ? [...this.menus.Tools, ...this.myToolItems()] : this.menus[name];
     const parts = [];
     if (list.length > 16) {
       let cur = null;
@@ -669,6 +672,85 @@ export class UI {
     Object.assign(pop.style, { left: `${r.left}px`, top: `${r.bottom + 4}px` });
     pop.hidden = false;
   }
+  /** Tools › My tools (#242): one menu item per saved tool, run through its form. */
+  myToolItems() {
+    return this.app.reg.list().filter((c) => c.category === 'my tools').map((c) => {
+      const id = `my:${c.name}`;
+      this.actions[id] = { label: `${c.description.split(':')[0]}…`, icon: 'wrench', run: () => this.runMyTool(c.name) };
+      return id;
+    });
+  }
+  runMyTool(name) {
+    const c = this.app.reg.commands.get(name);
+    return Object.keys(c?.params.properties || {}).length ? this.commandDialog(name) : this.app.reg.run(name, {}).catch((e) => this.toast(e.message, 'danger'));
+  }
+
+  /** My tools and skills (#242): what Plumb saved for you, to run, edit, share and delete. */
+  panel_mytools() {
+    const app = this.app;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => (this.toast(e.message, 'danger'), null));
+    const mine = app.reg.list().filter((c) => c.category === 'my tools').map((c) => c.name);
+    const full = (name) => app.reg.run('list_my_tools', { name });
+    const save = (x) => (x.kind === 'tool' ? run('save_tool', { name: x.title, description: x.description, steps: x.steps, params: x.params }) : run('save_skill', x));
+    const exportItem = async (x) => {
+      const p = await window.native.invoke('file:save-dialog', { defaultPath: fileName(x), filters: [{ name: 'MyModellerReel tool or skill', extensions: ['json'] }] });
+      if (p) await window.native.invoke('file:write', p, JSON.stringify(x, null, 2)), this.toast(`Exported to ${p}`);
+    };
+    const edit = async (x) => {
+      const area = h('textarea.code', { rows: 18, spellcheck: false, 'aria-label': 'Definition (JSON)' }, JSON.stringify(x, null, 2));
+      if (!(await this.modal(`Edit ${x.title || x.label}`, h('div', {}, h('p.small.muted', {}, x.kind === 'tool' ? 'Steps are commands with their arguments; "{{name}}" takes a parameter. Renaming makes a new tool.' : 'prompt is what Plumb reads; toolset lists the commands it uses.'), area), [['Save', true], ['Cancel', null]]))) return;
+      try {
+        const y = parseUserFile(area.value);
+        if (await save(y)) this.toast('Saved');
+      } catch (e) {
+        this.toast(e.message, 'danger');
+      }
+    };
+    const importFile = async () => {
+      const p = await window.native.invoke('file:open-dialog', { filters: [{ name: 'MyModellerReel tool or skill', extensions: ['json'] }] });
+      if (!p) return;
+      try {
+        const x = parseUserFile(await window.native.invoke('file:read-text', p));
+        if (await save(x)) this.toast(`Added ${x.title || x.label}`);
+      } catch (e) {
+        this.toast(e.message, 'danger');
+      }
+    };
+    const card = (x, ic, title, desc, main) =>
+      h(
+        'div.card',
+        {},
+        h('div.row', {}, icon(ic), h('b.grow', {}, title), h('span.small.muted', {}, x.name)),
+        desc ? h('div.small.muted', {}, desc) : null,
+        h(
+          'div.row.wrap',
+          {},
+          main,
+          h('button.btn.sm', { onclick: () => edit(x) }, icon('pencil-simple'), 'Edit'),
+          h('button.btn.sm', { onclick: () => exportItem(x) }, icon('export'), 'Export'),
+          h('button.icon-btn.sm', { title: 'Delete', 'aria-label': `Delete ${title}`, onclick: async () => (await this.modal(`Delete "${title}"?`, h('p', {}, 'Its file in your library is removed too.'), [['Delete', true], ['Cancel', null]])) && run('delete_my_tool', { name: x.name }) }, icon('trash')),
+        ),
+      );
+    const tools = h('div', {}, h('p.muted.small', {}, 'Loading…'));
+    Promise.all(mine.map(full)).then((xs) =>
+      tools.replaceChildren(
+        ...(xs.length ? xs.map((x) => card(x, 'wrench', x.title, `${x.description} · ${Object.keys(x.params).join(', ') || 'no parameters'}`, h('button.btn.sm.primary', { onclick: () => this.runMyTool(x.name) }, icon('play'), 'Run…'))) : [h('p.small.muted', {}, 'None yet.')]),
+      ),
+    );
+    const skills = Object.values(USER_SKILLS);
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'My tools'),
+      h('p.muted.small', {}, 'After Plumb has done something you will want again, say "save what we just did as a tool called Kerb return". The numbers become parameters; the tool is a command like any other: in Tools › My tools, command search (Ctrl+K), the API and MCP, and Plumb can call it.'),
+      tools,
+      h('h3', {}, 'My skills'),
+      h('p.muted.small', {}, 'Say "remember this as a skill: …" with how you like a kind of work done and the commands it uses. Pick it in the AI panel and Plumb follows it.'),
+      ...(skills.length ? skills.map((x) => card(x, 'graduation-cap', x.label, x.description, h('button.btn.sm.primary', { onclick: () => run('use_skill', { name: x.name }).then(() => this.toast(`Plumb now uses "${x.label}"`)) }, icon('sparkle'), 'Use'))) : [h('p.small.muted', {}, 'None yet.')]),
+      h('div.row.wrap', {}, h('button.btn', { onclick: importFile }, icon('download-simple'), 'Import a tool or skill…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder')),
+    );
+  }
+
   closeMenu() {
     this.$('menu-sub')?.remove();
     this.$('menu-pop').hidden = true;
@@ -2145,6 +2227,9 @@ export class UI {
           ),
         ),
       ),
+      h('h3', {}, 'My tools and skills'),
+      h('p.muted.small', {}, 'Ask Plumb to save what it just did as a tool, or how you work as a skill.'),
+      h('div.row', {}, h('button.btn', { onclick: this.actions.myTools.run }, icon('toolbox'), 'My tools and skills')),
       h('h3', {}, 'Plugins'),
       h('p.muted.small', {}, 'A plugin is one JavaScript file that adds commands. Every command it adds is instantly available to the toolbar, the AI, the HTTP API and MCP. Ask the AI to "create a plugin that…" and it writes one for you.'),
       h('div.row', {}, h('button.btn', { onclick: this.actions.plugins.run }, icon('folder-open'), 'Open plugins folder'), h('button.btn', { onclick: () => app.reloadPlugins() }, icon('arrows-clockwise'), 'Reload')),
