@@ -139,6 +139,12 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
         lines.userData.isEdges = true;
         o.add(lines);
       }
+      if (e.show_triangles && !wireframe) {
+        // every triangle edge over the shading, to review a TIN (show_triangles)
+        const tl = new THREE.LineSegments((g.wire ||= new THREE.WireframeGeometry(g.geometry)), new THREE.LineBasicMaterial({ color: '#22313a', transparent: true, opacity: 0.6, clippingPlanes: clipping }));
+        tl.raycast = () => {};
+        o.add(tl);
+      }
     } else if (e.pointcloud) {
       o = cloudObject(e);
     } else if (e.light) {
@@ -451,7 +457,7 @@ export class Viewport {
     const { root, objs } = buildModel(doc, { edges: s.edges, xray: s.xray, wireframe: s.wireframe, clipping: this.clipping, cache: this.geoCache, underlay: (e) => this.underlayObject(e), fat: true, style: s.render_style || 'shaded', dirty: () => (this.dirty = true) });
     this.look.sync(doc);
     // free the GPU buffers of shapes that are gone or changed
-    for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose();
+    for (const c of this.geoCache.live) if (!this.geoCache.used.has(c)) c.geometry.dispose(), c.edges?.dispose(), c.wire?.dispose();
     this.geoCache.live = this.geoCache.used;
     if (root.children.length) this.modelRoot.add(...root.children);
     this.objs = objs;
@@ -568,11 +574,34 @@ export class Viewport {
     this.gizmo.sync(mode, o && !o.userData.underlay ? o : null);
   }
 
+  /** Light up entities and draw a path ([[x, y, z], …]) without changing the selection (a surface's members). */
+  peek(ids = [], path = null, closed = false) {
+    this.peeked = ids.length || path ? { ids, path, closed } : null;
+    this.highlight(this.selection);
+  }
+
+  /** The peek drawn again (after a rebuild): its points as bold dots, its path as a line, over everything. */
+  drawPeek(doc) {
+    if (this.peekGroup) this.overlay.remove(this.peekGroup), this.peekGroup.traverse((o) => o.geometry?.dispose()), (this.peekGroup = null);
+    if (!this.peeked) return;
+    const { ids, path, closed } = this.peeked;
+    const pts = ids.map((id) => doc.entities.find((e) => e.id === id && e.type === 'point')).filter(Boolean);
+    const peek = (this.peekGroup = new THREE.Group());
+    const mat = { color: '#ff4f9a', depthTest: false, transparent: true }; // apart from the gold selection and the point colours
+    if (pts.length) peek.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(...D.worldMatrix(doc, p).elements.slice(12, 15)))), new THREE.PointsMaterial({ ...mat, size: 13, sizeAttenuation: false })));
+    if (path?.length >= 2) peek.add(new (closed ? THREE.LineLoop : THREE.Line)(new THREE.BufferGeometry().setFromPoints(path.map((q) => new THREE.Vector3(...q))), new THREE.LineBasicMaterial(mat)));
+    peek.traverse((o) => (o.renderOrder = 3));
+    this.overlay.add(peek);
+  }
+
   highlight(ids) {
+    const same = ids.length === this.selection?.length && ids.every((x, i) => x === this.selection[i]);
+    if (!same) this.peeked = null; // a new selection ends a peek; a rebuild keeps it
     this.selection = ids;
     queueMicrotask(() => this.syncGizmo());
     const doc = this.store.doc;
-    const lit = new Set();
+    this.drawPeek(doc);
+    const lit = new Set(this.peeked?.ids || []);
     for (const id of ids) for (const d of [id, ...D.descendants(doc, id).map((x) => x.id)]) lit.add(d);
     const cloud = this.modelRoot.children.find((o) => o.isPoints && !o.userData.pointcloud);
     if (cloud) {

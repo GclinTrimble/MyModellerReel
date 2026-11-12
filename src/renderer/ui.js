@@ -959,7 +959,8 @@ export class UI {
         const one = ents.length === 1 ? ents[0] : null;
         const pts = ents.filter((e) => e.type === 'point');
         const extra = [];
-        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
+        const brk = ents.filter((e) => S.isLinework(e) || e.curve);
+        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points${brk.length ? ` and ${brk.length} line${brk.length > 1 ? 's' : ''}` : ''}`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), ...(brk.length ? { breaklines: brk.map((l) => l.id) } : {}), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
         if (one?.derived?.generator === 'corridor') extra.push(a('roadViews'), a('corridorSurface'), a('corridorVolumes'), a('corridorSolids'));
         if (one?.alignment) extra.push({ label: 'Corridor along this alignment…', icon: 'road-horizon', run: () => this.commandDialog('create_corridor', { alignment: one.name }) });
         if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('editSurface'), a('contours'), a('analyze'));
@@ -1643,6 +1644,151 @@ export class UI {
   }
 
   /** An analysis legend (#121) under a coloured surface. */
+  /** Light up parts of a surface in the view without selecting them: entities, and a drawn path (points, voids). */
+  peek(ids = [], path = null, closed = false) {
+    this.app.viewport.peek(ids, path, closed);
+  }
+
+  /**
+   * What a TIN is made of as counts (Points 120 · Breaklines 4 · Voids 1 · Boundary): each opens a list grouped by code
+   * or layer; an item or a group lights up in the view, with its remove button; members are added from the selection.
+   */
+  surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const id = e.id;
+    const p = SW.migrateSurface(e.derived.params);
+    const open = this.surfOpen?.id === id ? this.surfOpen.kind : null;
+    const zAt = SW.surfaceSampler(doc, e).z;
+    const top = TR.surfaceStats(D.worldMesh(doc, e)).max_y;
+    const onGround = (ring) => ring.map(([px, pz]) => [px, zAt(px, pz) ?? top, pz]);
+    const selected = (test) => app.selection.map((i) => app.entity(i)).filter((x) => x && test(x));
+    // the lists, grouped: [{ group, items: [{ label, ids?, path?, closed?, remove? }] }]
+    const groupBy = (list, keyOf) => {
+      const m = new Map();
+      for (const it of list) (m.get(keyOf(it)) || m.set(keyOf(it), []).get(keyOf(it))).push(it);
+      return [...m].sort((a, b) => a[0].localeCompare(b[0])).map(([group, items]) => ({ group, items }));
+    };
+    const pts = SW.surfaceSources(doc, p).points;
+    const kinds = {
+      points: {
+        label: 'Points',
+        count: d.points,
+        groups: [
+          ...groupBy(pts, (q) => S.parseCode(q.point.code).code || 'No code').map((g) => ({ ...g, items: g.items.map((q) => ({ label: q.name, ids: [q.id], remove: [`Leave ${q.name} out of this surface`, () => run('surface_points', { id, action: 'exclude', points: [q.id] })] })) })),
+          ...(p.exclude.length ? [{ group: 'Left out', items: p.exclude.map((pid) => ({ label: app.entity(pid)?.name || pid, ids: [pid], bring: () => run('surface_points', { id, action: 'include', points: [pid] }) })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', () => {
+            const sel = selected(S.isPoint);
+            if (!sel.length) return this.toast('Select survey points first, then Add selected.');
+            run('surface_points', { id, action: 'include', points: sel.map((q) => q.id) });
+          }, 'Add the selected survey points'),
+          btn('New', 'plus', edit('add'), 'Click to add a new point on the surface'),
+          btn('Move', 'hand-pointing', edit('move')),
+          pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null,
+        ],
+      },
+      breaklines: {
+        label: 'Breaklines',
+        count: d.breaklines.length + d.drawn_breaklines,
+        groups: [
+          ...groupBy(d.breaklines.map((l) => app.entity(l.id)).filter(Boolean), (l) => l.tag || 'No layer').map((g) => ({ ...g, items: g.items.map((l) => ({ label: l.name, ids: [l.id], remove: [`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })] })) })),
+          ...(p.lines.length ? [{ group: 'Drawn on the surface', items: p.lines.map((path, i) => ({ label: `Drawn line ${i + 1}`, path, remove: [`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })] })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', async () => {
+            const sel = selected((l) => S.isLinework(l) || l.curve);
+            if (!sel.length) return this.toast('Select lines (linework or curves) first, then Add selected.');
+            for (const l of sel) await run('surface_breaklines', { id, action: 'add', line: l.id });
+          }, 'Use the selected lines as breaklines'),
+          btn('Draw', 'line-segments', edit('breakline')),
+          lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null,
+        ],
+      },
+      voids: {
+        label: 'Voids',
+        count: d.voids.length,
+        groups: d.voids.length ? [{ group: 'Drawn', items: d.voids.map((r, i) => ({ label: `Void ${i + 1} · ${r.length} corners`, path: onGround(r), closed: true, remove: [`Remove void ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })] })) }] : [],
+        actions: [
+          btn('Draw', 'polygon', edit('void'), 'Draw a closed outline: the surface is cut along it'),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'add_void', from: c.id });
+          }, 'A void from the selected closed curve'),
+          d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+      boundary: {
+        label: 'Boundary',
+        count: d.outline ? null : d.boundaries.length || null,
+        groups: [
+          ...(d.outline ? [{ group: 'Outline', items: [{ label: `Outline · ${d.outline.length} corners`, path: onGround(d.outline), closed: true, remove: ['Clear the outline', () => run('surface_boundary', { id, action: 'clear' })] }] }] : []),
+          ...(d.boundaries.length ? [{ group: 'Boundary lines', items: d.boundaries.map((b) => ({ label: `${b.name} (${b.kind})`, ids: [b.id] })) }] : []),
+        ],
+        actions: [
+          btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'set', from: c.id });
+          }, 'The outline from the selected closed curve'),
+          d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+    };
+    const toggleKind = (k) => {
+      this.surfOpen = open === k ? null : { id, kind: k };
+      if (open === k) this.peek();
+      redraw();
+    };
+    const redraw = () => box.replaceWith(this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }));
+    const LIMIT = 200; // a group of thousands of points lists its first ones
+    const row = (it) =>
+      h(
+        'div.surf-item',
+        { role: 'button', tabindex: 0, title: 'Show it in the view', onclick: () => this.peek(it.ids || [], it.path, it.closed), onkeydown: (ev) => ev.key === 'Enter' && this.peek(it.ids || [], it.path, it.closed) },
+        h('span.grow', {}, it.label),
+        it.remove ? x(it.remove[0], (ev) => (ev.stopPropagation(), it.remove[1]())) : null,
+        it.bring ? h('button.btn', { onclick: (ev) => (ev.stopPropagation(), it.bring()) }, 'Bring back') : null,
+      );
+    const k = open && kinds[open];
+    const box = h(
+      'div.surf-members',
+      {},
+      h(
+        'div.surf-counts',
+        { role: 'group', 'aria-label': 'What the surface is made of' },
+        ...Object.entries(kinds).map(([key, v]) => h('button.surf-count', { 'aria-expanded': String(open === key), onclick: () => toggleKind(key) }, h('span', {}, v.label), h('b', {}, v.count === null ? (key === 'boundary' && d.outline ? '✓' : '–') : String(v.count)), icon(open === key ? 'caret-up' : 'caret-down'))),
+      ),
+      k
+        ? h(
+            'div.surf-pop',
+            { role: 'region', 'aria-label': k.label },
+            ...(k.groups.length
+              ? k.groups.map((g, _, all, listed = this.surfOpen.groups?.has(g.group) || (all.length === 1 && g.items.length <= 12)) =>
+                  h(
+                    'div.surf-group',
+                    {},
+                    h(
+                      'div.surf-group-head',
+                      {},
+                      h('button.icon-btn', { 'aria-expanded': String(listed), 'aria-label': `List ${g.group}`, title: 'List them', onclick: () => (((this.surfOpen.groups ||= new Set()).has(g.group) ? this.surfOpen.groups.delete(g.group) : this.surfOpen.groups.add(g.group)), redraw()) }, icon(listed ? 'caret-down' : 'caret-right')),
+                      h('span.grow', { role: 'button', tabindex: 0, title: 'Show the whole group in the view', onclick: () => this.peek(g.items.flatMap((it) => it.ids || []), g.items.length === 1 ? g.items[0].path : null, g.items[0]?.closed) }, g.group),
+                      h('span.muted', {}, String(g.items.length)),
+                    ),
+                    ...(listed ? [...g.items.slice(0, LIMIT).map(row), g.items.length > LIMIT ? h('div.small.muted', {}, `and ${g.items.length - LIMIT} more`) : null] : []),
+                  ),
+                )
+              : [h('div.small.muted', {}, `No ${k.label.toLowerCase()} yet.`)]),
+            h('div.row.wrap', {}, ...k.actions),
+          )
+        : null,
+    );
+    return box;
+  }
+
   /** A TIN's definition (#240): what it is made of, each part with its own remove / show button, and its options. */
   surfaceDefinitionCard(e, run) {
     const app = this.app;
@@ -1665,19 +1811,9 @@ export class UI {
       'div.surface-def',
       {},
       h('div.small', {}, `Area ${fmt(st.area_2d)} m² (3D ${fmt(st.area_3d)}) · elevation ${fmt(st.min_y + base)} to ${fmt(st.max_y + base)}`),
-      head(`Points · ${d.points} (${d.point_source === 'all' ? 'every survey point' : d.point_source === 'codes' ? 'by code' : 'chosen'})`),
-      h('div.row.wrap', {}, btn('Add', 'plus', edit('add')), btn('Move', 'hand-pointing', edit('move')), pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null),
-      ...d.excluded.map((n) => item(`Left out: ${n}`, h('button.btn', { onclick: () => run('surface_points', { id, action: 'include', points: [n] }) }, 'Bring back'))),
-      head(`Breaklines · ${d.breaklines.length + d.drawn_breaklines}`),
-      ...d.breaklines.map((l) => item(l.name, x(`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })))),
-      ...Array.from({ length: d.drawn_breaklines }, (_, i) => item(`Drawn line ${i + 1}`, x(`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })))),
-      h('div.row.wrap', {}, btn('Draw', 'line-segments', edit('breakline')), lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null),
-      head(`Outline · ${d.outline ? `${d.outline.length} corners` : 'none'}${d.boundaries.length ? ` · ${d.boundaries.length} boundary line${d.boundaries.length > 1 ? 's' : ''}` : ''}`),
-      h('div.row.wrap', {}, btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')), d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null, d.outline ? btn('Clear', 'selection-slash', () => run('surface_boundary', { id, action: 'clear' })) : null),
-      head(`Holes · ${d.voids.length}`),
-      ...d.voids.map((r, i) => item(`Hole ${i + 1} · ${r.length} corners`, x(`Remove hole ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })))),
-      h('div.row.wrap', {}, btn('Draw', 'polygon', edit('void')), d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null),
+      this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }),
       head('Triangles'),
+      h('div.row.wrap', {}, btn(e.show_triangles ? 'Hide triangles' : 'Show triangles', 'triangle', () => run('show_triangles', { ids: [id], show: !e.show_triangles }), 'Draw the triangle edges over the surface'), btn('Offset…', 'stack', () => this.commandDialog('offset_surfaces', { surface: e.name, distance: -0.3, count: 1 }), 'Offset surfaces or layers to another surface')),
       h('label.row.small', {}, h('span.grow', {}, 'Longest side (m, 0: any)'), h('input', { type: 'number', min: 0, step: 1, value: d.max_edge, style: { width: '72px' }, 'aria-label': 'Longest triangle side', onchange: (ev) => run('set_surface_sources', { id, max_edge: +ev.target.value }) })),
       d.swaps.length || d.deleted_triangles ? item(`${d.swaps.length} swapped, ${d.deleted_triangles} deleted by hand`, h('button.btn', { onclick: () => run('edit_triangles', { id, action: 'restore' }) }, icon('arrow-counter-clockwise'), 'Restore')) : null,
       h('div.row.wrap', {}, btn('Swap an edge', 'triangle', edit('swap'))),

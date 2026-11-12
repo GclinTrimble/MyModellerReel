@@ -1185,6 +1185,48 @@ const PAGES = {
     await run('set_camera', { projection: 'perspective' });
     await js("window.mmr.app.tools.set('select'); return 1;");
   },
+  async 'review-and-layer-a-surface'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    const pts = [];
+    let k = 1;
+    for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) pts.push([k++, (1000 + i * 4 + (j % 2) * 0.7).toFixed(3), (2000 + j * 4 + (i % 3) * 0.5).toFixed(3), (100 + 2 * Math.sin(i / 3) + 1.5 * Math.cos(j / 4)).toFixed(3), 'GND'].join(','));
+    for (let i = 0; i <= 8; i++) pts.push([`K${i}`, (1002 + i * 4.5).toFixed(3), '2019.5', (100.5 + i * 0.2).toFixed(3), 'KERB'].join(','));
+    await run('import_points', { text: pts.join('\n'), format: 'PNEZD' });
+    await run('add_breakline', { points: Array.from({ length: 9 }, (_, i) => `K${i}`), name: 'Kerb line', tag: 'Kerbs' });
+    const s = await run('create_surface', { name: 'Existing ground' });
+    await run('show_triangles', { ids: [s.id] });
+    await camera([20.5, 38, 22], [20.5, -1, -20.3]);
+    await js(`window.mmr.app.select(['${s.id}']); window.mmr.app.ui.show('entity'); return 1;`);
+    await shot('Show triangles: every edge of the TIN over its shading');
+    // the clicks run after this command, so the rebuild it causes does not clear the highlight
+    const click = (sel, text) => js(`setTimeout(() => [...document.querySelectorAll('${sel}')].find((x) => x.textContent.includes('${text}'))?.click(), 400); return 1;`);
+    const panelTo = () => js("document.querySelector('.surf-members')?.scrollIntoView({ block: 'start' }); return 1;");
+    await click('.surf-count', 'Points');
+    await wait(600);
+    await click('.surf-group-head span', 'KERB');
+    await wait(600);
+    await panelTo();
+    await shot('Points 130, by code: click KERB and its points light up');
+    await run('surface_boundary', { id: s.id, action: 'add_void', points: [[8, -14], [17, -11], [22, -20], [14, -27], [7, -22]] });
+    await click('.surf-count', 'Voids');
+    await wait(600);
+    await click('.surf-item', 'Void 1');
+    await wait(600);
+    await panelTo();
+    await shot('A void is cut along the outline you draw, at the ground height');
+    await run('offset_surfaces', { surface: s.id, distance: -1.5, count: 2, color: '#b58a57' });
+    await camera([62, 8, 12], [20.5, -2.5, -20.3]);
+    await js(`window.mmr.app.select(['${s.id}']); return 1;`);
+    await shot('Offset… two layers 1.5 m apart under the ground, live');
+    await camera([20.5, 38, 22], [20.5, -1, -20.3]);
+    await run('move', { ids: [s.id], by: [5, 0, 0] }).catch((e) => js(`window.mmr.app.ui.toast(${JSON.stringify(e.message.replace(/^move: /, ''))}, 'danger'); return 1;`));
+    await wait(300);
+    await js("document.querySelectorAll('.toast').forEach((t, i, all) => i < all.length - 1 && t.remove()); window.mmr.app.viewport.render(); return 1;");
+    await wait(2500);
+    const file = path.join(dir, `${String(++n).padStart(2, '0')}.png`);
+    fs.writeFileSync(file, await req('GET', '/api/window-screenshot'));
+  },
   async 'learn-step-by-step'() {
     await fresh();
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
