@@ -3608,7 +3608,7 @@ function registerCore(reg, ctx) {
         ? r.installed.map((x) => `${x.name} is installed${x.models.length ? ` with ${x.models.join(', ')}` : ''} but not running. ${x.start}`).join(' ')
         : r.huggingface.length
         ? 'Models are downloaded from Hugging Face, but no server is running them: load one in LM Studio or Ollama and detect again, or download_ai_model gets the built-in model.'
-        : 'No local AI server found. download_ai_model gets the built-in model (one download, no other app); or use Claude or an OpenAI-compatible API key.';
+        : 'No local AI server found. The built-in model needs none (Provider: Built-in model, one download); or use Claude or an OpenAI-compatible API key.';
     return r;
   });
   // local AI setup (#224): the steps the setup card shows, for the API and MCP too
@@ -3623,11 +3623,16 @@ function registerCore(reg, ctx) {
     s.next = !s.local ? 'ready' : s.local === 'builtin' ? (s.provider === 'builtin' && s.builtin.has_model ? 'ready' : 'download') : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'pull' : 'ready';
     return s;
   });
-  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-4b, about 2.5 GB, once; a stopped download resumes) and use it for Plumb: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model: qwen3-4b (default), qwen3-8b, qwen3.5-4b, qwen3.5-9b, llama3.1-8b, ministral-8b') }), async (a) => {
+  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-4b, about 2.5 GB, once; a stopped download resumes; the file is checked against its SHA-256) and use it for Plumb: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model id from list_ai_models: qwen3-4b (default), ministral3-3b, ministral3-8b, ministral3-14b') }), async (a) => {
     const r = await setupIo()('download', a.model);
     await ctx.io.setSettings?.({ ai: { provider: 'builtin', builtin: { model: r.model } } });
     return r;
   });
+  def('ai', 'list_ai_models', 'The models Plumb can run itself (all Apache 2.0): id, size, a short note, whether each is downloaded, whether this PC has the memory it wants, and which one is in use.', obj({}), async () => {
+    const s = await setupIo()('status');
+    return { in_use: s.provider === 'builtin' ? s.builtin.model : null, models: s.builtin.models };
+  });
+  def('ai', 'delete_ai_model', 'Delete a downloaded built-in model from this PC to free its disk space (download_ai_model gets it back).', obj({ model: str('built-in model id from list_ai_models') }, ['model']), (a) => setupIo()('delete', a.model));
   def('ai', 'pause_ai_download', 'Stop the model download in progress (download_ai_model or pull_ai_model); the built-in model resumes where it stopped next time.', obj({}), () => setupIo()('cancel'));
   def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
   def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
