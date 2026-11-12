@@ -45,6 +45,7 @@ import * as Assets from './assets.js';
 import * as F from './formats.js';
 import * as Units from './units.js';
 import * as Clip from './clipboard.js';
+import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
 import './landxml.js';
@@ -128,6 +129,7 @@ const bool = (d) => ({ type: 'boolean', description: d });
 const ids = { type: 'array', items: { type: 'string' }, description: 'Entity ids or names. Default: current selection.' };
 const id = str('Entity id or name');
 const obj = (properties, required = []) => ({ type: 'object', properties, required });
+const TIES = { type: 'array', items: obj({ vertex: num('vertex index'), point: str('survey point name or id') }, ['vertex', 'point']), description: 'vertices that stay on survey points: [{ vertex, point }]' };
 const common = {
   name: str('Display name'),
   position: v3('Where the base centre goes, world metres [x,y,z]. Default [0,0,0]'),
@@ -177,7 +179,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc), USD.syncReferences(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), TI.syncTies(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc), USD.syncReferences(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -2315,13 +2317,14 @@ function registerCore(reg, ctx) {
   reg.commands.get('sweep_linework').compound = true;
 
   // ---------------------------------------------------------------- curves, sweeps, profiles
-  def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
+  def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag, ties: TIES }, ['points']), (a) => {
     const doc = ctx.doc;
     const curve = { kind: a.kind || 'polyline', points: a.points, closed: !!a.closed };
     C.checkCurve(curve);
     const { mesh, origin } = G.recenter({ v: a.points, f: [] });
     const count = doc.entities.filter((e) => e.type === 'curve').length + 1;
     const e = D.addEntity(doc, { type: 'curve', name: a.name || `Curve ${count}`, curve: { ...curve, points: mesh.v }, position: D.round3(origin), tag: a.tag, material: { color: a.color || '#2f6f86' } });
+    TI.addTies(doc, e, a.ties);
     ctx.selection.set([e.id]);
     return summary(doc, e);
   }, true);
@@ -2345,7 +2348,7 @@ function registerCore(reg, ctx) {
     return summary(doc, e);
   }, true);
 
-  def('edit', 'set_curve', 'Change a curve: new world points, kind or closed. Sweeps and motion along it follow.', obj({ id, points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline | spline | bezier', C.KINDS), closed: bool('loop') }, ['id']), (a) => {
+  def('edit', 'set_curve', 'Change a curve: new world points, kind or closed. Sweeps and motion along it follow.', obj({ id, points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline | spline | bezier', C.KINDS), closed: bool('loop'), ties: TIES }, ['id']), (a) => {
     const doc = ctx.doc;
     const [e] = D.resolve(doc, a.id);
     if (!e.curve) throw new Error(`${e.name} is not a curve.`);
@@ -2354,8 +2357,21 @@ function registerCore(reg, ctx) {
     const next = { kind: a.kind ?? e.curve.kind, points, closed: a.closed ?? !!e.curve.closed };
     C.checkCurve(next);
     e.curve = next;
+    TI.addTies(doc, e, a.ties);
     return summary(doc, e);
   }, true);
+
+  // Point ties: a vertex placed on a survey point stays on it when the point moves (TI.syncTies after every change).
+  def('edit', 'tie_vertex', 'Tie a vertex of a curve (or shape) to a survey point: the vertex goes onto the point and follows it when the point moves or is re-imported; breaklines and surfaces built from the curve follow too. Moving the vertex by hand (or the whole curve without its points) unties it; deleting the point leaves the vertex where it is.', obj({ id, vertex: num('vertex index (0 first)'), point: str('survey point name or id') }, ['id', 'vertex', 'point']), (a) => {
+    const [e] = D.resolve(ctx.doc, a.id);
+    TI.addTies(ctx.doc, e, [{ vertex: a.vertex, point: a.point }]);
+    return { id: e.id, ties: TI.listTies(ctx.doc, e) };
+  }, true);
+  def('edit', 'untie_vertex', 'Untie a vertex from its survey point (without vertex: every tie of the curve). The vertex stays where it is.', obj({ id, vertex: num('vertex index; omit for all') }, ['id']), (a) => {
+    const [e] = D.resolve(ctx.doc, a.id);
+    return { id: e.id, untied: TI.untie(e, a.vertex) };
+  }, true);
+  def('edit', 'list_ties', 'Which curve vertices are tied to which survey points (the whole model, or one curve).', obj({ id: str('a curve id / name (default: all)') }), (a) => ({ ties: TI.listTies(ctx.doc, a.id ? D.resolve(ctx.doc, a.id)[0] : null) }));
 
   def('parametric', 'list_profiles', 'Profiles for sweep: built-in parametric ones (pipe, kerb, gutter, i_beam, retaining_wall…) with their parameters and defaults, plus this model\'s own.', obj({}), () => P.listProfiles(ctx.doc));
 
@@ -3718,10 +3734,10 @@ function registerCore(reg, ctx) {
     return ctx.view.walkTo(a.position, a.look_at, a.eye ?? 1.6);
   });
 
-  def('view', 'set_snaps', 'Which snaps the drawing tools use (#180): endpoint, midpoint, face, axis (along x / y / z from the last point), grid, drawing (PDF lines, when snap_underlays is on), cloud (point cloud points). Each true or false; the rest stay as they are.', obj(Object.fromEntries(['endpoint', 'midpoint', 'face', 'axis', 'grid', 'drawing', 'cloud'].map((k) => [k, bool(`snap to ${k}`)]))), (a) => {
+  def('view', 'set_snaps', 'Which snaps the drawing tools use (#180): endpoint, midpoint, face, axis (along x / y / z from the last point), grid, drawing (PDF lines, when snap_underlays is on), cloud (point cloud points), survey (survey points), tie (a vertex snapped to a survey point stays tied to it; false: snap without tying). Each true or false; the rest stay as they are.', obj(Object.fromEntries(['endpoint', 'midpoint', 'face', 'axis', 'grid', 'drawing', 'cloud', 'survey', 'tie'].map((k) => [k, bool(`snap to ${k}`)]))), (a) => {
     const s = ctx.doc.settings;
     s.snaps = { ...(s.snaps || {}), ...a };
-    return { snaps: { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, ...s.snaps } };
+    return { snaps: { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, survey: true, tie: true, ...s.snaps } };
   }, true);
   def('view', 'set_gizmo', 'On-canvas handles on the selection: drag arrows (move), rings (rotate) or boxes (scale). off hides them.', obj({ mode: str('move | rotate | scale | off', ['move', 'rotate', 'scale', 'off']) }, ['mode']), (a) => {
     ctx.doc.settings.gizmo = a.mode === 'off' ? null : a.mode;
