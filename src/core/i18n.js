@@ -7,7 +7,7 @@ const FR = {
   // menus
   File: 'Fichier', Edit: 'Édition', Arrange: 'Disposer', View: 'Affichage', Tools: 'Outils', Animate: 'Animer', Site: 'Site', Drawings: 'Plans', AI: 'IA', Help: 'Aide',
   // dock tabs
-  Outliner: 'Structure', Entity: 'Entité', Materials: 'Matières', Scenes: 'Scènes', Library: 'Biblio', Survey: 'Topo', Settings: 'Réglages',
+  Outliner: 'Structure', Entity: 'Entité', Materials: 'Matières', Scenes: 'Scènes', Library: 'Biblio', Survey: 'Topo', Settings: 'Réglages', Tool: 'Outil',
   // tool groups and tools
   Draw: 'Dessiner', Modify: 'Modifier', Construct: 'Construire', Drafting: 'Dessin 2D', Camera: 'Caméra', Shape: 'Forme', Parametric: 'Paramétrique', Recipes: 'Recettes', Annotate: 'Annoter', Lights: 'Lumières', Style: 'Style', Render: 'Rendu', Depth: 'Avancé',
   Select: 'Sélection', Line: 'Ligne', Rectangle: 'Rectangle', Circle: 'Cercle', Polygon: 'Polygone', 'Push/Pull': 'Pousser/Tirer', Move: 'Déplacer', Rotate: 'Faire pivoter', Scale: 'Échelle', 'Tape Measure': 'Mètre', 'Paint Bucket': 'Pot de peinture', Eraser: 'Gomme', 'Section Plane': 'Plan de coupe', Orbit: 'Orbite', Pan: 'Panoramique', 'Zoom window': 'Fenêtre de zoom',

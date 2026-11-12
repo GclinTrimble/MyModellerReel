@@ -533,6 +533,15 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .code-item .ph { color: var(--my-text-faint); }
 .code-item:hover, .code-item[aria-selected='true'] { background: var(--my-accent-tint); }
 .code-empty, .code-keys { font-size: var(--my-text-xs); color: var(--my-text-faint); }
+/* pick first (#234): the cursor tip with its typed-value box; the Tool tab (#235) */
+.pick-tip { position: fixed; z-index: 55; left: -999px; top: -999px; display: flex; flex-direction: column; gap: var(--my-space-1); max-width: 22rem; padding: var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); box-shadow: var(--my-shadow-2); font-size: var(--my-text-xs); color: var(--my-text); }
+.pick-ins { display: flex; gap: var(--my-space-1); align-items: center; }
+.pick-in { width: 5.5rem; font-family: var(--my-font-mono); font-size: var(--my-text-xs); }
+.pick-msg { color: var(--my-danger-text); }
+.pick-msg:empty { display: none; }
+.pick-prompt { margin: 0; color: var(--my-text-muted); font-size: var(--my-text-sm); }
+.tool-panel h3 { display: flex; align-items: center; gap: var(--my-space-1); margin: 0; }
+
 /* #215: point chips, short number boxes with their unit, modes, a field marked while it is wrong */
 .form-modes { align-self: stretch; display: flex; }
 .form-modes .seg { flex: 1; padding: var(--my-space-1) var(--my-space-3); }

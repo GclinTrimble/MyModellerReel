@@ -9,6 +9,7 @@ import * as L from '../core/layers.js';
 import { LIBRARY as TX_LIBRARY } from '../core/textures.js';
 import { fillet as fillet2d } from '../core/drafting.js';
 import { formatLength } from '../core/units.js';
+import { parseLength } from '../core/fields.js';
 import * as MD from '../core/modeling.js';
 import { floorAt, blocked } from './scale.js';
 
@@ -81,13 +82,7 @@ export const TOOLS = [
   { id: 'pan', label: 'Pan (right mouse)', key: 'H', icon: 'hand', group: 'camera' },
 ];
 
-/** "1.5" → 1.5 m · "150mm" · "15cm" · "3'" · '6"'. Returns metres. */
-export function parseLength(s) {
-  const m = String(s).trim().match(/^(-?[\d.]+)\s*(mm|cm|m|km|'|"|ft|in)?$/i);
-  if (!m) return NaN;
-  const f = { mm: 0.001, cm: 0.01, m: 1, km: 1000, "'": 0.3048, ft: 0.3048, '"': 0.0254, in: 0.0254 }[(m[2] || 'm').toLowerCase()];
-  return parseFloat(m[1]) * f;
-}
+export { parseLength } from '../core/fields.js';
 let display = {};
 /** The model's display units (#52): set by the app when the document changes. */
 export const setDisplay = (d) => (display = d);
@@ -180,13 +175,18 @@ export class Tools {
       this.set('pick');
     });
   }
-  /** Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). */
-  pickPoints(count = 1, hint = '') {
+  /**
+   * Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). A pick-first
+   * session (#234) hears each move and point, can refuse a point or an early Enter, and makes Esc step back.
+   */
+  pickPoints(count = 1, hint = '', session = null) {
     const back = this.id === 'pick' ? 'select' : this.id;
     return new Promise((resolve) => {
       this.pickCount = count;
-      this.pickHint = `${hint || 'Click a point.'}${count === 1 ? '' : ' Enter when done, Esc to stop.'}`;
+      this.pickHint = `${hint || 'Click a point.'}${count === 1 || session ? '' : ' Enter when done, Esc to stop.'}`;
+      this.pickSession = session;
       this.pickDone = (pts) => {
+        this.pickSession = null;
         this.clear();
         setTimeout(() => this.set(back));
         resolve(pts);
@@ -1806,13 +1806,21 @@ class PickTool {
     this.t = t;
     this.pts = [];
     this.hint = t.pickHint || 'Click a point.';
+    this.s = t.pickSession; // pick first (#234)
   }
   busy() {
     return true;
   }
   move(ev) {
     const inf = this.t.infer(ev, { from: this.pts.at(-1) });
-    if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT));
+    this.s?.hover(inf.point, ev);
+    if (this.pts.length) this.draw(inf.point);
+  }
+  /** The rubber band: the points so far, to the cursor. */
+  draw(p) {
+    this.t.vp.overlay.clear();
+    this.t.vp.dirty = true;
+    if (this.pts.length) this.t.lines(p ? [...this.pts, p] : this.pts, ACCENT);
   }
   down(ev) {
     if (this.t.pickWhat === 'entity') {
@@ -1823,16 +1831,37 @@ class PickTool {
       this.pts.push(id);
       return this.finish();
     }
-    this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
+    const p = this.t.infer(ev, { from: this.pts.at(-1) }).point.clone();
+    // picking first: a survey point under the cursor is taken at its position (and so by its name)
+    const sp = this.s && this.t.vp.pickPoint();
+    const at = sp && this.t.app.store.doc.entities.find((e) => e.id === sp.entityId)?.position;
+    this.add(at ? V(...at) : p);
+  }
+  /** A point clicked or typed. */
+  add(p) {
+    if (this.s && !this.s.accept(p, this.pts.length)) return;
+    this.pts.push(p);
+    this.s?.changed(this.pts);
+    this.draw();
     if (this.t.pickCount && this.pts.length >= this.t.pickCount) this.finish();
   }
-  finish() {
+  /** Esc while picking first: the last point goes, then the picking stops. */
+  key(ev) {
+    if (ev.key !== 'Escape' || !this.s) return false;
+    if (!this.pts.length) return this.cancel(), true;
+    this.pts.pop();
+    this.s.changed(this.pts);
+    this.draw();
+    return true;
+  }
+  finish(force = false) {
+    if (!force && this.s && !this.s.enough(this.pts)) return this.s.changed(this.pts);
     const done = this.t.pickDone;
     this.t.pickDone = null;
     done?.(this.pts);
   }
   cancel() {
-    this.finish();
+    this.finish(true);
   }
 }
 
