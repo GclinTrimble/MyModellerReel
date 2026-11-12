@@ -398,6 +398,32 @@ const PAGES = {
     await none();
     await shot('Site › Drape: the pavilion sits on the platform');
   },
+  async 'import-survey-points'() {
+    await fresh();
+    await run('import_points', { path: `${SAMPLES}/site-points.csv` });
+    await run('set_style', { point_labels: 'code' });
+    await camera([75, 45, 30], [28, 0, -24]);
+    await js(`window.mmr.app.ui.importPointsDialog(${JSON.stringify(`${SAMPLES}/utilities.csv`)}); return 1;`);
+    await wait(800);
+    await shot('Site › Import points: the file split into columns, a role per column');
+    // the crew column is not worth keeping
+    await js("const s = document.querySelector('#modal select[aria-label=\"Column 9\"]'); s.value = 'ignore'; s.dispatchEvent(new Event('change')); return 1;");
+    await wait(500);
+    await js("document.querySelector('#modal .points-wizard').scrollLeft = 9999; return 1;");
+    await wait(500);
+    await wait(500);
+    await shot('Pick what each column holds: Diameter, Material and Inspected stay as attributes, Crew is ignored');
+    await js("document.querySelector('#modal footer .btn.primary').click(); return 1;");
+    await wait(800);
+    await run('select', { ids: ['U1'] });
+    await panel('entity');
+    await shot('Each point keeps its attributes: the Entity panel shows and edits them');
+    await clean();
+    await run('import', { path: `${SAMPLES}/field.jxl` });
+    await run('zoom_extents', {});
+    await none();
+    await shot('JobXML and LandXML points come in through Import points too, with codes and attributes');
+  },
   async 'bring-in-field-and-gis-data'() {
     await fresh();
     await run('import', { path: `${SAMPLES}/field.jxl` });

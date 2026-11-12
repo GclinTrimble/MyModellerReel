@@ -1236,23 +1236,48 @@ function registerCore(reg, ctx) {
     return { edited: pts.length, points: pts.slice(0, 50).map(fmtPt) };
   }, true);
 
-  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text): format gives the column order (PNEZD, PENZD, NEZ…; P name, N northing, E easting, Z elevation, D code), header lines are skipped, units convert to metres. Coded points are processed through the feature library.', obj({ path: str('absolute path of a .csv / .txt file'), text: str('or: the file contents'), format: str('column order, default PNEZD'), delimiter: str('default: detected'), units: str('length unit of the file (default: the project\'s)', Object.keys(S.UNITS)), grid: bool('coordinates are in the site grid') }), async (a) => {
+  const pointText = async (a) => {
+    if (a.text) return a.text;
+    if (!a.path) throw new Error('Give path or text.');
+    if (!ctx.io?.readText) throw new Error('Reading files needs the desktop app; pass text instead.');
+    return ctx.io.readText(a.path);
+  };
+  const tableArgs = {
+    path: str('absolute path of a .csv / .txt file'),
+    text: str('or: the file contents'),
+    delimiter: str('comma, tab, semicolon, space, or the character itself (default: detected)'),
+    header: bool('the first line is column labels (default: detected)'),
+    columns: { type: 'array', description: `what each column holds, in order: a role (${S.COLUMN_ROLES.join(', ')}) or { "role": "attr", "name": "Diameter" } for an attribute kept on each point. Default: matched from the header labels, else P N E Z code`, items: { description: 'a role, or { role, name }' } },
+    format: str('or: the column order as letters, e.g. PNEZD, PENZD, NEZ'),
+    units: str('length unit of the file (default: the project\'s)', Object.keys(S.UNITS)),
+  };
+  const parseText = (text, a, doc) => {
+    const o = { delimiter: a.delimiter || 'auto', header: a.header, units: a.units || S.geo(doc).units };
+    return a.format && !a.columns ? S.parsePoints(text, { ...o, format: a.format }) : S.parseTable(text, { ...o, columns: a.columns });
+  };
+
+  def('terrain', 'preview_points', 'Look at a CSV / TXT points file before importing it: how its lines split into columns, whether the first line is a header, the column roles guessed (or given) and the first points as they would come in. Changes nothing; pass the same options to import_points.', obj({ ...tableArgs, rows: num('sample lines, default 20') }), async (a) => {
+    const text = await pointText(a);
+    const r = parseText(text, a, ctx.doc);
+    const lines = S.splitTable(text, r.delimiter).rows;
+    const n = a.rows || 20;
+    return { delimiter: r.delimiter, header: r.header, columns: r.columns, labels: [...r.labels], lines: lines.length, sample: lines.slice(0, n + (r.header ? 1 : 0)).map((c) => [...c]), points: r.rows.length, first_points: r.rows.slice(0, 5), skipped_lines: r.skipped.slice(0, 50) };
+  });
+
+  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text). delimiter and header say how lines split; columns says what each column holds (name, e, n, z, code, desc, attr with a name, ignore): attribute columns are kept on every point. Without columns, header labels are matched, else format gives the order (default PNEZD). Units convert to metres. Coded points are processed through the feature library. On an unknown file, call preview_points first.', obj({ ...tableArgs, grid: bool('coordinates are in the site grid') }), async (a) => {
     const doc = ctx.doc;
-    let text = a.text;
-    if (!text) {
-      if (!a.path) throw new Error('Give path or text.');
-      if (!ctx.io?.readText) throw new Error('Reading files needs the desktop app; pass text instead.');
-      text = await ctx.io.readText(a.path);
-    }
-    const { rows, skipped } = S.parsePoints(text, { format: a.format || 'PNEZD', delimiter: a.delimiter, units: a.units || S.geo(doc).units });
-    if (!rows.length) throw new Error('No points found: check the format (column order) and delimiter.');
+    const { rows, skipped } = parseText(await pointText(a), a, doc);
+    if (!rows.length) throw new Error('No points found: check the delimiter and which columns hold northing and easting.');
     const made = [];
     const renamed = [];
+    const taken = new Set(S.points(doc).map((p) => p.name));
     for (const r of rows) {
       const c = a.grid ? S.gridToProject(doc, r) : r;
       let name = r.name;
-      if (name !== undefined && doc.entities.some((x) => S.isPoint(x) && x.name === name)) (renamed.push(name), (name = undefined));
-      made.push(S.addPoint(doc, { ...c, name, code: r.code, desc: r.desc }));
+      if (name !== undefined && taken.has(name)) (renamed.push(name), (name = undefined));
+      const p = S.addPoint(doc, { ...c, name, code: r.code, desc: r.desc, attrs: r.attrs }, taken);
+      taken.add(p.name);
+      made.push(p);
     }
     const codes = afterPoints();
     return { imported: made.length, skipped_lines: skipped, renamed_duplicates: renamed, base: S.geo(doc).base, ...(codes ? { lines: codes.lines, objects: codes.objects, warnings: codes.warnings.slice(0, 20) } : {}) };
