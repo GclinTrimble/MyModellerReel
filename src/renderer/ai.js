@@ -3,7 +3,7 @@
 // profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
 import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
-import { h, icon } from './ui.js';
+import { h, icon, infoTip } from './ui.js';
 import { sketchPad } from './sketch.js';
 
 /** A picture made small enough for a model to read cheaply (longest side 1568 px), as a data URL. */
@@ -186,8 +186,8 @@ export class Assistant {
   }
 
   /**
-   * Local AI setup (#224, #238): one step, download the assistant model the app runs itself; or, for Ollama users,
-   * start it and pull its model. The step done is ticked. quiet: nothing shows when all is ready (the empty chat).
+   * Local AI setup (#224, #238, #255): pick the model the app runs itself from a list, download it once; or, for
+   * Ollama users, start it and pull its model. The step done is ticked. quiet: nothing shows when all is ready (the empty chat).
    */
   setupCard({ quiet = false } = {}) {
     const app = this.app;
@@ -208,7 +208,11 @@ export class Assistant {
       }
       box.hidden = false;
       const builtin = s.local === 'builtin';
-      const name = builtin ? s.builtin.label : s.model;
+      const models = s.builtin?.models || [];
+      const m = models.find((x) => x.id === s.builtin?.model) || models[0];
+      const name = builtin ? m.label : s.model;
+      const refresh = async () => ((app.settings = await window.native.invoke('settings:get')), this.renderHead(), draw());
+      const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
       const step = (key, done, title, text, btn) =>
         h(`div.setup-step${done ? '.done' : s.next === key ? '.now' : ''}`, {}, icon(done ? 'check-circle' : 'circle', done), h('div.grow', {}, h('strong', {}, title), text ? h('div.small.muted', {}, text) : null), !done && s.next === key ? btn : null);
       const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${name}` }, h('i'));
@@ -224,23 +228,50 @@ export class Assistant {
               const pct = p.total ? Math.round((p.completed / p.total) * 100) : 0;
               bar.firstChild.style.width = `${pct}%`;
               bar.setAttribute('aria-valuenow', pct);
-              note.textContent = `${p.status}${p.total ? ` · ${pct}% of ${(p.total / 1e9).toFixed(1)} GB` : ''}`;
+              note.textContent = p.status === 'checking' ? 'Checking the file…' : `Downloading · ${pct}% of ${gb(p.total || 0)}`;
             };
             const r = await run(command, args);
             this.onPull = null;
             if (r) {
-              if (builtin) (app.settings = await window.native.invoke('settings:get')), this.renderHead();
               app.ui.toast(`${name} is downloaded.`);
+              if (builtin) return refresh();
             }
             draw();
           },
         }, icon('download-simple'), 'Download');
       box.replaceChildren(
-        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `Plumb is ready (${name} on this PC)` : 'Set up Plumb on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? 'Plumb is ready' : 'Set up Plumb on this PC'), builtin ? infoTip(['Runs on this PC', 'Plumb runs a free AI model on your PC, offline: nothing you type leaves it.', 'Download once. A paused download resumes, and the file is checked before it is used. Every model listed is Apache 2.0.']) : null, h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
         !s.local
           ? h('p.small.muted', {}, 'Plumb uses an online model (Settings › AI).')
           : builtin
-            ? h('div.setup-steps', {}, step('download', s.next === 'ready', 'Download the assistant model', `${name}, about ${(s.builtin.bytes / 1e9).toFixed(1)} GB, once. It then runs on this PC, offline: nothing you type leaves it. A paused download resumes.`, download('download_ai_model', { model: s.builtin.model })))
+            ? h(
+                'div.model-pick',
+                {},
+                h(
+                  'div.row',
+                  {},
+                  h('select', { 'aria-label': 'Assistant model', onchange: async (e) => (await run('use_ai_model', { provider: 'builtin', model: e.target.value })) && refresh() }, models.map((x) => h('option', { value: x.id, selected: x.id === m.id }, `${x.label} · ${gb(x.bytes)}${x.recommended ? ' · recommended' : ''}${x.downloaded ? '  ✓' : ''}`))),
+                  infoTip([m.label, m.about, `${m.note}. Wants about ${m.ram} GB of memory.`], `About ${m.label}`),
+                ),
+                h(
+                  'div.row',
+                  {},
+                  m.downloaded && s.provider === 'builtin'
+                    ? h('span.model-state', {}, icon('check-circle', true), 'In use')
+                    : m.downloaded
+                      ? h('button.btn.sm.primary', { onclick: async () => (await run('use_ai_model', { provider: 'builtin', model: m.id })) && refresh() }, icon('check'), 'Use it')
+                      : download('download_ai_model', { model: m.id }),
+                  h('span.grow'),
+                  m.downloaded
+                    ? h('button.icon-btn.sm', {
+                        title: `Delete ${m.label} from this PC`,
+                        'aria-label': `Delete ${m.label} from this PC`,
+                        onclick: async () => (await app.ui.modal(`Delete ${m.label}?`, h('p', {}, `It frees ${gb(m.bytes)}. You can download it again at any time.`), [['Delete', 'delete'], ['Cancel', null]])) === 'delete' && (await run('delete_ai_model', { model: m.id })) && refresh(),
+                      }, icon('trash'))
+                    : null,
+                ),
+                m.fits ? null : h('div.model-warn', {}, icon('warning'), `This PC may not have the ${m.ram} GB of memory it wants.`),
+              )
             : h(
                 'div.setup-steps',
                 {},
@@ -254,7 +285,7 @@ export class Assistant {
           {},
           s.next === 'ready' ? h('button.btn.sm.primary', { onclick: () => this.ask('Hello! In two lines, what can you do for me here?') }, icon('chat-circle'), 'Try it') : null,
           pause,
-          h('button.btn.sm', { onclick: () => app.ui.show('settings') }, icon('gear'), 'Other models (Ollama, LM Studio, Claude…)'),
+          h('button.btn.sm', { onclick: () => app.ui.show('settings') }, icon('gear'), 'Other models'),
           h('button.btn.sm', { onclick: () => app.help.open('first-steps-with-the-copilot') }, icon('book-open'), 'How it works'),
         ),
       );
