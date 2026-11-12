@@ -13,11 +13,11 @@ You want others to open your model in their BIM tool (IFC), CAD (DXF) or survey 
 3. **File › Export IFC…** [Export IFC](action:exportIfc) (IFC4, or IFC4X3 for site work), **Export DXF…** [Export DXF](action:exportDxf), **Export LandXML…** [Export LandXML](action:exportLandxml). Layers, colours and the base point travel along.
    ![File › Export IFC… Export IFC (IFC4, or IFC4X3 for site work), Export DXF… Expor](media/share-with-bim-tools/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Export the model to IFC4 at C:\out\house.ifc with walls, doors and windows as their IFC classes.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

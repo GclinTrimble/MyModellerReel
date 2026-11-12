@@ -11,11 +11,11 @@ You want to know where parts run into each other: a pipe through a beam, a door 
 2. **Show** on a row: the view goes to that clash.
    ![Show on a row: the view goes to that clash.](media/check-for-clashes/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Check the model for clashes deeper than 1 cm and tell me which ones to fix first.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

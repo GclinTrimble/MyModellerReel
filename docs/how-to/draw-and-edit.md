@@ -19,7 +19,7 @@ You want shapes that behave: a rectangle drawn on another splits it, corners and
 6. **Materials › Textured**: wood, brick, stone, concrete, plaster, tiles, roof tiles, marble, grass, gravel, asphalt and brushed metal, each with its relief and roughness and at real size. Click one to give it to the selection, or to paint with the [Paint Bucket](tool:paint).
    ![Textured materials](media/draw-and-edit/06.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Put red brick on the house, roof tiles on the roof and grass on the yard, then label the house "Garden shed" in big blue text without a leader.
 

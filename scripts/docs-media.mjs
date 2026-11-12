@@ -1112,6 +1112,13 @@ const PAGES = {
     await shot('Draw a hole (H): a pond or a building left out of the surface');
     await run('set_surface_sources', { id: 'Existing ground', outline: [[0, -2], [25, 0], [25, -25], [3, -22]] });
     await shot('Draw the outline (B); "max 30" or "min 0.5" limits the triangle sides');
+    await run('surface_breaklines', { id: 'Existing ground', action: 'add', points: [[2, 1.5, -20], [12, 1.5, -12], [22, 1.5, -4]] });
+    await camera([12.5, 22, 18], [12.5, 0, -12.5]);
+    await run('set_camera', { projection: 'perspective' });
+    await shot('Draw a breakline (L): the triangles follow it');
+    await camera([12.5, 45, -12.49], [12.5, 0, -12.5]);
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select([window.mmr.doc.entities.find((e) => e.name === 'Existing ground').id]); window.mmr.app.ui.show('entity'); window.mmr.app.tools.set('surfedit'); window.mmr.app.tools.tool.setMode('grips'); return 1;");
+    await shot('The Entity panel lists the points, breaklines, outline and holes; G drags their corners');
     await run('set_camera', { projection: 'perspective' });
     await js("window.mmr.app.tools.set('select'); return 1;");
   },
@@ -1138,7 +1145,7 @@ const PAGES = {
     await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
     await camera([16, 10, 18], [0, 1.5, 0]);
     await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
-    await shot('First time: the copilot sets up its model on your PC (install, start, download)');
+    await shot('First time: Plumb sets up its model on your PC (install, start, download)');
     // what a turn leaves: the shapes it drafted (here made by the same commands), listed to select or edit
     const b = await run('create_box', { width: 10, height: 3, depth: 6, name: 'Building' });
     await js(`const ai = window.mmr.app.ai; const m = (c, t) => Object.assign(document.createElement('div'), { className: c, textContent: t }); ai.add(m('msg user', 'Draw a 10 m by 6 m rectangle and pull it up 3 m into a building')); ai.add(m('msg assistant', 'Done: a 10 × 6 × 3 m building, Building. Change its sizes in the Entity panel or ask me.')); ai.add(ai.madeList([window.mmr.doc.entities.find((e) => e.id === '${b.id}')])); return 1;`);

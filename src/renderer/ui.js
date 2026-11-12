@@ -8,8 +8,11 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES } from './forms.js';
+import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
+import * as SW from '../core/sitework.js';
+import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
@@ -52,6 +55,7 @@ export class UI {
       const r = JSON.parse(localStorage.getItem('mymodellerreel.ribbon') || 'null');
       if (r?.name) queueMicrotask(() => this.setRibbon(r.name, r.tab));
       if (localStorage.getItem('mymodellerreel.toolbar') === '0') document.body.classList.add('no-toolbar');
+      if (localStorage.getItem('mymodellerreel.dock') === '0') document.body.classList.add('no-dock');
     } catch {}
     this.buildViewbar();
     this.buildTabs();
@@ -60,10 +64,12 @@ export class UI {
   }
 
   /** A form for any command, generated from its JSON Schema: the UI path to every command with parameters. */
-  async commandDialog(name, preset = {}) {
+  async commandDialog(name, preset = {}, { form: modal = false } = {}) {
     const c = this.app.reg.commands.get(name);
     if (!c) return this.toast(`No command ${name}`, 'danger');
     if (name === 'create_layer') return this.layerDialog(preset);
+    // points to pick: straight into the view (#234); the form is the last resort
+    if (!modal && pickSteps(c.params, preset).length) return this.app.pickFirst.start(name, preset);
     // a friendly form (#201): plain words, the right control per field, points picked in the view, errors in place
     const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint), pickEntity: (hint) => this.pickInView(0, hint, true) });
     const err = h('div.form-error.form-top', { role: 'alert' });
@@ -526,6 +532,7 @@ export class UI {
       exportAll: { label: 'Export…', icon: 'export', key: 'Ctrl+E', run: () => this.exportDialog() },
       ribbon: { label: 'Ribbon: tools in tabs', icon: 'rows', checked: () => !!this.ribbon, run: () => this.setRibbon(this.ribbon ? null : 'Draw and modify') },
       sideToolbar: { label: 'Side toolbar', icon: 'sidebar', checked: () => !document.body.classList.contains('no-toolbar'), run: () => this.setSideToolbar(document.body.classList.contains('no-toolbar')) },
+      sidePanel: { label: 'Side panel', icon: 'sidebar-simple', key: 'Ctrl+B', checked: () => !document.body.classList.contains('no-dock'), run: () => this.setSidePanel(document.body.classList.contains('no-dock')) },
       ribbonSite: { label: 'Site ribbon: survey, surfaces, design, roads, earthworks', icon: 'mountains', checked: () => this.ribbon?.name === 'Site', run: () => this.setRibbon(this.ribbon?.name === 'Site' ? null : 'Site') },
       ribbonDrawings: { label: 'Drawings ribbon: bring in, scale, place, take lines out', icon: 'file-pdf', checked: () => this.ribbon?.name === 'Drawings', run: () => this.setRibbon(this.ribbon?.name === 'Drawings' ? null : 'Drawings') },
       exportSelection: { label: 'Export the selection…', icon: 'export', run: () => this.exportDialog('selection') },
@@ -574,7 +581,7 @@ export class UI {
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
-      aiPanel: { label: 'Ask the copilot', icon: 'sparkle', run: () => this.show('ai') },
+      aiPanel: { label: 'Ask Plumb', icon: 'sparkle', run: () => this.show('ai') },
       aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
       insights: { label: 'My achievements', icon: 'trophy', run: () => ((this.app.learning.insightsOpen = true), (this.app.help.page = null), this.show('help')) },
       splitLine: { label: 'Split a line', icon: 'scissors', run: () => this.app.tools.set('split') },
@@ -592,7 +599,7 @@ export class UI {
       File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'timeline', 'theme', 'perf'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
@@ -792,6 +799,7 @@ export class UI {
         ...['edges', 'shadows'].map((k) => btn(A[k].icon, A[k].label, A[k].run, s[k])),
         h('span.sep'),
         btn('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active),
+        btn('sidebar-simple', 'Side panel (Ctrl+B)', A.sidePanel.run, !document.body.classList.contains('no-dock')),
       );
     };
     this.renderViewbar = render;
@@ -1055,14 +1063,27 @@ export class UI {
       ['survey', 'Survey', 'map-pin'],
       ['settings', 'Settings', 'gear'],
       ['help', 'Help', 'question'],
+      ['tool', 'Tool', 'crosshair'], // shown while a command picks (#235)
     ];
     this.$('dock-tabs').replaceChildren(
-      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id }, 'aria-label': t(label) }, icon(ic), t(label))),
+      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => (this.setSidePanel(true), this.show(id)), dataset: { tab: id }, 'aria-label': t(label), title: t(label), hidden: id === 'tool' && !this.app.pickFirst?.active }, icon(ic), t(label))),
+      h('button.dock-toggle', { title: 'Hide or show the side panel (Ctrl+B)', 'aria-label': 'Hide or show the side panel', onclick: () => this.actions.sidePanel.run() }, icon('sidebar-simple')),
     );
+  }
+  /** The Tool tab (#235): shown and opened while a command picks, then back to the tab before. */
+  toolTab(on, back = 'ai') {
+    const b = this.$('dock-tabs').querySelector('[data-tab=tool]');
+    if (b) b.hidden = !on;
+    if (on) this.show('tool');
+    else if (this.tab === 'tool') this.show(back === 'tool' ? 'ai' : back);
+  }
+  panel_tool() {
+    return this.app.pickFirst.panel();
   }
   show(tab, focus = false) {
     this.tab = tab;
-    for (const b of this.$('dock-tabs').children) b.setAttribute('aria-selected', String(b.dataset.tab === (tab === 'cogo' ? 'survey' : tab))); // COGO lives in the Survey tab
+    if (focus) this.setSidePanel(true);
+    for (const b of this.$('dock-tabs').querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === (tab === 'cogo' ? 'survey' : tab))); // COGO lives in the Survey tab
     this.renderDock();
     if (focus && tab === 'ai') this.app.ai.focus();
   }
@@ -1164,6 +1185,16 @@ export class UI {
       localStorage.setItem('mymodellerreel.ribbon', JSON.stringify(this.ribbon));
     } catch {}
     this.renderRibbon();
+  }
+  /** Show or hide the side panel (#236): hidden, only its tab icons stay and the view takes the width. */
+  setSidePanel(on) {
+    if (on === !document.body.classList.contains('no-dock')) return;
+    document.body.classList.toggle('no-dock', !on);
+    try {
+      localStorage.setItem('mymodellerreel.dock', on ? '1' : '0');
+    } catch {}
+    this.renderViewbar?.();
+    this.app.viewport.dirty = true;
   }
   /** Show or hide the side toolbar (#209): with a ribbon open, its tools are there. */
   setSideToolbar(on) {
@@ -1418,7 +1449,7 @@ export class UI {
       h(
         'div.start',
         {},
-        h('p.small.muted', {}, 'Model, survey, draw and animate; ask the copilot in plain words. Pick a starting point:'),
+        h('p.small.muted', {}, 'Model, survey, draw and animate; ask Plumb in plain words. Pick a starting point:'),
         h('div.start-grid', {}, list.map((t) => h('button.start-card', { onclick: () => start(t.id) }, icon(ICON[t.id] || 'cube'), h('strong', {}, t.name), h('span.small.muted', {}, t.description)))),
         h('div.row.wrap', {}, h('button.btn', { onclick: () => (this.closeModal(), this.tour()) }, icon('compass'), 'Take the 2-minute tour'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.open.run()) }, icon('folder-open'), 'Open a file…'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.import.run()) }, icon('tray-arrow-down'), 'Import LandXML, IFC, DXF…')),
       ),
@@ -1519,6 +1550,55 @@ export class UI {
   }
 
   /** An analysis legend (#121) under a coloured surface. */
+  /** A TIN's definition (#240): what it is made of, each part with its own remove / show button, and its options. */
+  surfaceDefinitionCard(e, run) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const d = SW.surfaceDefinition(doc, e);
+    const st = TR.surfaceStats(D.worldMesh(doc, e));
+    const base = S.geo(doc).base?.[2] || 0;
+    const id = e.id;
+    const btn = (label, ic, onclick, title = label) => h('button.btn', { onclick, title, 'aria-label': title }, icon(ic), label);
+    const x = (title, onclick) => h('button.icon-btn', { onclick, title, 'aria-label': title }, icon('x'));
+    const edit = (mode) => () => (app.tools.set('surfedit'), app.tools.tool.setMode?.(mode));
+    const item = (label, ...actions) => h('div.row.small', {}, h('span.grow', {}, label), ...actions);
+    const head = (label) => h('div.small.muted', { style: { marginTop: '6px' } }, label);
+    // show / hide what the surface is made from (the points, the breakline entities)
+    const pointIds = SW.surfaceSources(doc, e.derived.params).points.map((p) => p.id);
+    const lineIds = d.breaklines.map((l) => l.id);
+    const shown = (ids) => ids.some((i) => app.entity(i)?.visible !== false);
+    const toggle = (ids) => () => run('set_properties', { ids, visible: !shown(ids) });
+    return h(
+      'div.surface-def',
+      {},
+      h('div.small', {}, `Area ${fmt(st.area_2d)} m² (3D ${fmt(st.area_3d)}) · elevation ${fmt(st.min_y + base)} to ${fmt(st.max_y + base)}`),
+      head(`Points · ${d.points} (${d.point_source === 'all' ? 'every survey point' : d.point_source === 'codes' ? 'by code' : 'chosen'})`),
+      h('div.row.wrap', {}, btn('Add', 'plus', edit('add')), btn('Move', 'hand-pointing', edit('move')), pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null),
+      ...d.excluded.map((n) => item(`Left out: ${n}`, h('button.btn', { onclick: () => run('surface_points', { id, action: 'include', points: [n] }) }, 'Bring back'))),
+      head(`Breaklines · ${d.breaklines.length + d.drawn_breaklines}`),
+      ...d.breaklines.map((l) => item(l.name, x(`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })))),
+      ...Array.from({ length: d.drawn_breaklines }, (_, i) => item(`Drawn line ${i + 1}`, x(`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })))),
+      h('div.row.wrap', {}, btn('Draw', 'line-segments', edit('breakline')), lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null),
+      head(`Outline · ${d.outline ? `${d.outline.length} corners` : 'none'}${d.boundaries.length ? ` · ${d.boundaries.length} boundary line${d.boundaries.length > 1 ? 's' : ''}` : ''}`),
+      h('div.row.wrap', {}, btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')), d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null, d.outline ? btn('Clear', 'selection-slash', () => run('surface_boundary', { id, action: 'clear' })) : null),
+      head(`Holes · ${d.voids.length}`),
+      ...d.voids.map((r, i) => item(`Hole ${i + 1} · ${r.length} corners`, x(`Remove hole ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })))),
+      h('div.row.wrap', {}, btn('Draw', 'polygon', edit('void')), d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null),
+      head('Triangles'),
+      h('label.row.small', {}, h('span.grow', {}, 'Longest side (m, 0: any)'), h('input', { type: 'number', min: 0, step: 1, value: d.max_edge, style: { width: '72px' }, 'aria-label': 'Longest triangle side', onchange: (ev) => run('set_surface_sources', { id, max_edge: +ev.target.value }) })),
+      d.swaps.length || d.deleted_triangles ? item(`${d.swaps.length} swapped, ${d.deleted_triangles} deleted by hand`, h('button.btn', { onclick: () => run('edit_triangles', { id, action: 'restore' }) }, icon('arrow-counter-clockwise'), 'Restore')) : null,
+      h('div.row.wrap', {}, btn('Swap an edge', 'triangle', edit('swap'))),
+      head('Contours and analysis'),
+      h('label.row.small', {}, h('span.grow', {}, 'Contours every (m)'), h('input', { type: 'number', min: 0.1, step: 0.5, value: 1, style: { width: '72px' }, 'aria-label': 'Contour interval', onchange: (ev) => run('surface_contours', { id, interval: +ev.target.value }) })),
+      h(
+        'label.row.small',
+        {},
+        h('span.grow', {}, 'Colour by'),
+        h('select', { 'aria-label': 'Analysis colours', onchange: (ev) => run('analyze_surface', { id, kind: ev.target.value }) }, ...['none', 'elevation', 'slope', 'aspect'].map((k) => h('option', { value: k, selected: (e.analysis?.kind || 'none') === k }, k))),
+      ),
+    );
+  }
+
   legend(e) {
     const a = e.analysis;
     if (!a?.legend) return null;
@@ -1567,7 +1647,7 @@ export class UI {
   /** Cross-sections (#122): one at a time, Previous / Next. */
   /** What read_drawing found, with Apply. */
   async readDrawingDialog(id, r) {
-    const rows = [['Scale', r.scale ? `1:${r.scale.ratio}` : '—'], ['Title', r.title || '—'], ['Date', r.date || '—'], ['North', r.north_angle !== undefined ? `${r.north_angle}°` : r.north ? 'a north mark' : '—'], ['Grid crossings', r.control.length ? r.control.map((c) => `E ${c.e} N ${c.n}`).join(' · ') : '—'], ['Read by', r.ai ? 'the text and the copilot' : r.ai_error ? `the text (copilot: ${r.ai_error})` : 'the text']];
+    const rows = [['Scale', r.scale ? `1:${r.scale.ratio}` : '—'], ['Title', r.title || '—'], ['Date', r.date || '—'], ['North', r.north_angle !== undefined ? `${r.north_angle}°` : r.north ? 'a north mark' : '—'], ['Grid crossings', r.control.length ? r.control.map((c) => `E ${c.e} N ${c.n}`).join(' · ') : '—'], ['Read by', r.ai ? 'the text and Plumb' : r.ai_error ? `the text (Plumb: ${r.ai_error})` : 'the text']];
     const body = h('div', {}, ...rows.map(([k, v]) => h('div.legend-row', {}, h('strong', {}, `${k}: `), h('span', {}, v))));
     if ((await this.modal('What the drawing says', body, [['Apply', 'ok'], ['Close', null]])) === 'ok') this.app.reg.run('read_drawing', { id, use_ai: false, apply: true }).then((x) => this.toast(x.applied.join(', ') || 'Nothing to apply.')).catch((e) => this.toast(e.message, 'danger'));
   }
@@ -1839,6 +1919,7 @@ export class UI {
         h('div.overline', {}, `Surface · ${tri} triangles · ${e.derived.report.points} points`),
         this.legend(e),
         e.derived.error ? h('div.small.param-error', { role: 'alert' }, e.derived.error) : null,
+        e.derived.generator === 'surface' ? this.surfaceDefinitionCard(e, run) : null,
         h('div.row.wrap', {}, h('button.btn', { onclick: () => this.checkSurfaceDialog(e.id) }, icon('list-checks'), 'Check'), h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: e.id }) }, icon('chart-bar'), 'Cut / fill…')),
       );
     }
@@ -2090,7 +2171,7 @@ export class UI {
                   {},
                   h('span', { style: { minWidth: '120px' } }, s.name),
                   s.models.length ? pick : h('span.muted.grow', {}, 'running, no model loaded'),
-                  s.models.length ? h('button.btn.sm.primary', { onclick: () => app.reg.run('use_ai_model', { provider: s.provider, base_url: s.baseUrl, model: pick.value }).then(() => (this.toast(`The copilot now uses ${pick.value} on ${s.name}.`), app.ai.renderHead(), this.renderDock())).catch((e) => this.toast(e.message, 'danger')) }, using(s, pick.value) ? 'In use' : 'Use') : null,
+                  s.models.length ? h('button.btn.sm.primary', { onclick: () => app.reg.run('use_ai_model', { provider: s.provider, base_url: s.baseUrl, model: pick.value }).then(() => (this.toast(`Plumb now uses ${pick.value} on ${s.name}.`), app.ai.renderHead(), this.renderDock())).catch((e) => this.toast(e.message, 'danger')) }, using(s, pick.value) ? 'In use' : 'Use') : null,
                 );
               }),
               ...(r.huggingface.length ? [h('p.small.muted', {}, `Downloaded from Hugging Face: ${r.huggingface.map((m) => m.id + (m.gguf ? ' (GGUF)' : '')).join(', ')}. Load one in Ollama or LM Studio to use it here.`)] : []),
@@ -2432,7 +2513,7 @@ export class UI {
         label: c.name,
         desc: c.description,
         icon: (c.params.required || []).length ? 'textbox' : 'terminal',
-        run: () => ((c.params.required || []).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+        run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
       }));
       items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
       if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });

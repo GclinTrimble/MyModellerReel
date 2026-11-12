@@ -19,6 +19,7 @@ import * as A from '../core/animation.js';
 import { buildModel } from './viewport.js';
 import { renderVideo } from './render.js';
 import { stripForSave, hydrate } from '../core/components.js';
+import { migrateSurfaces } from '../core/sitework.js';
 import * as Assets from '../core/assets.js';
 import { tiffInfo, demRead } from './underlays.js';
 
@@ -191,6 +192,7 @@ export class IO {
       const opened = JSON.parse(raw);
       Assets.unpack(gltf.scene.userData.mymodellerreel_assets);
       hydrate(opened);
+      migrateSurfaces(opened); // older files: surfaces onto the editable definition (#239)
       this.app.store.replace(opened);
       this.app.afterOpen(path);
       return { opened: path, entities: this.app.store.doc.entities.length, editable: true };

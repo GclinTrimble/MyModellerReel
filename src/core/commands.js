@@ -220,6 +220,7 @@ function fillParams(v, params) {
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
+const r3 = (x) => Math.round(x * 1e3) / 1e3;
 /** A time parameter: seconds, or a marker name with an optional offset ("roof", "roof + 1.5"). */
 const T = (d) => ({ description: `${d}: seconds, or a marker name ("roof", "roof + 1.5")` });
 
@@ -1356,7 +1357,7 @@ function registerCore(reg, ctx) {
   const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_edge: num('drop triangles with a side shorter than this, m (slivers)'), outline: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan outline [[x, z], …] (model) the surface stays inside (#212)' }, voids: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, description: 'areas left out: [[[x, z], …], …] (model)' }, min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
   def('terrain', 'create_surface', 'A TIN surface (constrained Delaunay) from survey points, breaklines and boundaries. It stays live: move, add or delete a point or a line and it rebuilds. Several surfaces can live side by side (existing ground, design, as-built).', obj({ name: common.name, ...SRC, color: common.color, tag: common.tag }), (a) => {
     const doc = ctx.doc;
-    const params = surfaceParams(a);
+    const params = SW.migrateSurface(surfaceParams(a));
     R.getGenerator('surface').run({ params, inputs: [], doc }); // bad sources throw before anything changes
     const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag, material: { color: a.color || '#8fae7a', roughness: 0.95 } });
     R.derive(doc, e, 'surface', params, []);
@@ -1402,6 +1403,107 @@ function registerCore(reg, ctx) {
     R.regenerate(doc, s);
     return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
+
+  // ---------------------------------------------------------------- the editable surface definition (#239)
+  /** One edit of a TIN's definition: fn changes a copy of its params, then the surface rebuilds (or the command rolls back). */
+  const editTin = (ref, fn) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(ref);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface (create_surface makes one).`);
+    const p = structuredClone(SW.migrateSurface(s.derived.params));
+    const note = fn(p, s);
+    s.derived.params = p;
+    R.regenerate(doc, s);
+    return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(doc, s), ...(note ? { note } : {}) };
+  };
+  const plan = { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' };
+  const ring = { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan corners [[x, z], …] (model)' };
+  const ringOf = (a) => {
+    if (a.points) return a.points.map((q) => [q[0], q.length === 3 ? q[2] : q[1]].map(r3));
+    if (!a.from) throw new Error('Give points [[x, z], …] or from: a closed curve.');
+    const pts = D.curvePoints(ctx.doc, D.resolve(ctx.doc, a.from)[0], 8).map((q) => [r3(q[0]), r3(q[2])]);
+    if (pts.length > 3 && Math.hypot(pts[0][0] - pts.at(-1)[0], pts[0][1] - pts.at(-1)[1]) < 1e-3) pts.pop();
+    return pts;
+  };
+
+  def('terrain', 'surface_definition', 'What a TIN surface is made of: its points (and those left out), breaklines (linework, curves and drawn ones), outline, voids, max / min edge, swapped edges and deleted triangles.', obj({ id }, ['id']), (a) => {
+    const s = surfaceOf(a.id);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
+    return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(ctx.doc, s) };
+  });
+
+  def('terrain', 'surface_points', 'Edit a TIN surface\'s points; it rebuilds. add: a survey point at a plan point (elevation z, else the surface height there); move: a point to a plan point and / or elevation; delete: remove the survey points; exclude / include: leave points out of this surface or bring them back.', obj({ id, action: str('what to do', ['add', 'move', 'delete', 'exclude', 'include']), at: { ...plan, description: 'add / move: plan point [x, z] (model)' }, z: num('add / move: project elevation'), points: { type: 'array', items: { type: 'string' }, description: 'move / delete / exclude / include: point names or ids' }, name: str('add: its name'), code: str('add: its code') }, ['id', 'action']), (a) => {
+    const doc = ctx.doc;
+    return editTin(a.id, (p, s) => {
+      if (a.action === 'add') {
+        if (!a.at) throw new Error('Give at: [x, z].');
+        const y = a.z === undefined ? surfaceSampler(doc, s).z(a.at[0], a.at[1]) : null;
+        if (a.z === undefined && y === null) throw new Error('That point is outside the surface: give its elevation z.');
+        const pr = S.toProject(doc, [a.at[0], y ?? 0, a.at[1]]);
+        const pt = S.addPoint(doc, { ...pr, z: a.z ?? pr.z, name: a.name, code: a.code ?? p.points?.codes?.[0] ?? '' });
+        if (Array.isArray(p.points)) p.points.push(pt.id);
+        return `Added point ${pt.name}.`;
+      }
+      const pts = pointsByRefs(a.points);
+      const ids = new Set(pts.map((x) => x.id));
+      if (a.action === 'move') {
+        if (!a.at && a.z === undefined) throw new Error('Give at: [x, z] and / or z.');
+        for (const pt of pts) {
+          if (a.at) Object.assign(pt.point, (({ n, e }) => ({ n, e }))(S.toProject(doc, [a.at[0], 0, a.at[1]])));
+          if (a.z !== undefined) pt.point.z = a.z;
+          pt.position = D.round3(S.toLocal(doc, pt.point));
+        }
+      } else if (a.action === 'delete') {
+        for (const pt of pts) D.removeEntity(doc, pt);
+        if (Array.isArray(p.points)) p.points = p.points.filter((x) => !ids.has(x));
+        p.exclude = p.exclude.filter((x) => !ids.has(x));
+      } else if (a.action === 'exclude') p.exclude = [...new Set([...p.exclude, ...ids])];
+      else if (a.action === 'include') p.exclude = p.exclude.filter((x) => !ids.has(x));
+      else throw new Error(`Unknown action "${a.action}".`);
+    });
+  }, true);
+
+  def('terrain', 'surface_breaklines', 'Add or remove a TIN surface\'s breaklines; it rebuilds. add: an existing line (linework or a curve, which stays live) or one drawn through points [[x, y, z], …] (model); remove: a line, or a drawn one by its index.', obj({ id, action: str('what to do', ['add', 'remove']), line: str('a linework or curve id / name'), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'add: a drawn breakline [[x, y, z], …] (model)' }, index: num('remove: which drawn breakline (0 first)') }, ['id', 'action']), (a) =>
+    editTin(a.id, (p, s) => {
+      const listed = () => SW.surfaceSources(ctx.doc, p).breaklines.map((x) => x.id); // "all" as the explicit list it stands for
+      if (a.action === 'add' && a.points) {
+        if (a.points.length < 2) throw new Error('A breakline needs at least 2 points.');
+        p.lines.push(a.points.map((q) => q.map(r3)));
+      } else if (a.line) {
+        const [l] = D.resolve(ctx.doc, a.line);
+        if (!S.isLinework(l) && !l.curve) throw new Error(`${l.name} is not a line.`);
+        const now = listed();
+        if (a.action === 'add') p.breaklines = now.includes(l.id) ? now : [...now, l.id];
+        else if (!now.includes(l.id)) throw new Error(`${l.name} is not a breakline of ${s.name}.`);
+        else p.breaklines = now.filter((x) => x !== l.id);
+      } else if (a.action === 'remove' && a.index !== undefined) {
+        if (!p.lines[a.index]) throw new Error(`There is no drawn breakline ${a.index} (${p.lines.length} drawn).`);
+        p.lines.splice(a.index, 1);
+      } else throw new Error('Give line (a line to add or remove), points (to draw one) or index (a drawn one to remove).');
+    }),
+  true);
+
+  def('terrain', 'surface_boundary', 'Edit a TIN surface\'s outline (the boundary it stays inside) and voids (holes); it rebuilds. set / add_void: corners [[x, z], …] or from a closed curve; clear / remove_void; move_vertex, insert_vertex (splits the nearest edge unless index is given), remove_vertex. void picks the hole (0 first); without it the outline is edited.', obj({ id, action: str('what to do', ['set', 'clear', 'add_void', 'remove_void', 'move_vertex', 'insert_vertex', 'remove_vertex']), points: ring, from: str('set / add_void: a closed curve id / name'), void: num('which void (0 first); omit for the outline'), index: num('vertex index (0 first)'), to: plan }, ['id', 'action']), (a) =>
+    editTin(a.id, (p) => {
+      const v = a.void;
+      if (v !== undefined && !p.voids[v]) throw new Error(`There is no void ${v} (${p.voids.length}).`);
+      if (a.action === 'set') p.outline = ringOf(a);
+      else if (a.action === 'add_void') p.voids.push(ringOf(a));
+      else if (a.action === 'clear') delete p.outline;
+      else if (a.action === 'remove_void') {
+        if (v === undefined) throw new Error('Give void: which one (0 first).');
+        p.voids.splice(v, 1);
+      } else {
+        const r = v === undefined ? p.outline : p.voids[v];
+        if (!r) throw new Error('The surface has no outline yet: set one first.');
+        if (a.action !== 'remove_vertex' && !a.to) throw new Error('Give to: [x, z].');
+        const op = { action: a.action.replace('_vertex', ''), index: a.action === 'insert_vertex' ? (a.index ?? SW.ringInsertIndex(r, a.to)) : a.index, to: a.to?.map(r3) };
+        if (v === undefined) p.outline = SW.editRing(r, op);
+        else p.voids[v] = SW.editRing(r, op);
+      }
+      if ((p.outline && p.outline.length < 3) || p.voids.some((x) => x.length < 3)) throw new Error('An outline or void needs at least 3 corners.');
+    }),
+  true);
 
   def('terrain', 'check_surface', 'Quality checks on a surface: spikes and pits (points far off their neighbours), duplicate points, crossing breaklines, long thin triangles. Each issue names the points to fix (edit_points, delete, or set_surface_sources exclude).', obj({ id, spike: num('flag points more than this far off their neighbours, m (default: automatic)'), min_angle: num('thin-triangle limit, degrees (default 2)') }, ['id']), (a) => {
     const doc = ctx.doc;
@@ -3317,7 +3419,7 @@ function registerCore(reg, ctx) {
     return { curves: made.length, traced_at: [w, h] };
   }, true);
 
-  def('drawings', 'read_drawing', 'The copilot\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
+  def('drawings', 'read_drawing', 'Plumb\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
     const doc = ctx.doc;
     const e = underlayOf(a.id);
     let texts = [];
@@ -3428,7 +3530,7 @@ function registerCore(reg, ctx) {
     return LEARN.progress([...done], [...tut]);
   });
   // achievements and insights (#222): counted by the app on this PC (settings.stats), read here
-  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what the copilot did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
+  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what Plumb did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
     const p = LEARN.progress(lessonsDone(), tutorialsDone());
     return ACH.insights(ctx.io?.settings?.()?.stats || ctx.stats || {}, { lessons: p.lessons, tutorials: p.tutorials });
   });
@@ -3453,15 +3555,15 @@ function registerCore(reg, ctx) {
     if (!ctx.io?.aiSetup) throw new Error('Needs the desktop app.');
     return ctx.io.aiSetup;
   };
-  def('ai', 'ai_setup_status', 'Where the local copilot stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
+  def('ai', 'ai_setup_status', 'Where Plumb\'s local model stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
     const s = await setupIo()('status');
     s.next = s.provider !== 'ollama' ? 'ready' : s.ollama === 'missing' ? 'install' : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'download' : 'ready';
     return s;
   });
   def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
   def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
-  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: the copilot\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
-  def('ai', 'use_ai_model', 'Use a model for the copilot: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
+  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: Plumb\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
+  def('ai', 'use_ai_model', 'Use a model for Plumb: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };
     await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
@@ -3523,7 +3625,7 @@ function registerCore(reg, ctx) {
     return summary(ctx.doc, e);
   }, true);
 
-  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to the copilot.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
+  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to Plumb.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
     if (!ctx.io?.transcribe) throw new Error('Needs the desktop app.');
     return ctx.io.transcribe(a.path, a.lang);
   });
@@ -3599,12 +3701,12 @@ function registerCore(reg, ctx) {
     return out;
   });
 
-  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
+  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to Plumb, the in-app assistant.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
     const pick = a.name ? [[a.name, SKILLS[a.name]]] : Object.entries(SKILLS);
     return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(a.name ? { prompt: s.prompt, examples: s.examples } : {}), active: ctx.skill === name }));
   });
 
-  def('ai', 'use_skill', 'Give the in-app copilot a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
+  def('ai', 'use_skill', 'Give Plumb, the in-app assistant a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
     ctx.skill = a.name === 'none' ? null : a.name;
     ctx.onSkill?.(ctx.skill);
     return { skill: ctx.skill, prompt: ctx.skill ? skillPrompt(ctx.skill) : '' };
@@ -4271,7 +4373,7 @@ function registerCore(reg, ctx) {
       animated: doc.animation.tracks.length,
     };
   });
-  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a copilot prompt and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
+  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a prompt for Plumb and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
   def('scene', 'open_howto', 'Open a how-to page in the Help panel (show the person how), and get its text.', obj({ id: str('page id from list_howtos', HOWTOS.map((x) => x.id)) }, ['id']), async (a) => {
     const page = HOWTOS.find((x) => x.id === a.id);
     if (!page) throw new Error(`No page "${a.id}". list_howtos shows them.`);
