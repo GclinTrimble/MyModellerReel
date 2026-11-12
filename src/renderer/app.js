@@ -79,6 +79,8 @@ app.ctx = {
   help: { open: (id) => app.help.open(id), read: (id) => app.io.readHowto(id) },
   // my tools and skills (#242): one file each in the user library
   userLibrary: { save: (item) => native.invoke('mytools:write', item), remove: (item) => native.invoke('mytools:delete', item.kind, item.name) },
+  // feature code libraries: the SQLite store in the data folder (main process)
+  codelibs: { call: (op, ...args) => native.invoke('codelib:call', op, ...args).catch((e) => Promise.reject(new Error(e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')))) },
   onMyTools: () => (app.ui.refresh(), app.ai?.renderHead()),
   version: app.info?.version,
   plugins: {

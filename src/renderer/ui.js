@@ -7,7 +7,7 @@ import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profil
 import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
-import { buildForm, SWATCHES } from './forms.js';
+import { buildForm, SWATCHES, codeGrid } from './forms.js';
 import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
@@ -182,9 +182,24 @@ export class UI {
             h('div.code-item', { role: 'option', 'aria-selected': String(i === hi), onpointerdown: (e) => (e.preventDefault(), done(x.code)) }, icon(x.recent ? 'clock-counter-clockwise' : 'tag'), h('b', {}, x.code), h('span', {}, x.action)),
           ),
         );
-        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one.'));
+        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one, or Enter for a point without a code.'));
       };
-      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), title), inp, list, h('div.code-keys', {}, '↑↓ choose · Enter OK · Esc cancel · Tab completes'));
+      // Browse: the whole library as a searchable grid inside the card
+      let grid = null;
+      const lib = doc.featureCodes || {};
+      const browse = Object.keys(lib).length
+        ? h('button.icon-btn.sm.code-browse', { title: `Browse the ${Object.keys(lib).length} codes${doc.featureLibrary ? ` of ${doc.featureLibrary.name}` : ''}`, 'aria-label': 'Browse the feature codes', 'aria-expanded': 'false', onclick: () => {
+            if (grid) return (grid.el.remove(), (grid = null), card.classList.remove('wide'), browse.setAttribute('aria-expanded', 'false'), inp.focus());
+            grid = codeGrid(lib, (c) => done(c), { query: inp.value === current ? '' : inp.value });
+            grid.search.addEventListener('keydown', (e) => e.key === 'Escape' && done(null));
+            card.classList.add('wide');
+            list.after(grid.el);
+            browse.setAttribute('aria-expanded', 'true');
+            grid.search.focus();
+            place();
+          } }, icon('squares-four'))
+        : null;
+      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), h('span.grow', {}, title), browse), inp, list, h('div.code-keys', {}, `↑↓ choose · Enter OK (empty: no code) · Esc cancel · Tab completes${browse ? ' · ▦ browse' : ''}`));
       const away = (e) => !card.contains(e.target) && done(null);
       const done = (code) => {
         card.remove();
@@ -217,9 +232,12 @@ export class UI {
       draw();
       document.body.append(card);
       // next to the click, inside the window
-      const r = card.getBoundingClientRect();
-      card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
-      card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      const place = () => {
+        const r = card.getBoundingClientRect();
+        card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
+        card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      };
+      place();
       // after the click that opened it: its mousedown would take the focus back and close the card
       setTimeout(() => {
         window.addEventListener('pointerdown', away, true);
@@ -570,10 +588,7 @@ export class UI {
       offsetSurface: { label: 'Design: offset surface…', icon: 'stack', run: form('design_offset_surface') },
       road: { label: 'Design: road…', icon: 'road-horizon', run: form('design_road') },
       featureCode: { label: 'Define feature code…', icon: 'tag', run: form('define_feature_code') },
-      loadLibrary: { label: 'Load feature library…', icon: 'books', run: async () => {
-        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library', extensions: ['json'] }] });
-        if (path) run('load_feature_library', { path })();
-      } },
+      loadLibrary: { label: 'Feature code libraries…', icon: 'books', run: () => this.featureLibrariesDialog() },
       processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
       coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
       editSurface: { label: 'Edit surface by hand: swap, delete, points, outline, holes', icon: 'triangle', run: () => app.tools.set('surfedit') },
@@ -2540,10 +2555,104 @@ export class UI {
             ),
           )
         : h('p.small.muted', {}, 'Import points, then Surface… makes a live TIN.'),
-      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Load library', 'aria-label': 'Load feature library', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Feature code libraries', 'aria-label': 'Feature code libraries', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      doc.featureLibrary ? h('p.small.muted', {}, icon('books'), ` Library: ${doc.featureLibrary.name}`) : null,
       h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.type}` : ''))),
       h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
     );
+  }
+
+  /** Feature code libraries: the ones kept on this computer (import FXL / JSON), the model's, their codes to search and edit. */
+  async featureLibrariesDialog(open = null) {
+    const app = this.app;
+    const run = (name, args) => app.reg.run(name, args);
+    const fail = (e) => this.toast(e.message, 'danger');
+    const body = h('div.panel.libs', { style: { padding: 0 } }, h('p.muted', {}, 'Reading the libraries…'));
+    let sel = open;
+    let mode = null; // 'rename' | 'duplicate' | 'delete': the selected library's pending action
+    const again = (fn) => async () => {
+      try {
+        await fn();
+      } catch (e) {
+        fail(e);
+      }
+      draw();
+    };
+    // a code edit is a form of its own; the manager comes back after it
+    const editCode = (code, d = {}) => async () => {
+      this.modalClosing = true; // its close event comes later: not the form's Cancel
+      this.closeModal();
+      await this.commandDialog('edit_library_code', { library: sel, ...(code ? { code } : {}), ...Object.fromEntries(Object.entries({ description: d.description, type: d.type, category: d.category, layer: d.layer, color: d.color, line_style: d.lineStyle, breakline: d.breakline, object: d.object, attrs: d.attrs }).filter(([, v]) => v !== undefined)) }, { form: true });
+      this.featureLibrariesDialog(sel);
+    };
+    const draw = async () => {
+      const { libraries, in_use } = await run('feature_libraries', {});
+      if (!libraries.some((l) => l.name === sel)) sel = libraries.find((l) => l.name === in_use)?.name || libraries[0]?.name || null;
+      const lib = sel ? await run('feature_library', { name: sel, limit: 1e6 }) : null;
+      const codes = lib ? Object.fromEntries(lib.codes.map(({ code, ...d }) => [code, d])) : {};
+      const doc = app.store.doc;
+      const nameBox = (verb) => {
+        const inp = h('input', { value: verb === 'rename' ? sel : `${sel} copy`, 'aria-label': 'New name' });
+        const ok = again(() => run('manage_feature_library', { name: sel, action: verb, to: inp.value.trim() }).then((r) => ((sel = r.name), (mode = null))));
+        inp.onkeydown = (e) => (e.stopPropagation(), e.key === 'Enter' ? ok() : e.key === 'Escape' && ((mode = null), draw()));
+        setTimeout(() => (inp.focus(), inp.select()));
+        return h('div.row', {}, inp, h('button.btn.primary', { onclick: ok }, verb === 'rename' ? 'Rename' : 'Duplicate'), h('button.btn', { onclick: () => ((mode = null), draw()) }, 'Cancel'));
+      };
+      body.replaceChildren(
+        h(
+          'div.row.wrap',
+          {},
+          h('button.btn.primary', { onclick: again(async () => {
+            const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library (FXL, JSON)', extensions: ['fxl', 'json'] }] });
+            if (!path) return;
+            const r = await run('import_feature_library', { path });
+            sel = r.name;
+            this.toast(`${r.name}: ${r.codes} codes (${Object.entries(r.types).map(([k, n]) => `${n} ${k}`).join(', ')})`);
+          }) }, icon('download-simple'), 'Import FXL or JSON…'),
+          Object.keys(doc.featureCodes || {}).length && !libraries.some((l) => l.name === in_use)
+            ? h('button.btn', { title: 'Keep the codes of this model as a library on this computer', onclick: again(async () => (sel = (await run('import_feature_library', { name: in_use || app.file?.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'From the model' })).name)) }, icon('floppy-disk'), "Keep this model's codes")
+            : null,
+        ),
+        libraries.length
+          ? h('div.lib-list', { role: 'listbox', 'aria-label': 'Libraries' }, libraries.map((l) => h('button.lib-item', { role: 'option', 'aria-selected': String(l.name === sel), onclick: () => ((sel = l.name), (mode = null), draw()) }, icon('books'), h('b.grow', {}, l.name), l.name === in_use ? h('span.lib-badge', {}, 'In use') : null, h('span.small.muted', {}, `${l.codes} codes`))))
+          : h('p.muted', {}, 'No libraries yet. Import a Trimble FXL (Feature Definition Manager) or a JSON library.'),
+        lib
+          ? h(
+              'div.lib-detail',
+              {},
+              mode === 'rename' || mode === 'duplicate'
+                ? nameBox(mode)
+                : h(
+                    'div.row.wrap',
+                    {},
+                    h('button.btn.primary', { disabled: lib.name === in_use, onclick: again(async () => {
+                      const r = await run('use_feature_library', { name: lib.name });
+                      this.toast(`This model uses ${r.in_use}: ${r.codes} codes, ${r.processed.lines} lines`);
+                    }) }, icon('check-circle'), lib.name === in_use ? 'In use' : 'Use in this model'),
+                    h('button.btn', { onclick: () => ((mode = 'rename'), draw()) }, icon('pencil-simple'), 'Rename'),
+                    h('button.btn', { onclick: () => ((mode = 'duplicate'), draw()) }, icon('copy'), 'Duplicate'),
+                    h('button.btn', { onclick: again(async () => {
+                      const path = await window.native.invoke('file:save-dialog', { defaultPath: `${lib.name}.fxl`, filters: [{ name: 'Trimble FXL', extensions: ['fxl'] }, { name: 'JSON', extensions: ['json'] }, { name: 'CSV', extensions: ['csv'] }] });
+                      if (path) this.toast(`Exported ${(await run('export_feature_library', { library: lib.name, path })).codes} codes`);
+                    }) }, icon('export'), 'Export…'),
+                    mode === 'delete'
+                      ? h('button.btn.danger', { onclick: again(() => run('manage_feature_library', { name: lib.name, action: 'delete' }).then(() => (mode = null))) }, icon('trash'), `Delete ${lib.name}?`)
+                      : h('button.btn', { onclick: () => ((mode = 'delete'), draw()) }, icon('trash'), 'Delete'),
+                  ),
+              h('div.row', {}, h('span.small.muted.grow', {}, `${lib.total} codes${lib.source && !/^(fxl|json|model)$/.test(lib.source) ? ` · from ${lib.source.split(/[\\/]/).pop()}` : ''}`), h('button.btn.sm', { onclick: editCode(null) }, icon('plus'), 'Code…')),
+              codeGrid(codes, (c) => editCode(c, codes[c])(), {
+                extra: (r) => [
+                  h('button.icon-btn.sm', { title: `Edit ${r.code}`, 'aria-label': `Edit ${r.code}`, onclick: (e) => (e.stopPropagation(), editCode(r.code, codes[r.code])()) }, icon('pencil-simple')),
+                  h('button.icon-btn.sm', { title: `Remove ${r.code}`, 'aria-label': `Remove ${r.code}`, onclick: (e) => (e.stopPropagation(), again(() => run('edit_library_code', { library: lib.name, code: r.code, remove: true }))()) }, icon('trash')),
+                ],
+              }).el,
+            )
+          : null,
+      );
+    };
+    const shown = this.modal('Feature code libraries', body);
+    draw().catch(fail);
+    return shown;
   }
 
   /** Quantities report (#53): pick the grouping, read the table, export CSV. */

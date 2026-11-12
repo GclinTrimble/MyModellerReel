@@ -1,0 +1,81 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--A small synthetic Feature Definition Manager library (schema 9), shaped like real ones-->
+<FeatureCodingDefinitions CreationDate="2024-01-10T09:00:00+13:00" SchemaVersion="9" xmlns="http://trimble.com/schema/fxl">
+  <LineStyleDefinitions Version="3.0" xmlns="http://trimble.com/schema/linestyle">
+    <LineStyleDefinition Name="Dashed" Description="Dashed _ _ _">
+      <Units Reference="Paper" Length="Metric" />
+      <PatternType>PartToPath</PatternType>
+      <Pattern TotalLength="0.375000" EndLength="0.250000">
+        <Line Color="Empty" LineWeight="1">
+          <Location X="0.000000" Y="0.000000" />
+          <Location X="0.250000" Y="0.000000" />
+        </Line>
+      </Pattern>
+    </LineStyleDefinition>
+  </LineStyleDefinitions>
+  <LayerDefinitions>
+    <LayerDefinition>
+      <Name>0</Name>
+      <Color>FFFFFFFF</Color>
+      <LineStyleName>Solid</LineStyleName>
+      <LayerGroup>&lt;&lt;None&gt;&gt;</LayerGroup>
+    </LayerDefinition>
+    <LayerDefinition>
+      <Name>WS-Veg_Tree</Name>
+      <Color>FF2E7D32</Color>
+      <LineStyleName>Solid</LineStyleName>
+    </LayerDefinition>
+    <LayerDefinition>
+      <Name>WS-Road_Kerb</Name>
+      <Color>FFFF5500</Color>
+      <LineStyleName>Dashed</LineStyleName>
+    </LayerDefinition>
+  </LayerDefinitions>
+  <ControlCodeDefinitions>
+    <ControlCodeDefinition Type="Start" Description="StartLine" Code="SL" />
+    <ControlCodeDefinition Type="End" Description="EndLine" Code="END" />
+  </ControlCodeDefinitions>
+  <FeatureDefinitions>
+    <PointFeatureDefinition Code="vetre" Name="Tree" Category="Vegetation - VE" IncludeInSurface="true" Color="FE000000" Layer="WS-Veg_Tree" PointLabelStyle="">
+      <Attributes>
+        <ListAttribute Name="Type" Description="type of tree" EntryMethod="Required" DefaultItemIndex="1">
+          <ListItems>
+            <Item>Unknown</Item>
+            <Item>Kōwhai</Item>
+            <Item>Rimu</Item>
+          </ListItems>
+        </ListAttribute>
+        <DoubleAttribute Name="Height" Description="height of the tree" EntryMethod="Required" DefaultValue="2" MinimumValue="0" MaximumValue="1.7976931348623157E+308" NumberOfDecimals="1" />
+        <IntegerAttribute Name="Trunk" EntryMethod="Optional" MinimumValue="0" />
+        <PhotoAttribute Name="Photo" EntryMethod="Optional" />
+      </Attributes>
+      <Symbols>
+        <Symbol>
+          <Name>Tree</Name>
+          <Color>FE000000</Color>
+          <ListAttribute Name="" Value="" />
+        </Symbol>
+      </Symbols>
+    </PointFeatureDefinition>
+    <LineFeatureDefinition Code="ROKERB" Name="Back-Of-Kerb" Category="Road - RO" IncludeInSurface="true" Color="FE000000" Layer="WS-Road_Kerb" FieldLineStyle="Solid" LineStyleName="Dashed" LineStyleScale="1" PointLayer="0">
+      <Lines>
+        <Line>
+          <Name>Kerb</Name>
+          <Description>Not the feature's description</Description>
+          <Color>FF0000FF</Color>
+        </Line>
+      </Lines>
+    </LineFeatureDefinition>
+    <PolygonFeatureDefinition Code="BUOUT" Name="Building-Outline" Category="Building - BU" Layer="0" IncludeInSurface="false" FillColor="FE000000" FillTransparency="50" BorderColor="FF8000FF" BorderLineStyleName="Solid" />
+    <PointFeatureDefinition Code="SUBEN" Name="Benchmark" Category="Survey - SU" IncludeInSurface="true" Color="FE000000" Layer="0" PointLabelStyle="" />
+  </FeatureDefinitions>
+  <FeatureCodeGroupDefinitions>
+    <FeatureCodeGroupDefinition Name="Vegetation - VE">
+      <Items>
+        <Item>
+          <Code>VETRE</Code>
+        </Item>
+      </Items>
+    </FeatureCodeGroupDefinition>
+  </FeatureCodeGroupDefinitions>
+</FeatureCodingDefinitions>
