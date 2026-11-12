@@ -882,3 +882,71 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   assert.ok(sent, 'the picture went with the message');
   assert.equal(await w.locator('.msg.user img').count(), 1);
 });
+
+test('help that answers and my own tools (#241, #242): Ask Plumb, F1 over a tool, a turn saved as a tool, My tools', async () => {
+  await ok('new_model');
+  // a scripted local model: one-shot help answers have no tools; copilot turns do
+  await app.evaluate(({ ipcMain }) => {
+    const script = [
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_box', arguments: { width: 3, height: 0.5, depth: 1, name: 'Step' } } }] },
+      { role: 'assistant', content: 'Made a step.' },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'save_tool', arguments: { name: 'Garden step', description: 'A step block' } } }] },
+      { role: 'assistant', content: 'Saved as Garden step.' },
+    ];
+    globalThis.requests = [];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', (_, body) => {
+      globalThis.requests.push(body);
+      if (!body.tools) return { provider: 'ollama', data: { message: { role: 'assistant', content: 'Draw the path with the Curve tool, then sweep a profile along it [1].' } } };
+      return { provider: 'ollama', data: { message: script.shift() } };
+    });
+  });
+  // Ask Plumb in the Help panel: an answer, its cited section, Show me
+  await w.click('[data-tab="help"]');
+  await w.fill('.help-ask input', 'how do I sweep a kerb along a curve');
+  await w.locator('.help-ask').getByRole('button', { name: 'Ask', exact: true }).click();
+  await w.locator('.help-answer', { hasText: 'Curve tool' }).waitFor();
+  await w.locator('.help-ask .chip', { hasText: '[1] Run a kerb along a curve' }).waitFor();
+  const asked = (await app.evaluate(() => globalThis.requests)).at(-1);
+  assert.match(asked.messages[0].content, /Plumb/);
+  assert.match(asked.messages[1].content, /\[1\] Run a kerb along a curve/);
+  await w.locator('.help-ask').getByRole('button', { name: 'Show me' }).click();
+  assert.equal(await w.evaluate(() => window.mmr.app.tools.id), 'curve');
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  // F1 over a tool button asks about that tool
+  await w.locator('#toolbar button[data-tool="pushpull"]').hover();
+  await w.keyboard.press('F1');
+  await w.waitForFunction(() => window.mmr.app.help.answer?.tool === 'pushpull' && !window.mmr.app.help.answer.busy);
+  assert.match(await w.locator('.help-ask input').inputValue(), /Push/);
+
+  // a copilot turn, then "save what we just did as a tool" in the next one
+  await w.click('[data-tab="ai"]');
+  await w.fill('.chat-input textarea', 'Make a garden step');
+  await w.keyboard.press('Enter');
+  await w.locator('.msg.assistant', { hasText: 'Made a step.' }).waitFor();
+  await w.fill('.chat-input textarea', 'Save what we just did as a tool called Garden step');
+  await w.keyboard.press('Enter');
+  await w.locator('.msg.assistant', { hasText: 'Saved as Garden step.' }).waitFor();
+  const file = path.join(home, 'library', 'mytools', 'garden_step.tool.json');
+  const tool = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(Object.keys(tool.params).sort(), ['depth', 'height', 'width']);
+  assert.deepEqual(tool.steps.map((s) => s.command), ['create_box']);
+  // a command like any other: the API's list, and it runs with other values
+  assert.ok((await w.evaluate(() => window.mmr.list())).some((c) => c.name === 'garden_step'));
+  const made = await ok('garden_step', { width: 5 });
+  assert.equal((await ok('get_entity', { id: made.made[0] })).size[0], 5);
+  // Tools › My tools
+  await w.locator('#menubar button', { hasText: 'Tools' }).click();
+  await w.locator('.menu-pop .has-sub', { hasText: 'My tools' }).hover();
+  await w.locator('#menu-sub').getByText('Garden step…').waitFor();
+  await w.keyboard.press('Escape');
+  await w.evaluate(() => window.mmr.app.ui.closeMenu());
+  // the My tools panel: delete removes the file
+  await w.evaluate(() => window.mmr.app.ui.show('mytools'));
+  const card = w.locator('.card', { hasText: 'Garden step' });
+  await card.waitFor();
+  await card.getByRole('button', { name: 'Delete Garden step' }).click();
+  await w.locator('#modal').getByRole('button', { name: 'Delete' }).click();
+  await w.waitForFunction(() => !window.mmr.app.reg.commands.has('garden_step'));
+  assert.ok(!fs.existsSync(file));
+});

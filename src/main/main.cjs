@@ -244,6 +244,20 @@ ipcMain.handle('library:path', (_, name) => {
   if (!/\.(glb|gltf)$/i.test(p) || !fs.existsSync(p)) throw new Error(`No "${name}" in the component library.`);
   return p;
 });
+// my tools and skills (#242): <name>.tool.json / <name>.skill.json in library/mytools
+const MYTOOLS = path.join(LIBRARY, 'mytools');
+const myToolFile = (kind, name) => {
+  if (!['tool', 'skill'].includes(kind) || !/^[a-z0-9_]{1,60}$/.test(String(name))) throw new Error('Bad tool or skill name.');
+  return path.join(MYTOOLS, `${name}.${kind}.json`);
+};
+ipcMain.handle('mytools:list', () => (fs.existsSync(MYTOOLS) ? fs.readdirSync(MYTOOLS) : []).filter((f) => /\.(tool|skill)\.json$/.test(f)).map((f) => ({ file: f, text: fs.readFileSync(path.join(MYTOOLS, f), 'utf8') })));
+ipcMain.handle('mytools:write', (_, item) => {
+  const file = myToolFile(item?.kind, item?.name);
+  fs.mkdirSync(MYTOOLS, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(item, null, 2));
+  return file;
+});
+ipcMain.handle('mytools:delete', (_, kind, name) => fs.rmSync(myToolFile(kind, name), { force: true }));
 const startupState = () => ({ supported: app.isPackaged, enabled: app.getLoginItemSettings().openAtLogin });
 ipcMain.handle('startup:get', () => startupState());
 ipcMain.handle('startup:set', (_, on) => {

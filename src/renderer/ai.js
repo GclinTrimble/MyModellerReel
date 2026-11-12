@@ -22,7 +22,7 @@ export function fitPicture(url, max = 1568) {
 const readFile = (file) => new Promise((resolve) => Object.assign(new FileReader(), { onload: (e) => resolve(e.target.result) }).readAsDataURL(file));
 /** Local models that can see pictures, by name. */
 const SEES = /llava|vision|-vl|vl:|gemma3|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|llama4|mistral-small3/i;
-import { SKILLS } from '../core/skills.js';
+import { SKILLS, USER_SKILLS } from '../core/skills.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
@@ -99,7 +99,7 @@ export class Assistant {
         'select.skill-pick.grow',
         { title: 'Domain skill: know-how the copilot adds to its instructions', 'aria-label': 'Domain skill', onchange: (e) => this.app.reg.run('use_skill', { name: e.target.value }) },
         h('option', { value: 'none' }, 'No skill'),
-        Object.entries(SKILLS).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, s.label)),
+        Object.entries({ ...SKILLS, ...USER_SKILLS }).map(([k, s]) => h('option', { value: k, selected: this.app.ctx.skill === k }, USER_SKILLS[k] ? `${s.label} (mine)` : s.label)),
       ),
       h(
         'button.icon-btn.sm',
@@ -325,6 +325,7 @@ export class Assistant {
     if (!proposing) app.store.checkpoint();
     ctx.batchDepth = (ctx.batchDepth || 0) + 1;
     const turnLength = this.history.length;
+    (ctx.turnStarts ||= []).push(app.store.doc.journal?.length || 0); // "save what we just did as a tool" (#242)
     const had = new Set(app.store.doc.entities.map((e) => e.id));
     const t0 = performance.now();
     const usage = { in: 0, out: 0, calls: 0, steps: 0 };

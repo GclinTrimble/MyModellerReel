@@ -7,6 +7,7 @@ import { createRegistry, GUIDE } from '../core/commands.js';
 import { registerGenerator } from '../core/derived.js';
 import { booleanMeshes } from '../core/csg.js';
 import { skillPrompt } from '../core/skills.js';
+import { parseUserFile } from '../core/usertools.js';
 import { protocolOf, visionRequest, parseReply, REVIEW_SYSTEM } from '../core/agent.js';
 import { Viewport, skyTexture } from './viewport.js';
 import { Tools, TOOLS, setDisplay, setAxes } from './tools.js';
@@ -73,7 +74,10 @@ app.ctx = {
   timeline: app.timeline,
   io: app.io,
   context: () => app.context,
-  help: { open: (id) => app.help.open(id) },
+  help: { open: (id) => app.help.open(id), read: (id) => app.io.readHowto(id) },
+  // my tools and skills (#242): one file each in the user library
+  userLibrary: { save: (item) => native.invoke('mytools:write', item), remove: (item) => native.invoke('mytools:delete', item.kind, item.name) },
+  onMyTools: () => (app.ui.refresh(), app.ai?.renderHead()),
   version: app.info?.version,
   plugins: {
     list: () => app.plugins,
@@ -103,6 +107,11 @@ app.ctx = {
     close: (ref) => app.closeDocTab(ref),
   },
   ai: {
+    // a one-shot answer without tools (Help, #241)
+    async text({ system, text }) {
+      const protocol = protocolOf(app.settings.ai.provider);
+      return parseReply(protocol, await app.chat(visionRequest(protocol, { system, text, images: [] }))).text;
+    },
     async vision({ system, text, images }) {
       const protocol = protocolOf(app.settings.ai.provider);
       return parseReply(protocol, await app.chat(visionRequest(protocol, { system, text, images }))).text;
@@ -387,6 +396,9 @@ window.addEventListener('keydown', (ev) => {
   const k = ev.key;
   const ctrl = ev.ctrlKey || ev.metaKey;
   if (document.querySelector('dialog[open]')) return;
+  // F1 over a tool button asks Help about that tool (#241), even while a Help field has the focus
+  const overTool = k === 'F1' && document.querySelector('button[data-tool]:hover');
+  if (overTool) return ev.preventDefault(), app.help.ask(`How do I use the ${TOOLS.find((t) => t.id === overTool.dataset.tool)?.label || overTool.dataset.tool} tool?`, overTool.dataset.tool);
   if (ctrl && k.toLowerCase() === 'k') return ev.preventDefault(), app.ui.openPalette();
   if (ctrl && k.toLowerCase() === 'j') return ev.preventDefault(), app.ui.show('ai', true);
   if (ev.target === vcb) {
@@ -410,7 +422,7 @@ window.addEventListener('keydown', (ev) => {
     'ctrl+z': 'undo', 'ctrl+y': 'redo', 'ctrl+shift+z': 'redo', 'ctrl+s': 'save', 'ctrl+shift+s': 'saveAs', 'ctrl+o': 'open', 'ctrl+n': 'new',
     'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline',
     'ctrl+c': 'copy', 'ctrl+x': 'cut', 'ctrl+v': 'paste',
-    f1: 'howto',
+    f1: 'howto', // over a tool button: Help asks about that tool (#241), below
     'shift+z': 'zoomExtents', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',
   };
   const combo = `${ctrl ? 'ctrl+' : ''}${ev.shiftKey ? 'shift+' : ''}${k.toLowerCase()}`;
@@ -470,6 +482,12 @@ if (restored?.doc?.entities?.length) {
 document.getElementById('api-pill').textContent = `API :${app.info.apiPort} · MCP`;
 canvas.focus();
 for (const p of await native.invoke('plugins:list')) await loadPlugin(p);
+for (const f of await native.invoke('mytools:list'))
+  try {
+    app.reg.userItem(parseUserFile(f.text));
+  } catch (e) {
+    console.error(`my tool ${f.file}:`, e);
+  }
 app.ui.refresh();
 app.viewport.listeners.add(() => drawLabels(app));
 // first run, or nothing to restore: the start screen (#109); tests drive the app themselves

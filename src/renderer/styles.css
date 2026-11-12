@@ -603,6 +603,10 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .made-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .start-here { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); border-color: var(--my-accent); }
 .start-here .ph-rocket-launch { color: var(--my-accent); }
+.help-ask { display: flex; flex-direction: column; gap: var(--my-space-2); margin-bottom: var(--my-space-3); }
+.help-ask > .row:first-child .ph-sparkle { color: var(--my-accent); }
+.help-ask input { flex: 1; min-width: 0; }
+.help-answer { padding-left: var(--my-space-2); border-left: 2px solid var(--my-accent); }
 .help-item-x > summary { list-style: none; } .help-item-x > summary::-webkit-details-marker { display: none; }
 .help-item-x[open] > summary { background: var(--my-accent-tint); }
 .help-inline { padding: var(--my-space-2) var(--my-space-2) var(--my-space-3) var(--my-space-4); border-left: 2px solid var(--my-accent); margin: 2px 0 var(--my-space-2) var(--my-space-2); }

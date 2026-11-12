@@ -26,7 +26,9 @@ import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
 import * as SC from './shortcuts.js';
 import * as I18N from './i18n.js';
-import { SKILLS, skillPrompt } from './skills.js';
+import { SKILLS, USER_SKILLS, skillPrompt } from './skills.js';
+import * as UT from './usertools.js';
+import * as HA from './helpask.js';
 import * as Topo from './topology.js';
 import { stripUi } from './fields.js';
 import * as Comp from './components.js';
@@ -90,6 +92,9 @@ export const GUIDE = `MyModellerReel conventions:
 - create_curve makes paths (polyline, smooth spline, bezier) for sweeps and motion.
 - Recipes: save_recipe keeps how the model was built (with {{param}} placeholders); replay_recipe rebuilds it with
   other values. record_macro / stop_macro turn what was just done into a recipe or a plugin command.
+- My tools (#242): "save what we just did as a tool called X" → save_tool (the last turn's steps, numbers become
+  parameters); it becomes a command anyone can call. "Remember this as a skill" → save_skill (instructions + toolset).
+  list_my_tools shows them; delete_my_tool removes one. ask_help answers "how do I" from the help pages.
 - Modelling depth: imprint an outline on a face (or offset_face to inset it), then push_pull it into a recess,
   a boss or a hole; move_elements moves a face, edge ("top front") or corner; repair_mesh cleans imports; create_arc.
   make_component links copies: edit any instance's parts (edit_component) and every instance follows.
@@ -179,7 +184,7 @@ export function createRegistry(ctx) {
         if (c.compound) ctx.batchDepth--, ctx.scriptDepth--;
       }
       if (record) {
-        journal(ctx.doc, name, recArgs);
+        journal(ctx.doc, name, recArgs, result);
         ctx.macro?.steps.push({ command: name, args: structuredClone(recArgs) });
         ctx.journalSel = JSON.stringify(ctx.selection.get());
       }
@@ -193,29 +198,10 @@ export function createRegistry(ctx) {
 }
 
 const JOURNAL_MAX = 2000;
-function journal(doc, command, args) {
-  (doc.journal ||= []).push({ command, args: structuredClone(args) });
+function journal(doc, command, args, result) {
+  // made: the id the step created, so a user tool replayed later can point later steps at the new one (#242)
+  (doc.journal ||= []).push({ command, args: structuredClone(args), ...(typeof result?.id === 'string' ? { made: result.id } : {}) });
   if (doc.journal.length > JOURNAL_MAX) doc.journal.splice(0, doc.journal.length - JOURNAL_MAX);
-}
-
-/** Fill "{{expr}}" placeholders in recipe arguments from params (a whole-string placeholder keeps its type). */
-function fillParams(v, params) {
-  const keys = Object.keys(params);
-  const calc = (expr) => {
-    try {
-      return new Function(...keys, `return (${expr});`)(...keys.map((k) => params[k]));
-    } catch (e) {
-      throw new Error(`Recipe placeholder {{${expr}}}: ${e.message}`);
-    }
-  };
-  if (typeof v === 'string') {
-    const whole = v.match(/^\{\{(.+?)\}\}$/s);
-    if (whole) return calc(whole[1]);
-    return v.replace(/\{\{(.+?)\}\}/gs, (_, x) => String(calc(x)));
-  }
-  if (Array.isArray(v)) return v.map((x) => fillParams(x, params));
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fillParams(x, params)]));
-  return v;
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
@@ -2389,7 +2375,7 @@ function registerCore(reg, ctx) {
     ctx.replaying.add(a.name);
     try {
       for (const [i, s] of r.steps.entries()) {
-        const args = fillParams(s.args || {}, params);
+        const args = UT.fillParams(s.args || {}, params);
         if (s.command === 'run_script') args.params = { ...(args.params || {}), ...params };
         try {
           await reg.run(s.command, args);
@@ -2430,6 +2416,80 @@ function registerCore(reg, ctx) {
     return { name, steps: steps.length, script, ...(plugin ? { plugin } : {}) };
   });
 
+
+  // ---------------------------------------------------------------- my tools and skills (#242), help that answers (#241)
+  const myTools = {};
+  /** Add a user tool or skill to the registry (and the skill list), without writing its file: startup and saves. */
+  reg.userItem = (item) => {
+    if (item.kind === 'skill') return (USER_SKILLS[item.name] = item);
+    const old = reg.commands.get(item.name);
+    if (old && !old.userTool) throw new Error(`"${item.name}" is already a command of the app: give the tool another name.`);
+    reg.define(UT.toolCommand(item, (n, x) => reg.run(n, x)));
+    return (myTools[item.name] = item);
+  };
+  const keep = async (item) => {
+    reg.userItem(item);
+    const file = ctx.userLibrary ? await ctx.userLibrary.save(item) : null;
+    ctx.onMyTools?.();
+    return file;
+  };
+  const has = (n) => reg.commands.has(n);
+
+  def('mytools', 'save_tool', 'Save steps as one of the user\'s own tools: a command (named from `name`, e.g. "Kerb return" → kerb_return) that anyone can call, in search, Tools › My tools, the API and MCP. Without steps it takes what the last copilot turn did; numbers in the steps become parameters (or give params {name: default} and "{{name}}" placeholders in the steps). Saving under an existing tool name replaces it.', obj({ name: str('the tool\'s name, e.g. "Kerb return"'), description: str('what it makes or does'), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the last turn)' }, params: obj({}, []) }, ['name']), async (a) => {
+    const steps = a.steps ? structuredClone(a.steps) : UT.lastTurnSteps(ctx.doc.journal, ctx.turnStarts);
+    const tool = UT.makeTool({ name: a.name, title: a.name, description: a.description, steps, params: a.params }, has);
+    const file = await keep(tool);
+    return { tool: tool.name, title: tool.title, params: tool.params, steps: tool.steps.length, ...(file ? { file } : {}) };
+  });
+  def('mytools', 'save_skill', 'Save instructions and a toolset as one of the user\'s own skills (list_skills / use_skill, and the skill picker): how they like a kind of work done, and the commands it uses.', obj({ name: str('skill name'), label: str('display name'), description: str('one line: when to use it'), prompt: str('the instructions, written to the copilot'), toolset: { type: 'array', items: { type: 'string' }, description: 'commands this skill uses' }, examples: { type: 'array', items: obj({ title: str('title'), code: str('run_script code') }, ['code']), description: 'example scripts' } }, ['name', 'prompt']), async (a) => {
+    const skill = UT.makeSkill(a, has);
+    const file = await keep(skill);
+    return { skill: skill.name, label: skill.label, toolset: skill.toolset, ...(file ? { file } : {}) };
+  });
+  def('mytools', 'list_my_tools', 'The user\'s own tools (each is also a command) and skills. Give name for one in full (steps, prompt).', obj({ name: str('one tool or skill in full') }), (a) => {
+    if (a.name) {
+      const x = myTools[a.name] || USER_SKILLS[a.name] || myTools[UT.slug(a.name)] || USER_SKILLS[UT.slug(a.name)];
+      if (!x) throw new Error(`No tool or skill "${a.name}". Mine: ${[...Object.keys(myTools), ...Object.keys(USER_SKILLS)].join(', ') || 'none yet'}.`);
+      return structuredClone(x);
+    }
+    return {
+      tools: Object.values(myTools).map((t) => ({ name: t.name, title: t.title, description: t.description, params: t.params, steps: t.steps.length })),
+      skills: Object.values(USER_SKILLS).map((s) => ({ name: s.name, label: s.label, description: s.description, toolset: s.toolset })),
+    };
+  });
+  def('mytools', 'delete_my_tool', 'Delete one of the user\'s tools or skills (and its file).', obj({ name: str('tool or skill name') }, ['name']), async (a) => {
+    const n = myTools[a.name] || USER_SKILLS[a.name] ? a.name : UT.slug(a.name);
+    const item = myTools[n] || USER_SKILLS[n];
+    if (!item) throw new Error(`No tool or skill "${a.name}".`);
+    if (item.kind === 'tool') delete myTools[n], reg.commands.delete(n);
+    else {
+      delete USER_SKILLS[n];
+      if (ctx.skill === n) (ctx.skill = null), ctx.onSkill?.(null);
+    }
+    await ctx.userLibrary?.remove(item);
+    ctx.onMyTools?.();
+    return { deleted: n, kind: item.kind };
+  });
+
+  def('help', 'ask_help', 'Answer a "how do I…" question from the help pages and the commands: an answer citing the sections it used ([1], [2]), the sections, the matching commands, and what "Show me" would start. Without an AI model it returns the sections only.', obj({ question: str('the question'), tool: str('a tool id the question is about (F1 over a tool)') }, ['question']), async (a) => {
+    const ids = HA.pagesFor(a.question, { tool: a.tool });
+    const pages = [];
+    for (const id of ids) {
+      const md = await ctx.help?.read?.(id).catch(() => null);
+      if (md) pages.push({ id, md });
+    }
+    const src = HA.helpSources(a.question, pages, reg.list());
+    let answer = null;
+    let error;
+    if (ctx.ai?.text) {
+      try {
+        answer = (await ctx.ai.text({ system: HA.HELP_SYSTEM, text: HA.helpPrompt(a.question, src) })) || null;
+      } catch (e) {
+        error = e.message;
+      }
+    }
+    return { question: a.question, answer, cited: answer ? HA.cited(answer, src).map((s) => s.n) : [], sources: src.sections, commands: src.commands, show: HA.showMe(src, a.tool), ...(error ? { ai_error: error } : {}) };
+  });
 
   // ---------------------------------------------------------------- annotate and document (Phase 11)
   const REF = { description: 'a point [x, y, z], an entity id / name (its middle), { id, point: [x, y, z] } (a point stuck to it), { id, vertex: k } or { id, corner: "min" | "max" | [sx, sy, sz] } (0 min, 1 max of its box)' };
@@ -3598,12 +3658,15 @@ function registerCore(reg, ctx) {
     return out;
   });
 
-  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
-    const pick = a.name ? [[a.name, SKILLS[a.name]]] : Object.entries(SKILLS);
-    return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(a.name ? { prompt: s.prompt, examples: s.examples } : {}), active: ctx.skill === name }));
+  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture, and skills the user saved (save_skill). Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full') }), (a) => {
+    const all = { ...SKILLS, ...USER_SKILLS };
+    if (a.name && !all[a.name]) throw new Error(`No skill "${a.name}". Skills: ${Object.keys(all).join(', ')}.`);
+    const pick = a.name ? [[a.name, all[a.name]]] : Object.entries(all);
+    return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(USER_SKILLS[name] ? { mine: true } : {}), ...(a.name ? { prompt: s.prompt, examples: s.examples, ...(s.toolset ? { toolset: s.toolset } : {}) } : {}), active: ctx.skill === name }));
   });
 
-  def('ai', 'use_skill', 'Give the in-app copilot a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
+  def('ai', 'use_skill', 'Give the in-app copilot a domain skill or a skill the user saved (its know-how joins the system prompt), or none.', obj({ name: str('skill name (list_skills), or none') }, ['name']), (a) => {
+    if (a.name !== 'none' && !SKILLS[a.name] && !USER_SKILLS[a.name]) throw new Error(`No skill "${a.name}". Skills: ${[...Object.keys(SKILLS), ...Object.keys(USER_SKILLS)].join(', ')}, none.`);
     ctx.skill = a.name === 'none' ? null : a.name;
     ctx.onSkill?.(ctx.skill);
     return { skill: ctx.skill, prompt: ctx.skill ? skillPrompt(ctx.skill) : '' };

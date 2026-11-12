@@ -1133,6 +1133,25 @@ const PAGES = {
     await shot('Each step moves on when you have done it; the lesson earns its points');
     await js('window.mmr.app.learning.stop(); return 1;');
   },
+  async 'my-tools-and-skills'() {
+    await fresh();
+    await camera([6, 5, 9], [2, 0, 2]);
+    // the answer comes from the configured model; here a scripted one stands in so the page does not need a model
+    await js(`const a = window.mmr.app; a.realChat = a.chat; a.chat = async () => { const t = '1. Draw the path with the **Curve** tool (U): click the points, press Enter [1].\\n2. **Tools › Sweep a profile along a path…** and pick the kerb profile [1].\\n3. Move the curve points later: the kerb follows [1].'; const p = a.settings.ai.provider; return p === 'anthropic' ? { content: [{ type: 'text', text: t }] } : p === 'ollama' ? { message: { role: 'assistant', content: t } } : { choices: [{ message: { role: 'assistant', content: t } }] }; }; await a.help.ask('how do I run a kerb along a curve'); a.chat = a.realChat; return 1;`);
+    await shot('Help › Ask Plumb: an answer from the help pages, with its sources');
+    const c = await run('create_curve', { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' });
+    await run('sweep', { path: c.id, profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' });
+    await run('save_tool', { name: 'Kerb return', description: 'A kerb round a corner', steps: [{ command: 'create_curve', args: { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' }, made: 'k1' }, { command: 'sweep', args: { path: 'k1', profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' } }] });
+    await run('save_skill', { name: 'Site kerbs', description: 'Kerbs and returns the way our office draws them', prompt: 'Kerbs are 150 mm upstands; returns have a 6 m radius.', toolset: ['create_curve', 'sweep'] });
+    await panel('mytools');
+    await shot('My tools: run, edit, export or delete what Plumb saved');
+    await js("window.mmr.app.ui.runMyTool('kerb_return'); return 1;");
+    await shot('Run it with other values');
+    await clean();
+    // the docs run against a real library: leave nothing behind
+    await run('delete_my_tool', { name: 'kerb_return' });
+    await run('delete_my_tool', { name: 'site_kerbs' });
+  },
   async 'first-steps-with-the-copilot'() {
     await fresh();
     await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
