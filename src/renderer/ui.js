@@ -532,6 +532,8 @@ export class UI {
       isolate: { label: 'Isolate (hide everything else)', icon: 'eye', run: () => sel().length && app.reg.run('set_properties', { ids: app.store.doc.entities.filter((e) => !e.parent && !sel().includes(e.id) && e.visible !== false).map((e) => e.id), visible: false }) },
       properties: { label: 'Properties', icon: 'info', run: () => this.show('entity') },
       exportUsdz: { label: 'Export USDZ (iPhone AR)…', icon: 'device-mobile', run: run('export', { format: 'usdz' }) },
+      referenceFile: { label: 'Reference a design (live)…', icon: 'link-simple', run: run('reference_file', {}) },
+      publishReference: { label: 'Publish as live reference…', icon: 'broadcast', checked: () => !!app.io.published, run: () => (app.io.published ? app.reg.run('publish_reference', { stop: true }) : app.reg.run('publish_reference', {})).then((r) => r.publishing === false && this.toast('Stopped publishing')).catch((e) => this.toast(e.message, 'danger')) },
       export3mf: { label: 'Export 3MF (3D printing)…', icon: 'printer', run: run('export', { format: '3mf' }) },
       compress: { label: 'Compress a GLB…', icon: 'file-zip', run: async () => {
         const path = await app.io.pick('glb', false);
@@ -587,7 +589,7 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'timeline', 'theme', 'perf'],
@@ -803,7 +805,7 @@ export class UI {
     const A = this.actions;
     const app = this.app;
     const fmt = (format, label) => ({ label, run: (selection) => app.reg.run('export', { format, ...(selection ? { selection: true } : {}) }) });
-    const MODEL = [fmt('glb', 'GLB: one compact 3D file'), fmt('gltf', 'glTF'), fmt('obj', 'OBJ'), fmt('stl', 'STL (3D printing)'), fmt('3mf', '3MF (3D printing, with colours)'), fmt('usdz', 'USDZ (AR on iPhone and iPad)'), fmt('ifc', 'IFC (BIM)'), fmt('dxf', 'DXF (CAD)'), fmt('landxml', 'LandXML (surfaces, alignments, points)'), fmt('geojson', 'GeoJSON (GIS)'), fmt('shp', 'Shapefile (GIS)')];
+    const MODEL = [fmt('glb', 'GLB: one compact 3D file'), fmt('gltf', 'glTF'), fmt('obj', 'OBJ'), fmt('stl', 'STL (3D printing)'), fmt('3mf', '3MF (3D printing, with colours)'), fmt('usdz', 'USDZ (AR on iPhone and iPad)'), fmt('usda', 'OpenUSD (.usda text)'), fmt('ifc', 'IFC (BIM)'), fmt('dxf', 'DXF (CAD)'), fmt('landxml', 'LandXML (surfaces, alignments, points)'), fmt('geojson', 'GeoJSON (GIS)'), fmt('shp', 'Shapefile (GIS)')];
     const act = (label, id) => ({ label, run: () => A[id].run() });
     const WHAT = {
       model: ['The whole model', 'cube', [...MODEL, act('Web viewer: one HTML page that opens anywhere', 'webViewer'), act('Compress a GLB (meshopt or Draco)', 'compress')]],
@@ -1236,7 +1238,7 @@ export class UI {
     const q = o.q.toLowerCase();
     const match = (e) => !q || e.name.toLowerCase().includes(q) || (e.tag || '').toLowerCase().includes(q) || (e.point?.code || '').toLowerCase().includes(q);
     const kind = (e) => (e.type === 'point' ? 'Survey points' : e.annotation ? 'Dimensions and labels' : e.underlay ? 'Drawings' : e.pointcloud ? 'Point clouds' : e.alignment ? 'Alignments' : e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.generator === 'finished_ground' ? 'Surfaces' : e.curve ? 'Lines and curves' : 'Groups and shapes');
-    const iconOf = (e) => (e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
+    const iconOf = (e) => (e.xref ? 'link-simple' : e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
     const order = [];
     const row = (e, depth) => {
       order.push(e.id);
@@ -1289,6 +1291,13 @@ export class UI {
         name,
         kids.length ? h('span.muted.small', {}, kids.length) : null,
         animated ? icon('film-strip') : null,
+        ...(e.xref
+          ? [
+              h('button.icon-btn.sm', { title: `Live reference to ${e.xref.path}: reload it`, 'aria-label': 'Reload reference', onclick: (ev) => (ev.stopPropagation(), run('reload_reference', { ids: [e.id] })) }, icon('arrows-clockwise')),
+              h('button.icon-btn.sm', { title: 'Bind: make it local (stops following the file)', 'aria-label': 'Bind reference', onclick: (ev) => (ev.stopPropagation(), run('bind_reference', { ids: [e.id] })) }, icon('link-break')),
+              h('button.icon-btn.sm', { title: 'Remove the reference', 'aria-label': 'Remove reference', onclick: (ev) => (ev.stopPropagation(), run('delete', { ids: [e.id] })) }, icon('trash')),
+            ]
+          : []),
         h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
         h('button.icon-btn.sm', { title: e.locked ? 'Unlock' : 'Lock', 'aria-label': e.locked ? 'Unlock' : 'Lock', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], locked: !e.locked })) }, icon(e.locked ? 'lock-simple' : 'lock-simple-open')),
       );

@@ -14,7 +14,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   triangulation), `document.js` (doc JSON, Store with snapshot undo and proposals, transforms), `animation.js` (keys,
   easing, evaluate), `commands.js` (registry + GUIDE text sent to AIs), `schema.js` (argument checking),
   `routing.js` (toolsets, ranking, examples), `query.js` (selection, raycast, free space, placement maths),
-  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `curves.js` (curves,
+  `agent.js` (provider protocols and the turn loop shared by the copilot and `npm run eval`), `usd.js` (the .usda writer, live references and their overrides), `curves.js` (curves,
   sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
   `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
   `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`

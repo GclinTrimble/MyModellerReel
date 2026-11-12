@@ -882,3 +882,29 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   assert.ok(sent, 'the picture went with the message');
   assert.equal(await w.locator('.msg.user img').count(), 1);
 });
+
+test('OpenUSD: export .usda and .usdz, import them back, reference a published file that follows its changes', async () => {
+  await ok('new_document', { name: 'USD' });
+  await ok('create_box', { width: 2, height: 1, depth: 3, name: 'Slab', color: '#ff0000' });
+  const usda = path.join(home, 'out', 'a.usda').split(path.sep).join('/');
+  const usdz = path.join(home, 'out', 'a.usdz').split(path.sep).join('/');
+  await ok('export', { format: 'usda', path: usda });
+  await ok('export', { format: 'usdz', path: usdz });
+  for (const p of [usda, usdz]) assert.ok((await ok('import', { path: p })).created.parts >= 1, `${p} reads back`);
+  // live reference: publish, reference, edit, the reference follows
+  const live = path.join(home, 'out', 'live.usda').split(path.sep).join('/');
+  await ok('publish_reference', { path: live });
+  await ok('publish_reference', { stop: true }); // one snapshot: a window referencing what it publishes would loop
+  const ref = await ok('reference_file', { path: live, name: 'Live' });
+  assert.ok(ref.parts >= 3);
+  await new Promise((r) => setTimeout(r, 1000)); // the main process has started watching it
+  fs.writeFileSync(live, fs.readFileSync(usda, 'utf8')); // the other window wrote a new version
+  await assert.doesNotReject(async () => {
+    for (let i = 0; i < 100; i++) {
+      if ((await w.evaluate((id) => window.mmr.app.store.doc.entities.filter((e) => e.parent === id).length, ref.id)) === 1) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error('the reference did not follow the file');
+  });
+  await ok('bind_reference', { ids: [ref.id] });
+});
