@@ -1,4 +1,4 @@
-// File formats (#152): one registry, so LandXML, IFC, DXF and plugins' formats behave the same for people, the copilot
+// File formats (#152): one registry, so LandXML, IFC, DXF and plugins' formats behave the same for people, Plumb
 // and scripts. A format reads into the document and returns a report; it writes the document (or a selection) out.
 const formats = new Map();
 

@@ -3316,7 +3316,7 @@ function registerCore(reg, ctx) {
     return { curves: made.length, traced_at: [w, h] };
   }, true);
 
-  def('drawings', 'read_drawing', 'The copilot\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
+  def('drawings', 'read_drawing', 'Plumb\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
     const doc = ctx.doc;
     const e = underlayOf(a.id);
     let texts = [];
@@ -3427,7 +3427,7 @@ function registerCore(reg, ctx) {
     return LEARN.progress([...done], [...tut]);
   });
   // achievements and insights (#222): counted by the app on this PC (settings.stats), read here
-  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what the copilot did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
+  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what Plumb did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
     const p = LEARN.progress(lessonsDone(), tutorialsDone());
     return ACH.insights(ctx.io?.settings?.()?.stats || ctx.stats || {}, { lessons: p.lessons, tutorials: p.tutorials });
   });
@@ -3452,15 +3452,15 @@ function registerCore(reg, ctx) {
     if (!ctx.io?.aiSetup) throw new Error('Needs the desktop app.');
     return ctx.io.aiSetup;
   };
-  def('ai', 'ai_setup_status', 'Where the local copilot stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
+  def('ai', 'ai_setup_status', 'Where Plumb\'s local model stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
     const s = await setupIo()('status');
     s.next = s.provider !== 'ollama' ? 'ready' : s.ollama === 'missing' ? 'install' : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'download' : 'ready';
     return s;
   });
   def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
   def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
-  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: the copilot\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
-  def('ai', 'use_ai_model', 'Use a model for the copilot: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
+  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: Plumb\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
+  def('ai', 'use_ai_model', 'Use a model for Plumb: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };
     await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
@@ -3522,7 +3522,7 @@ function registerCore(reg, ctx) {
     return summary(ctx.doc, e);
   }, true);
 
-  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to the copilot.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
+  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to Plumb.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
     if (!ctx.io?.transcribe) throw new Error('Needs the desktop app.');
     return ctx.io.transcribe(a.path, a.lang);
   });
@@ -3598,12 +3598,12 @@ function registerCore(reg, ctx) {
     return out;
   });
 
-  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
+  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to Plumb, the in-app assistant.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
     const pick = a.name ? [[a.name, SKILLS[a.name]]] : Object.entries(SKILLS);
     return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(a.name ? { prompt: s.prompt, examples: s.examples } : {}), active: ctx.skill === name }));
   });
 
-  def('ai', 'use_skill', 'Give the in-app copilot a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
+  def('ai', 'use_skill', 'Give Plumb, the in-app assistant a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
     ctx.skill = a.name === 'none' ? null : a.name;
     ctx.onSkill?.(ctx.skill);
     return { skill: ctx.skill, prompt: ctx.skill ? skillPrompt(ctx.skill) : '' };
@@ -4241,7 +4241,7 @@ function registerCore(reg, ctx) {
       animated: doc.animation.tracks.length,
     };
   });
-  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a copilot prompt and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
+  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a prompt for Plumb and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
   def('scene', 'open_howto', 'Open a how-to page in the Help panel (show the person how), and get its text.', obj({ id: str('page id from list_howtos', HOWTOS.map((x) => x.id)) }, ['id']), async (a) => {
     const page = HOWTOS.find((x) => x.id === a.id);
     if (!page) throw new Error(`No page "${a.id}". list_howtos shows them.`);

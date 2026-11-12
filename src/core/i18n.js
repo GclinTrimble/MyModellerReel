@@ -1,5 +1,5 @@
 // Localisation (#114): French first. English is the key; a missing translation shows the English. The menus, tool
-// names, dock tabs and the most used dialogs go through t(); commands, their descriptions and the copilot stay
+// names, dock tabs and the most used dialogs go through t(); commands, their descriptions and Plumb stay
 // English (they are an API).
 export const LANGUAGES = { en: 'English', fr: 'Français' };
 
@@ -18,7 +18,7 @@ const FR = {
   'Import (LandXML, IFC, DXF, models)…': 'Importer (LandXML, IFC, DXF, modèles)…', 'Units and precision…': 'Unités et précision…', 'Model info…': 'Infos du modèle…',
   // panels
   Layers: 'Calques', Components: 'Composants', Profiles: 'Profils', 'Selection sets': 'Jeux de sélection', 'Colour by layer': 'Couleur par calque', Measurements: 'Mesures', Tracks: 'Pistes',
-  'Ask in plain words. The copilot uses every modelling, animation and file command, sees what you selected, and each of its turns is a single undo step.': 'Demandez simplement. Le copilote utilise toutes les commandes de modélisation, d’animation et de fichiers, voit votre sélection, et chacun de ses tours s’annule en une fois.',
+  'Ask in plain words. Plumb uses every modelling, animation and file command, sees what you selected, and each of its turns is a single undo step.': 'Demandez simplement. Plumb utilise toutes les commandes de modélisation, d’animation et de fichiers, voit votre sélection, et chacun de ses tours s’annule en une fois.',
   'Describe what to build or animate…  (Enter sends, Shift+Enter new line)': 'Décrivez ce qu’il faut construire ou animer…  (Entrée envoie, Maj+Entrée nouvelle ligne)',
   Language: 'Langue', Appearance: 'Apparence', 'Dark theme': 'Thème sombre', Close: 'Fermer', Cancel: 'Annuler', Run: 'Exécuter', Apply: 'Appliquer',
   'Hold to talk': 'Maintenir pour parler', Versions: 'Versions', Documents: 'Documents', 'Keyboard shortcuts': 'Raccourcis clavier',

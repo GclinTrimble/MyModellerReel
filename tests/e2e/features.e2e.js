@@ -882,3 +882,24 @@ test('pictures for the copilot (#229, #230): a sketch straightened into a profil
   assert.ok(sent, 'the picture went with the message');
   assert.equal(await w.locator('.msg.user img').count(), 1);
 });
+
+test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens it there, the state is remembered', async () => {
+  const hidden = () => w.evaluate(() => document.body.classList.contains('no-dock'));
+  const viewW = () => w.evaluate(() => document.getElementById('viewport').getBoundingClientRect().width);
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  const wide = await viewW();
+  await w.keyboard.press('Control+B');
+  assert.equal(await hidden(), true);
+  assert.equal(await w.locator('#dock-body').isHidden(), true);
+  assert.ok((await viewW()) > wide + 200, 'the view takes the width');
+  await w.reload();
+  await w.waitForFunction(() => window.mmr?.app?.tools);
+  assert.equal(await hidden(), true, 'remembered after a reload');
+  await w.click('[data-tab="materials"]');
+  assert.equal(await hidden(), false);
+  assert.equal(await w.locator('#dock-tabs [data-tab="materials"]').getAttribute('aria-selected'), 'true');
+  await w.click('.dock-toggle');
+  assert.equal(await hidden(), true);
+  await w.locator('#viewbar button[aria-label="Side panel (Ctrl+B)"]').click();
+  assert.equal(await hidden(), false);
+});

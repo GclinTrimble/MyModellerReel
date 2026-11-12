@@ -23,7 +23,7 @@ The view bar stays at the top right whatever the layout, with **Select**, **pers
 
 **[Path / alignment](tool:curve)** (with the Line tool): click points; **A** switches to arc segments, **S** smooths the path into a spline, `r 5` rounds every corner to 5 m. Enter keeps it as a path for sweeps and motion; **Ctrl+Enter** makes it a road alignment, whose radii you change corner by corner in the Entity panel. Sweeps have civil sections too: road crown, barrier and mountable kerbs, footpath with kerb, V-ditch, lined channel, U-drain, hollow pipe, pipe trench, guard rail, L-wall.
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a layer C-ROAD/Kerbs in red, dashed, and put the kerbs on it; then sweep a barrier kerb along the Path.
 

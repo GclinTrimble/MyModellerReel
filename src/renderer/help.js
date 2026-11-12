@@ -108,10 +108,10 @@ export class Help {
     const listEl = h('div.help-list');
     this.renderList(listEl, list);
     queueMicrotask(() => search.focus({ preventScroll: true }));
-    return h('div.panel.help', {}, this.startHere(), app.learning ? app.learning.card() : null, app.learning ? app.learning.insightsCard() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Click a topic to read it here; every page shows the clicks, a prompt for the copilot, and the commands for scripts and MCP.'));
+    return h('div.panel.help', {}, this.startHere(), app.learning ? app.learning.card() : null, app.learning ? app.learning.insightsCard() : null, h('h3', {}, 'How do I…'), search, listEl, h('p.small.muted', {}, 'Click a topic to read it here; every page shows the clicks, a prompt for Plumb, and the commands for scripts and MCP.'));
   }
 
-  /** New here (#223): the app is AI first, so the first steps are the copilot's, with the way back to editing by hand. */
+  /** New here (#223): the app is AI first, so the first steps are Plumb's, with the way back to editing by hand. */
   startHere() {
     const app = this.app;
     if (app.settings?.help?.hideStart) return null;
@@ -119,9 +119,9 @@ export class Help {
     return h(
       'div.card.start-here',
       {},
-      h('div.row', {}, icon('rocket-launch'), h('strong.grow', {}, 'New here? Start with the copilot'), h('button.icon-btn.sm', { title: 'Hide this card', 'aria-label': 'Hide the start card', onclick: () => app.io.setSettings({ help: { hideStart: true } }).then(() => app.ui.renderDock()) }, icon('x'))),
-      h('p.small', {}, 'Tell the copilot what you want in plain words; it drafts it with the same tools you have. What it makes stays parametric: select it and change its sizes by hand, or ask again. Each request is one undo step.'),
-      h('div.row.wrap', {}, h('button.btn.sm.primary', { onclick: () => app.ui.show('ai') }, icon('sparkle'), 'Open the copilot'), h('button.btn.sm', { onclick: () => this.open('first-steps-with-the-copilot') }, icon('book-open'), 'First steps'), h('button.btn.sm', { onclick: () => app.ui.actions.tour?.run() }, icon('compass'), '2-minute tour')),
+      h('div.row', {}, icon('rocket-launch'), h('strong.grow', {}, 'New here? Start with Plumb'), h('button.icon-btn.sm', { title: 'Hide this card', 'aria-label': 'Hide the start card', onclick: () => app.io.setSettings({ help: { hideStart: true } }).then(() => app.ui.renderDock()) }, icon('x'))),
+      h('p.small', {}, 'Tell Plumb what you want in plain words; it drafts it with the same tools you have. What it makes stays parametric: select it and change its sizes by hand, or ask again. Each request is one undo step.'),
+      h('div.row.wrap', {}, h('button.btn.sm.primary', { onclick: () => app.ui.show('ai') }, icon('sparkle'), 'Open Plumb'), h('button.btn.sm', { onclick: () => this.open('first-steps-with-the-copilot') }, icon('book-open'), 'First steps'), h('button.btn.sm', { onclick: () => app.ui.actions.tour?.run() }, icon('compass'), '2-minute tour')),
       h('div.small.muted', {}, 'Try, one after the other:'),
       ...prompts.map((p) => h('button.chip', { onclick: () => app.ai.ask(p) }, p)),
     );
@@ -158,7 +158,7 @@ export class Help {
         if (!items.length) return [];
         return [...(area ? [h('div.overline', {}, area)] : []), ...items.map(item)];
       }),
-      ...(list.length ? [] : [h('p.muted', {}, 'Nothing matches: try other words, or ask the copilot.')]),
+      ...(list.length ? [] : [h('p.muted', {}, 'Nothing matches: try other words, or ask Plumb.')]),
     );
   }
 }

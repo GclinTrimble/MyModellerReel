@@ -17,7 +17,7 @@ Your surface from survey points is nearly right: a few triangles cross a ridge t
 
 The surface stays live: move or add a survey point and it rebuilds with your edits kept.
 
-## Ask the copilot
+## Ask Plumb
 
 > On Existing ground, leave out point 2_2, drop triangles longer than 30 m, and cut a hole around the pond.
 

@@ -1,4 +1,4 @@
-// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in the copilot and readable
+// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in Plumb and readable
 // by any client (list_skills). Workflows (#97) are the step-by-step prompts the MCP server offers as MCP prompts.
 // Plain data, no dependencies: the MCP server imports this file directly.
 
@@ -68,7 +68,7 @@ find_free_space for a new piece. Materials: Oak, Walnut, Steel, Glass, Plaster.`
   },
 };
 
-/** The text added to the copilot's system prompt for a skill (or '' for none). */
+/** The text added to Plumb's system prompt for a skill (or '' for none). */
 export function skillPrompt(name) {
   const s = SKILLS[name];
   if (!s) return '';

@@ -15,11 +15,11 @@ Someone sent you survey data (LandXML), a BIM model (IFC) or a CAD drawing (DXF)
 4. IFC: the site / building / storey tree, IFC classes, property sets as data, layers and the georeferencing.
    ![IFC: the site / building / storey tree, IFC classes, property sets as data, laye](media/bring-in-landxml-ifc-dxf/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\exchange\survey.xml and tell me what came in.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
