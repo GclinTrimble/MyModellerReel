@@ -8,6 +8,7 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
 import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES } from './forms.js';
+import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
@@ -60,10 +61,12 @@ export class UI {
   }
 
   /** A form for any command, generated from its JSON Schema: the UI path to every command with parameters. */
-  async commandDialog(name, preset = {}) {
+  async commandDialog(name, preset = {}, { form: modal = false } = {}) {
     const c = this.app.reg.commands.get(name);
     if (!c) return this.toast(`No command ${name}`, 'danger');
     if (name === 'create_layer') return this.layerDialog(preset);
+    // points to pick: straight into the view (#234); the form is the last resort
+    if (!modal && pickSteps(c.params, preset).length) return this.app.pickFirst.start(name, preset);
     // a friendly form (#201): plain words, the right control per field, points picked in the view, errors in place
     const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint), pickEntity: (hint) => this.pickInView(0, hint, true) });
     const err = h('div.form-error.form-top', { role: 'alert' });
@@ -1053,10 +1056,21 @@ export class UI {
       ['survey', 'Survey', 'map-pin'],
       ['settings', 'Settings', 'gear'],
       ['help', 'Help', 'question'],
+      ['tool', 'Tool', 'crosshair'], // shown while a command picks (#235)
     ];
     this.$('dock-tabs').replaceChildren(
-      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id }, 'aria-label': t(label) }, icon(ic), t(label))),
+      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id }, 'aria-label': t(label), hidden: id === 'tool' && !this.app.pickFirst?.active }, icon(ic), t(label))),
     );
+  }
+  /** The Tool tab (#235): shown and opened while a command picks, then back to the tab before. */
+  toolTab(on, back = 'ai') {
+    const b = this.$('dock-tabs').querySelector('[data-tab=tool]');
+    if (b) b.hidden = !on;
+    if (on) this.show('tool');
+    else if (this.tab === 'tool') this.show(back === 'tool' ? 'ai' : back);
+  }
+  panel_tool() {
+    return this.app.pickFirst.panel();
   }
   show(tab, focus = false) {
     this.tab = tab;
@@ -2423,7 +2437,7 @@ export class UI {
         label: c.name,
         desc: c.description,
         icon: (c.params.required || []).length ? 'textbox' : 'terminal',
-        run: () => ((c.params.required || []).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+        run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
       }));
       items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
       if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });
