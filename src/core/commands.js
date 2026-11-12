@@ -50,7 +50,7 @@ import { HOWTOS, findHowtos } from './howto.js';
 import './landxml.js';
 import './dxf.js';
 import './ifc.js';
-import './trimble.js';
+import * as TB from './trimble.js';
 import './gis.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
@@ -1192,7 +1192,7 @@ function registerCore(reg, ctx) {
     return { display: ctx.doc.settings.display_units || 'auto', precision: ctx.doc.settings.precision ?? null, units: g.units, angles: g.angles };
   }, true);
 
-  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', { ...obj({ name:str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: { ...str('or: COGO from this point'), ui: { kind: 'point', names: true } }, bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), ui: { modes: [{ label: 'Coordinates', fields: ['n', 'e', 'z', 'grid'], required: ['n', 'e'] }, { label: 'A model point', fields: ['at'] }, { label: 'From another point', fields: ['from', 'bearing', 'distance', 'dz'], required: ['from', 'bearing', 'distance'] }] } }, (a) => {
+  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', { ...obj({ name:str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: { ...str('or: COGO from this point'), ui: { kind: 'point', names: true } }, bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: { ...str('feature code (+ string and controls: "KERB 2 B"); none is fine'), ui: { kind: 'code' } }, desc: str('description'), attrs: obj({}, []) }), ui: { modes: [{ label: 'Coordinates', fields: ['n', 'e', 'z', 'grid'], required: ['n', 'e'] }, { label: 'A model point', fields: ['at'] }, { label: 'From another point', fields: ['from', 'bearing', 'distance', 'dz'], required: ['from', 'bearing', 'distance'] }] } }, (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const k = S.UNITS[g.units] || 1;
@@ -1608,12 +1608,11 @@ function registerCore(reg, ctx) {
     }
     return { lines: plan.lines.length, objects: plan.objects.length, warnings: plan.warnings.map((w) => w.message) };
   };
-  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines), place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), description: str('what it is'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), options: { type: 'array', items: { type: 'string' } }, required: bool('') }, ['name']), description: 'attribute fields' } }, ['code']), (a) => {
+  const CODE_FIELDS = { description: str('what it is'), type: str('point, line or polygon (line and polygon join their points)', TB.FEATURE_TYPES), category: str('group, e.g. Road'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line_style: str('line style name, e.g. Dashed'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), kind: str('Trimble type when it says more', ['integer', 'date', 'time', 'file', 'photo']), options: { type: 'array', items: { type: 'string' } }, default: { description: 'default value' }, required: bool('') }, ['name']), description: 'attribute fields' } };
+  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines) or polygons, place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), ...CODE_FIELDS }, ['code']), (a) => {
     const doc = ctx.doc;
     const code = a.code.toUpperCase();
-    const old = (doc.featureCodes ||= {})[code] || {};
-    const def = { ...old };
-    for (const k of ['description', 'layer', 'color', 'line', 'breakline', 'object', 'attrs']) if (a[k] !== undefined) def[k] = a[k];
+    const def = S.editCode((doc.featureCodes ||= {})[code], a);
     doc.featureCodes[code] = def;
     return { code, ...def, processed: processCodes() };
   }, true);
@@ -1628,12 +1627,78 @@ function registerCore(reg, ctx) {
     doc.featureCodes = a.replace ? up : { ...(doc.featureCodes || {}), ...up };
     return { codes: Object.keys(doc.featureCodes), processed: processCodes() };
   }, true);
-  def('terrain', 'export_feature_library', 'The feature library as JSON (and to a file with path).', obj({ path: str('absolute .json path') }), async (a) => {
-    const lib = ctx.doc.featureCodes || {};
-    if (a.path) await ctx.io.writeText(a.path, JSON.stringify(lib, null, 2));
-    return { codes: Object.keys(lib).length, library: lib };
+  def('terrain', 'export_feature_library', "A feature library (the model's, or a saved one by library) as JSON, Trimble FXL or CSV, to a file with path (the format follows its extension).", obj({ library: str("a saved library name (default: the model's codes)"), path: str('absolute .json, .fxl or .csv path'), format: str('default: from the path, else json', ['json', 'fxl', 'csv']) }), async (a) => {
+    const lib = a.library ? await codeLibs().call('get', a.library) : { codes: ctx.doc.featureCodes || {}, layers: [] };
+    const format = a.format || a.path?.match(/\.(fxl|csv)$/i)?.[1].toLowerCase() || 'json';
+    const text = format === 'fxl' ? TB.fxlWrite(lib) : format === 'csv' ? TB.featureCsv(lib.codes) : JSON.stringify(lib.codes, null, 2);
+    if (a.path) await ctx.io.writeText(a.path, text);
+    return { codes: Object.keys(lib.codes).length, format, ...(a.path ? { path: a.path } : format === 'json' ? { library: lib.codes } : { text }) };
   });
   def('terrain', 'process_codes', 'Run the feature library over the points again: lines, breaklines, objects, layers and colours (it also runs after importing or editing points). Returns warnings for unknown codes and missing attributes.', obj({}), () => processCodes(), true);
+  // feature code libraries: named libraries in this computer's store (SQLite in the data folder, through ctx.codelibs);
+  // the model keeps the name of the one it uses and a copy of its codes, so the file works on any machine
+  const codeLibs = () => {
+    if (!ctx.codelibs) throw new Error('Feature code libraries live in the desktop app.');
+    return ctx.codelibs;
+  };
+  const useLibrary = (lib) => {
+    ctx.doc.featureLibrary = { name: lib.name, source: lib.source || null, modified: lib.modified };
+    ctx.doc.featureCodes = lib.codes;
+    return processCodes();
+  };
+  const usedLibrary = () => ctx.doc.featureLibrary?.name || null;
+  const libName = str('library name (feature_libraries lists them)');
+  def('terrain', 'feature_libraries', 'The feature code libraries saved on this computer (name, number of codes, where they came from) and the one this model uses.', obj({}), async () => ({ libraries: await codeLibs().call('list'), in_use: usedLibrary() }));
+  def('terrain', 'import_feature_library', 'Keep a feature code library on this computer under a name: a Trimble FXL (Feature Definition Manager: codes, descriptions, point / line / polygon, layers, colours, line styles, attributes with their types and pick lists) or a JSON library { CODE: { … } }, from a path or text; with neither, the model\'s own codes. Then use_feature_library makes a model use it.', obj({ path: str('absolute .fxl or .json path'), text: str('or: the file contents'), format: str('when the extension does not say', ['fxl', 'json']), name: str('library name (default: the file name)'), replace: bool('replace a library of that name') }), async (a) => {
+    let text = a.text;
+    if (a.path && text === undefined) {
+      if (!ctx.io?.readText) throw new Error('Reading a path needs the desktop app: give text.');
+      text = await ctx.io.readText(a.path);
+    }
+    const base = a.path ? a.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') : null;
+    let lib;
+    if (text === undefined) {
+      if (!Object.keys(ctx.doc.featureCodes || {}).length) throw new Error('Give path or text: this model has no feature codes to keep.');
+      lib = { codes: ctx.doc.featureCodes, layers: [], source: 'model' };
+    } else if ((a.format || (/\.json$/i.test(a.path || '') || /^\s*\{/.test(text) ? 'json' : 'fxl')) === 'json') {
+      const j = JSON.parse(text);
+      lib = { codes: Object.fromEntries(Object.entries(j.codes || j).map(([k, v]) => [k.toUpperCase(), v])), layers: j.layers || [], source: a.path || 'json' };
+    } else lib = { ...TB.fxlLibrary(text), source: a.path || 'fxl' };
+    if (!Object.keys(lib.codes).length) throw new Error('No feature codes in that library.');
+    const name = a.name || base || usedLibrary() || 'Feature library';
+    const r = await codeLibs().call('save', { ...lib, name }, !!a.replace);
+    const types = Object.values(lib.codes).reduce((m, d) => ((m[TB.featureType(d)] = (m[TB.featureType(d)] || 0) + 1), m), {});
+    return { ...r, types, layers: lib.layers.length };
+  });
+  def('terrain', 'feature_library', 'The codes of a saved feature library (or of the model\'s, without name): code, description, type, layer, colour, attributes. search filters by code, description, layer or category.', obj({ name: libName, search: str('text to look for'), limit: num('most codes to return (default 100)') }), async (a) => {
+    const lib = a.name ? await codeLibs().call('get', a.name) : { name: usedLibrary(), codes: ctx.doc.featureCodes || {} };
+    const found = S.searchCodes(lib.codes, a.search);
+    return { name: lib.name, source: lib.source, total: Object.keys(lib.codes).length, found: found.length, codes: found.slice(0, a.limit || 100) };
+  });
+  def('terrain', 'manage_feature_library', 'Rename, duplicate or delete a saved feature library.', obj({ name: libName, action: str('what to do', ['rename', 'duplicate', 'delete']), to: str('rename / duplicate: the new name') }, ['name', 'action']), async (a) => {
+    const L = codeLibs();
+    const r = a.action === 'rename' ? await L.call('rename', a.name, a.to) : a.action === 'duplicate' ? await L.call('duplicate', a.name, a.to) : await L.call('remove', a.name);
+    if (a.action === 'rename' && usedLibrary()?.toLowerCase() === a.name.toLowerCase()) ctx.doc.featureLibrary.name = r.name;
+    return r;
+  }, true);
+  def('terrain', 'edit_library_code', 'Add, change or remove a code of a saved feature library (the model updates when it uses that library).', obj({ library: libName, code: str('e.g. KERB'), remove: bool('remove this code'), ...CODE_FIELDS }, ['library', 'code']), async (a) => {
+    const L = codeLibs();
+    const code = a.code.toUpperCase();
+    const lib = await L.call('get', a.library);
+    if (a.remove) await L.call('setCode', lib.name, code, null);
+    else await L.call('setCode', lib.name, code, S.editCode(lib.codes[code], a));
+    const r = { library: lib.name, code, ...(a.remove ? { removed: true } : { definition: S.editCode(lib.codes[code], a) }) };
+    if (usedLibrary()?.toLowerCase() === lib.name.toLowerCase()) r.processed = useLibrary(await L.call('get', lib.name));
+    return r;
+  }, true);
+  def('terrain', 'use_feature_library', 'Make this model use a saved feature library: its codes replace the model\'s (kept in the file, so it opens anywhere) and the points are processed again. name "" stops following a library (the codes stay).', obj({ name: str('library name; "" for none') }, ['name']), async (a) => {
+    if (!a.name) {
+      delete ctx.doc.featureLibrary;
+      return { in_use: null, codes: Object.keys(ctx.doc.featureCodes || {}).length };
+    }
+    const lib = await codeLibs().call('get', a.name);
+    return { in_use: lib.name, codes: Object.keys(lib.codes).length, processed: useLibrary(lib) };
+  }, true);
 
   // earthworks
   const designSampler = (a) => {

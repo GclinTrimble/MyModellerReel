@@ -321,7 +321,7 @@ export function rememberCode(recent, code, max = 12) {
 export function codeAction(def) {
   if (!def) return 'not in the library';
   const o = def.object;
-  const what = o ? `places ${o.type === 'component' ? o.component || 'a component' : `a ${o.type || 'tree'}`}` : def.breakline ? 'joins into a breakline' : def.line ? 'joins into a line' : 'a point';
+  const what = o ? `places ${o.type === 'component' ? o.component || 'a component' : `a ${o.type || 'tree'}`}` : def.breakline ? 'joins into a breakline' : def.closed ? 'closes into a polygon' : def.line ? 'joins into a line' : 'a point';
   return def.description ? `${def.description} · ${what}` : what;
 }
 
@@ -347,4 +347,24 @@ export function suggestCodes(doc, recent = [], query = '', max = 8) {
   const starts = all.filter((x) => x.code.toUpperCase().startsWith(q) || x.code.toUpperCase() === base);
   const inside = all.filter((x) => !starts.includes(x) && (x.code.toUpperCase().includes(base) || x.action.toUpperCase().includes(q)));
   return [...starts, ...inside].slice(0, max);
+}
+
+/** A code definition with the fields of a define / edit command applied (type sets line and closed). */
+export function editCode(old = {}, a = {}) {
+  const def = { ...old };
+  for (const k of ['description', 'category', 'layer', 'color', 'line', 'breakline', 'object', 'attrs']) if (a[k] !== undefined) def[k] = a[k];
+  if (a.line_style !== undefined) def.lineStyle = a.line_style;
+  if (a.type) Object.assign(def, { type: a.type, line: a.type !== 'point', closed: a.type === 'polygon' });
+  else if (a.line !== undefined && def.type) def.type = a.line ? (def.closed ? 'polygon' : 'line') : 'point';
+  for (const k of ['line', 'closed']) if (def[k] === false) delete def[k];
+  return def;
+}
+
+/** Codes of a library as rows { code, …def }, filtered by text in the code, description, layer or category (codes that start with it first). */
+export function searchCodes(codes = {}, query = '') {
+  const rows = Object.entries(codes).map(([code, d]) => ({ code, ...d }));
+  const q = String(query || '').trim().toUpperCase();
+  if (!q) return rows;
+  const has = (r) => [r.code, r.description, r.layer, r.category].some((v) => String(v || '').toUpperCase().includes(q));
+  return [...rows.filter((r) => r.code.startsWith(q)), ...rows.filter((r) => !r.code.startsWith(q) && has(r))];
 }

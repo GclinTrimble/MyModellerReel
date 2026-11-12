@@ -398,6 +398,7 @@ const PAGES = {
     await none();
     await shot('Site › Drape: the pavilion sits on the platform');
   },
+<<<<<<< HEAD
   async 'import-survey-points'() {
     await fresh();
     await run('import_points', { path: `${SAMPLES}/site-points.csv` });
@@ -423,6 +424,33 @@ const PAGES = {
     await run('zoom_extents', {});
     await none();
     await shot('JobXML and LandXML points come in through Import points too, with codes and attributes');
+=======
+  async 'feature-code-libraries'() {
+    await fresh();
+    await run('import_feature_library', { path: `${SAMPLES}/site-codes.fxl`, name: 'Site codes', replace: true });
+    await run('import_feature_library', { path: `${SAMPLES}/library.fxl`, name: 'Old library', replace: true });
+    await js("window.mmr.app.ui.featureLibrariesDialog('Site codes'); return 1;");
+    await shot('Site › Feature code libraries: an FXL from Feature Definition Manager, kept by name');
+    await js('window.mmr.app.ui.closeModal(); return 1;');
+    const at = (n, e, code) => run('add_point', { n: 5400000 + n, e: 650000 + e, z: 10, ...(code ? { code } : {}) });
+    for (const [n, e] of [[0, 0], [0, 12], [0, 24], [2, 34]]) await at(n, e, 'ROKERB');
+    for (const [n, e] of [[8, 4], [9, 18], [7, 30]]) await at(n, e, 'VETRE');
+    await at(5, 10, 'SUBEN');
+    await at(4, 20);
+    await run('use_feature_library', { name: 'Site codes' });
+    await run('set_style', { point_labels: 'code' });
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('Use in this model: the kerb joins up, codes take their layers and colours');
+    await js("window.mmr.app.tools.set('point'); window.mmr.app.ui.codeCard({ clientX: innerWidth * 0.35, clientY: innerHeight * 0.3 }, '', 'Code of the new point'); setTimeout(() => { const i = document.querySelector('.code-card input'); i.value = 'kerb'; i.dispatchEvent(new Event('input')); document.querySelector('.code-browse').click(); }, 300); return 1;");
+    await shot('Survey point: ▦ browses the library; Enter with no code places a point without one');
+    await js("document.querySelector('.code-card input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); window.mmr.app.tools.set('select'); return 1;");
+    await js("window.mmr.app.ui.commandDialog('edit_library_code', { library: 'Site codes', code: 'ROKERB', description: 'Back of kerb', type: 'line', layer: 'WS-Road_Kerb', color: '#ff5500', line_style: 'Dashed' }, { form: true }); return 1;");
+    await shot('Edit a code: description, type, layer, colour, line style, attributes');
+    await js('window.mmr.app.ui.closeModal(); return 1;');
+    await run('manage_feature_library', { name: 'Old library', action: 'delete' });
+>>>>>>> refs/heads/claude/feature-codes-911a29
   },
   async 'bring-in-field-and-gis-data'() {
     await fresh();
