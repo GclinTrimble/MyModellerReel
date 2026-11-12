@@ -23,6 +23,7 @@ import { registerFont } from '../core/font.js';
 import { setLanguage } from '../core/i18n.js';
 import { comboOf } from '../core/shortcuts.js';
 import * as Assets from '../core/assets.js';
+import { referencePaths } from '../core/usd.js';
 import { newDoc as freshDoc } from '../core/document.js';
 import { PickFirst } from './pickfirst.js';
 
@@ -328,7 +329,13 @@ store.on((doc) => {
   app.setFile(app.file, true);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(app.autosave, 1500);
+  // live references (#246): follow the files this model references, and republish when this one is published
+  const refs = JSON.stringify(referencePaths(doc));
+  if (refs !== lastRefs) (lastRefs = refs), native.invoke('ref:watch', JSON.parse(refs)).catch(() => {});
+  app.io.republish();
 });
+let lastRefs = '[]';
+native.onRefChanged?.((path) => app.reg.run('reload_reference', { path }).catch((e) => app.ui.toast(`Live reference: ${e.message}`, 'danger')));
 
 // ---------------------------------------------------------------- public API (HTTP server, MCP, plugins, devtools)
 window.mmr = {

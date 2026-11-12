@@ -30,6 +30,7 @@ import { SKILLS, skillPrompt } from './skills.js';
 import * as Topo from './topology.js';
 import { stripUi } from './fields.js';
 import * as Comp from './components.js';
+import * as USD from './usd.js';
 import * as S from './survey.js';
 import * as CG from './cogo.js';
 import * as SK from './sketch.js';
@@ -170,7 +171,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc), USD.syncReferences(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -4258,9 +4259,38 @@ function registerCore(reg, ctx) {
     await io.writeText(path, text);
     return { path, format: fmt.id, bytes: text.length, entities: ents.length };
   }, true);
+  // ---------------------------------------------------------------- live references (#246)
+  const refsOf = (a) => (a.ids?.length ? D.resolve(ctx.doc, a.ids) : ctx.doc.entities).filter((e) => e.xref && (!a.path || e.xref.path === a.path));
+  def('file', 'reference_file', 'Show another design as a live reference: a .usda (or .usdc, .usdz, .glb, .obj…) shown read-only and snappable, read again whenever its file changes (another window can publish_reference to it). Move, hide or recolour its parts here: those overrides stay in this model and are never written to that file. Its shapes cannot be edited until bind_reference.', obj({ path: str('absolute path'), name: str('name in the Outliner') }), async (a) => {
+    a.path ||= await needIO().pick('reference', false);
+    if (!a.path) return { cancelled: true };
+    const g = D.addEntity(ctx.doc, { type: 'group', name: D.uniqueName(ctx.doc, a.name || String(a.path).split(/[\/]/).pop().replace(/\.\w+$/, '')), xref: { path: a.path, overrides: {} } });
+    const r = USD.applyReference(ctx.doc, g, await needIO().referenceParts(a.path));
+    ctx.selection.set([g.id]);
+    return { id: g.id, name: g.name, ...r };
+  }, true);
+  def('file', 'reload_reference', 'Read live references again from their files (all of them by default). Overrides made here stay on top.', obj({ ids, path: str('only the references to this file') }), async (a) => {
+    const list = refsOf(a);
+    if (!list.length && !a.path) throw new Error('No live reference to reload.');
+    for (const g of list) USD.applyReference(ctx.doc, g, await needIO().referenceParts(g.xref.path));
+    return { reloaded: list.map((g) => g.name) };
+  }, true);
+  def('file', 'bind_reference', 'Make live references local: their parts become ordinary shapes (overrides included) and the file is no longer followed.', obj({ ids }), (a) => {
+    const list = targets(ctx, a).filter((e) => e.xref);
+    if (!list.length) throw new Error('Select a live reference (a group read from another file).');
+    for (const g of list) USD.bindReference(ctx.doc, g);
+    return { bound: list.map((g) => g.name) };
+  }, true);
+  def('file', 'publish_reference', 'Publish this design as a live reference: write it to a .usda now and again after every change (debounced), so other windows that reference_file it follow along. stop: true stops publishing.', obj({ path: str('absolute .usda path; omit to be asked'), stop: bool('stop publishing') }), async (a) => {
+    if (a.stop) return needIO().publish(null);
+    a.path ||= await needIO().pick('usda', true, 'Live.usda');
+    if (!a.path) return { cancelled: true };
+    if (!/\.usda$/i.test(a.path)) throw new Error('Publish to a .usda file.');
+    return needIO().publish(a.path);
+  });
   reg.commands.get('import').compound = true;
   reg.commands.get('generate_texture').compound = true;
-  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh']) reg.commands.get(n).compound = true;
+  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh', 'reference_file', 'reload_reference']) reg.commands.get(n).compound = true;
   // symmetry while editing (#27): the mirror-image push_pull / move_elements across the shape's middle
   const mirrorOf = (e, axis) => {
     const k = { x: 0, y: 1, z: 2 }[axis];
