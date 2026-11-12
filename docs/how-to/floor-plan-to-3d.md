@@ -15,11 +15,11 @@ You have a plan from CAD or a drawing program and want walls in 3D fast, then a 
 4. **Tools › Grid array…** [Grid array](action:arrayGrid) for a column grid; **Array along a curve…** [Path array](action:arrayPath) for lights or trees along a road.
    ![Tools › Grid array… Grid array for a column grid; Array along a curve… Path arra](media/floor-plan-to-3d/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\plans\ground-floor.svg, raise every wall 2.7 m, then put 0.3 m columns on a 5 × 6 m grid, 4 by 3, east of the building.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

@@ -1,8 +1,8 @@
-# Turn a scanned drawing into lines, and let the copilot read a drawing
+# Turn a scanned drawing into lines, and let Plumb read a drawing
 
 You have a paper plan as a scan, or a PDF from the architect, and want lines to build on, the right scale and the title without typing them in.
 
-![Turn a scanned drawing into lines, and let the copilot read a drawing](media/scanned-drawings-and-reading/scanned-drawings-and-reading.gif)
+![Turn a scanned drawing into lines, and let Plumb read a drawing](media/scanned-drawings-and-reading/scanned-drawings-and-reading.gif)
 
 ## In the app
 
@@ -15,7 +15,7 @@ You have a paper plan as a scan, or a PDF from the architect, and want lines to 
 4. **Drawings › [Snap to drawings](action:snapDrawings)**: the drawing tools snap to the PDF's line ends and middles without extracting its linework first.
    ![Applied: true size at 1:500; lines snap to the drawing](media/scanned-drawings-and-reading/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Read the site plan, apply its scale, then trace the boundary on it.
 

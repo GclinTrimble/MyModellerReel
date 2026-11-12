@@ -1,6 +1,6 @@
 # Work your way: handles, document tabs, walking, shortcuts, voice and French
 
-You want to move things by dragging handles, keep two models open, walk through the design, use your own keys, talk to the copilot, or have the menus in French.
+You want to move things by dragging handles, keep two models open, walk through the design, use your own keys, talk to Plumb, or have the menus in French.
 
 ![Work your way: handles, document tabs, walking, shortcuts, voice and French](media/tabs-handles-walk-and-language/tabs-handles-walk-and-language.gif)
 
@@ -12,9 +12,9 @@ You want to move things by dragging handles, keep two models open, walk through 
    ![Document tabs: two models open, copy and paste between them](media/tabs-handles-walk-and-language/02.jpg)
 3. **Settings**: the language of the menus and panels (English, French) and your own keyboard shortcuts for any menu action, tool or command.
    ![Settings: menus in French, and your own keyboard shortcuts](media/tabs-handles-walk-and-language/03.jpg)
-4. The [Walk](tool:walk) tool: arrows or WASD to walk at eye height, drag to look. Hold **Ctrl+M** (or the microphone in the AI panel) to speak to the copilot.
+4. The [Walk](tool:walk) tool: arrows or WASD to walk at eye height, drag to look. Hold **Ctrl+M** (or the microphone in the AI panel) to speak to Plumb.
 
-## Ask the copilot
+## Ask Plumb
 
 > Open a new tab called Option B, and give me Ctrl+Shift+F for fillet.
 

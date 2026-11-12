@@ -13,11 +13,11 @@ You want to know how much earth to move to bring a pad to a level, and see where
 3. **Site › Volume report…** [Volume report](action:volumeReport): cut, fill and net, per region if you give boundaries, as a table you can save as CSV.
    ![Site › Volume report… Volume report: cut, fill and net, per region if you give b](media/cut-and-fill-for-a-pad/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > How much cut and fill to bring the existing ground to 102.5 over the whole site? Show me the map.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

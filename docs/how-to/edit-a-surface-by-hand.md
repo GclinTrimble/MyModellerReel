@@ -20,7 +20,7 @@ Your surface from survey points is nearly right: a point is a few centimetres of
 7. With the surface selected, the **Entity** panel lists what the surface is made of: points (and those left out, to bring back), breaklines, outline and holes with a button to remove each, show or hide the points and lines, the longest triangle side, contours and analysis colours, area and elevations.
    ![The Surface panel](media/edit-a-surface-by-hand/06.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > On Existing ground, leave out point 2_2, add a breakline along the ditch, drop triangles longer than 30 m, and cut a hole around the pond.
 

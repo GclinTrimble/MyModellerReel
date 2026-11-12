@@ -1,7 +1,7 @@
 # AI, API, MCP and plugins
 
 Everything in MyModellerReel goes through **one command registry** (`src/core/commands.js`). The tool bar, menus,
-the in-app copilot, the HTTP API, the MCP server and plugins all call the same commands, so:
+Plumb, the in-app assistant, the HTTP API, the MCP server and plugins all call the same commands, so:
 
 - anything a person can do, an AI can do;
 - anything a plugin adds is instantly a button, an AI tool, an HTTP endpoint and an MCP tool.
@@ -10,7 +10,7 @@ the in-app copilot, the HTTP API, the MCP server and plugins all call the same c
 metres, **Y is up**, X red, Z green; new shapes sit on the ground with their pivot at the centre of their base;
 entities are referenced by id (`e12`) or exact name; omitting ids means "the selection".
 
-## 1. The copilot (inside the app)
+## 1. Plumb (inside the app)
 
 AI tab → type what you want. Provider in Settings:
 
@@ -21,7 +21,7 @@ AI tab → type what you want. Provider in Settings:
 | **OpenAI-compatible** | Any `/v1/chat/completions` server: Mistral's API (`https://api.mistral.ai/v1`), LM Studio, vLLM, llama.cpp. |
 
 API keys live in the app's data folder and are only used by the main process; the page never sees them.
-One AI turn (however many tool calls) is a single undo step. With **Propose** on (the branch icon in the copilot
+One AI turn (however many tool calls) is a single undo step. With **Propose** on (the branch icon in Plumb
 header, or AI → Propose), the turn's changes show as a tinted preview with red ghosts for removals, and wait for
 Accept or Reject. Any client can do the same with `propose` (`start`, `accept`, `reject`, `status`).
 
@@ -188,4 +188,4 @@ mmr.registerGenerator('shelf', {
 
 Generators with `world: true` build in world space and return `G.recenter(mesh)` (`{ mesh, origin }`), like the
 built-in `sweep` and `array`. The built-in plugin's `create_stairs` and `create_wall` work this way.
-Ask the copilot "create a plugin that…" and it writes, saves and loads one with `create_plugin`.
+Ask Plumb "create a plugin that…" and it writes, saves and loads one with `create_plugin`.

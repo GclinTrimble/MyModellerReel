@@ -19,7 +19,7 @@ You want the 3D view and a plan side by side, or the four classic views (3D, top
 
 The view buttons and **View › Top / Front / Right / Iso / Zoom extents** act on the pane you last worked in. **View › [Zoom extents in every view](action:fitPanes)** frames the model in all of them.
 
-## Ask the copilot
+## Ask Plumb
 
 > Split the view in four, put the right side view in wireframe, and fit everything.
 

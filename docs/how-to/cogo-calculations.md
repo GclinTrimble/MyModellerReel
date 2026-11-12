@@ -26,7 +26,7 @@ In a traverse, press **Enter** after a distance to start the next leg; tick **Si
 from the current station without moving on. Give **Closes on** a point to see how far the traverse misses it, the
 precision (1:N) and the area, and tick the compass rule to spread the misclosure.
 
-## Ask the copilot
+## Ask Plumb
 
 > Here is the deed: from the point of beginning N 45°30' E 120 feet, S 44°30' E 80 feet, S 45°30' W 120 feet,
 > N 44°30' W 80 feet. Does it close, and what is the area?

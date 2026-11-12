@@ -786,7 +786,7 @@ test('friendly: a form keeps its error, the outliner drags into a group, a compo
 
 test('calm forms (#215, #216): Design plane with modes, point chips and checked inputs', async () => {
   await ok('import_points', { text: 'Q1,100,100,10\nQ2,100,112,10.4\nQ3,110,100,11' });
-  await w.evaluate(() => { window.mmr.app.ui.commandDialog('design_plane'); });
+  await w.evaluate(() => { window.mmr.app.ui.commandDialog('design_plane', {}, { form: true }); });
   const form = w.locator('#modal');
   await form.locator('[data-field=points] input[aria-label="Points"]').waitFor();
   assert.equal(await form.locator('[data-field=point]').isHidden(), true, 'only the chosen mode shows');
@@ -803,6 +803,58 @@ test('calm forms (#215, #216): Design plane with modes, point chips and checked 
   await form.getByRole('button', { name: 'Run' }).click();
   const plane = (await ok('get_scene')).entities.find((e) => e.generator === 'design_plane');
   assert.ok(plane, 'the plane was made from the three chips');
+});
+
+test('pick first (#234, #235): Design trench starts in the view; picks, typed values and the Tool tab', async () => {
+  await ok('import_points', { text: 'TA,500,500,10' });
+  const ta = await w.evaluate(() => window.mmr.doc.entities.find((e) => e.name === 'TA'));
+  const P = ta.position;
+  await ok('set_camera', { position: [P[0], P[1] + 40, P[2] + 0.001], target: P, projection: 'parallel' });
+  await w.evaluate(() => localStorage.removeItem('mymodellerreel.toolOptions'));
+  const done = w.evaluate(() => window.mmr.app.ui.commandDialog('design_trench').then((r) => r?.id || null));
+  const tip = w.locator('.pick-tip');
+  await tip.waitFor();
+  assert.equal(await w.locator('#modal[open]').count(), 0, 'no modal form');
+  assert.match(await tip.locator('.pick-what').textContent(), /^From: pick it/);
+  assert.equal(await w.getAttribute('#dock-tabs [data-tab=tool]', 'aria-selected'), 'true', 'the Tool tab opens');
+  // an option in the docked Tool tab, while picking
+  await w.locator('.tool-panel [data-field=depth] input').fill('1.5');
+  // click the survey point: the pick takes its name; Esc steps back, then pick it again
+  const [x, y] = await w.evaluate((p) => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p)); return [s.x, s.y]; }, P);
+  const click = async () => (await w.mouse.move(x + 3, y), await w.mouse.move(x, y), await w.mouse.click(x, y));
+  await click();
+  await tip.getByText(/^To: pick it/).waitFor();
+  await w.mouse.move(x + 20, y);
+  await w.keyboard.press('Escape');
+  await tip.getByText(/^From: pick it/).waitFor();
+  await click();
+  await tip.getByText(/^To: pick it/).waitFor();
+  // a bad value says so; then relative to the last point
+  await tip.locator('input[aria-label=x]').fill('abc');
+  await tip.locator('input[aria-label=x]').press('Enter');
+  assert.match(await tip.locator('.pick-msg').textContent(), /x, y, z/);
+  await tip.locator('input[aria-label=x]').fill('@12');
+  await tip.locator('input[aria-label=y]').fill('0');
+  await tip.locator('input[aria-label=z]').fill('0');
+  await tip.locator('input[aria-label=z]').press('Enter');
+  const id = await done;
+  assert.ok(id, 'the trench was made');
+  const tr = await w.evaluate((i) => window.mmr.doc.entities.find((e) => e.id === i).derived.params, id);
+  assert.deepEqual(tr.from, { point: ta.id }, 'the picked point by name');
+  assert.ok(Math.abs(tr.to[0] - P[0] - 12) < 1e-6 && Math.abs(tr.to[2] - P[2]) < 1e-6, `typed @12, 0, 0: ${tr.to}`);
+  assert.equal(tr.depth, 1.5, 'the Tool tab option');
+  assert.equal(await tip.count(), 0, 'the tip is gone');
+  assert.equal(await w.locator('#dock-tabs [data-tab=tool]').isHidden(), true, 'and the Tool tab');
+  assert.deepEqual(await w.evaluate(() => JSON.parse(localStorage.getItem('mymodellerreel.toolOptions')).design_trench), { depth: 1.5 }, 'remembered');
+  // next time: remembered, and the modal form is one click away
+  const again = w.evaluate(() => window.mmr.app.ui.commandDialog('design_trench'));
+  await tip.waitFor();
+  assert.equal(await w.locator('.tool-panel [data-field=depth] input').inputValue(), '1.5');
+  await tip.getByRole('button', { name: 'Form' }).click();
+  await w.locator('#modal [data-field=from]').waitFor();
+  await w.locator('#modal').getByRole('button', { name: 'Cancel' }).click();
+  assert.equal(await again, undefined);
+  await ok('set_camera', { projection: 'perspective' });
 });
 
 test('survey code card (#217): click, recall a code, Enter places the point and its object', async () => {
@@ -930,4 +982,25 @@ test('surface editing (#239, #240): the Surface panel, a point dragged, one adde
   await w.keyboard.press('Escape');
   await ok('undo', {});
   assert.deepEqual((await ok('surface_definition', { id: 'EG' })).definition.outline[2], [30, -30]);
+});
+
+test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens it there, the state is remembered', async () => {
+  const hidden = () => w.evaluate(() => document.body.classList.contains('no-dock'));
+  const viewW = () => w.evaluate(() => document.getElementById('viewport').getBoundingClientRect().width);
+  await w.locator('#viewport').click({ position: { x: 5, y: 5 } });
+  const wide = await viewW();
+  await w.keyboard.press('Control+B');
+  assert.equal(await hidden(), true);
+  assert.equal(await w.locator('#dock-body').isHidden(), true);
+  assert.ok((await viewW()) > wide + 200, 'the view takes the width');
+  await w.reload();
+  await w.waitForFunction(() => window.mmr?.app?.tools);
+  assert.equal(await hidden(), true, 'remembered after a reload');
+  await w.click('[data-tab="materials"]');
+  assert.equal(await hidden(), false);
+  assert.equal(await w.locator('#dock-tabs [data-tab="materials"]').getAttribute('aria-selected'), 'true');
+  await w.click('.dock-toggle');
+  assert.equal(await hidden(), true);
+  await w.locator('#viewbar button[aria-label="Side panel (Ctrl+B)"]').click();
+  assert.equal(await hidden(), false);
 });
