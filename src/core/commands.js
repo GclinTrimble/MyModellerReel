@@ -269,6 +269,7 @@ function place(ctx, mesh, args, defaults = {}, derived = null) {
 
 /** Bring an animated entity's base pose to what is on screen before editing it, then key it if Auto-key is on. */
 function editTransforms(ctx, ents, fn) {
+  for (const e of ents) if (SW.fixedInPlace(e)) throw new Error(SW.fixedInPlace(e));
   if (!ctx.timeline?.active) return fn(); // modelling mode: the static model is what you see
   const t = ctx.timeline.time;
   const pose = A.evaluate(ctx.doc, t);
@@ -581,6 +582,7 @@ function registerCore(reg, ctx) {
     const out = [];
     const ents = targets(ctx, a);
     for (const e of ents) if (!e.mesh) throw new Error(`${e.name} is not a shape; mirror the shapes themselves.`);
+    if (a.copy === false) for (const e of ents) if (SW.fixedInPlace(e)) throw new Error(SW.fixedInPlace(e));
     for (const e of ents) {
       const b = D.worldBox(doc, e);
       const at = a.at ?? (b.min[k] + b.max[k]) / 2;
@@ -1365,13 +1367,20 @@ function registerCore(reg, ctx) {
     return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
 
-  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'swap', 'add_point', 'remove_point', 'restore']), at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
+  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'delete_inside', 'swap', 'add_point', 'remove_point', 'restore']), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'delete_inside: plan corners [[x, z], …] (model): every triangle whose middle is inside goes (ragged edge, no new edges: use surface_boundary add_void for a clean cut)' }, at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
     const doc = ctx.doc;
     const s = surfaceOf(a.id);
     if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
     const p = { ...s.derived.params };
     if (a.action === 'restore') delete p.deleted, delete p.swaps;
     else if (a.action === 'delete') p.deleted = [...(p.deleted || []), a.at];
+    else if (a.action === 'delete_inside') {
+      if (!(a.points?.length >= 3)) throw new Error('Give points: the corners [[x, z], …] around the triangles to delete.');
+      const w = D.worldMesh(doc, s);
+      const mids = w.f.map((f) => [0, 2].map((k) => f.reduce((t, i) => t + w.v[i][k], 0) / f.length)).filter((c) => Topo.insidePolygon(c, a.points));
+      if (!mids.length) throw new Error('No triangle has its middle inside those corners.');
+      p.deleted = [...(p.deleted || []), ...mids];
+    }
     else if (a.action === 'swap') p.swaps = [...(p.swaps || []), pointsByRefs([a.a, a.b]).map((x) => x.id)];
     else if (a.action === 'remove_point') {
       // left out of this surface (the survey point itself stays) (#212)
@@ -1385,7 +1394,7 @@ function registerCore(reg, ctx) {
       if (Array.isArray(p.points)) p.points = [...p.points, pt.id];
     }
     if (!a.at && ['delete', 'add_point'].includes(a.action)) throw new Error('Give at: [x, z].');
-    if (a.action === 'restore') delete p.exclude;
+    if (a.action === 'restore') p.exclude = [];
     s.derived.params = p;
     R.regenerate(doc, s);
     return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
@@ -1445,7 +1454,10 @@ function registerCore(reg, ctx) {
         if (Array.isArray(p.points)) p.points = p.points.filter((x) => !ids.has(x));
         p.exclude = p.exclude.filter((x) => !ids.has(x));
       } else if (a.action === 'exclude') p.exclude = [...new Set([...p.exclude, ...ids])];
-      else if (a.action === 'include') p.exclude = p.exclude.filter((x) => !ids.has(x));
+      else if (a.action === 'include') {
+        p.exclude = p.exclude.filter((x) => !ids.has(x));
+        if (Array.isArray(p.points)) p.points = [...new Set([...p.points, ...ids])]; // a chosen list: existing points join it
+      }
       else throw new Error(`Unknown action "${a.action}".`);
     });
   }, true);
@@ -1838,6 +1850,29 @@ function registerCore(reg, ctx) {
     return makeDesign('design_trench', p, a.name || D.uniqueName(doc, 'Trench'), a.color || '#b58a57');
   }, true);
   def('terrain', 'design_offset_surface', 'A copy of a surface moved up or down (e.g. 0.3 m below existing ground for a topsoil strip); it follows the source.', obj({ surface: str('source surface'), offset: num('m, negative is below'), name: common.name, color: common.color }, ['surface', 'offset']), (a) => makeDesign('design_offset_surface', { surface: surfaceOf(a.surface).id, offset: a.offset }, a.name, a.color), true);
+  def('terrain', 'offset_surfaces', 'Offset surfaces from a surface, live (they follow it): count copies every distance m up (negative: down), or along its normals (an even thickness on slopes); or with to, count layers spaced evenly between it and another surface (e.g. the layers of a fill).', obj({ surface: str('source surface'), distance: num('m between copies (negative is below)'), count: num('how many (default 1)'), normal: bool('along the surface normals instead of straight up'), to: str('or: the other surface, for layers between the two'), name: common.name, color: common.color }, ['surface']), (a) => {
+    const doc = ctx.doc;
+    const src = surfaceOf(a.surface);
+    const to = a.to ? surfaceOf(a.to) : null;
+    const n = Math.round(a.count ?? 1);
+    if (!(n >= 1 && n <= 50)) throw new Error('count must be 1…50.');
+    if (!to && !a.distance) throw new Error('Give distance (m), or to: another surface.');
+    const made = [];
+    for (let k = 1; k <= n; k++) {
+      const params = to ? { surface: src.id, to: to.id, fraction: r3(k / (n + 1)) } : { surface: src.id, offset: r3(a.distance * k), ...(a.normal ? { normal: true } : {}) };
+      const label = to ? `layer ${k}` : `${a.distance * k > 0 ? '+' : ''}${r3(a.distance * k)} m`;
+      made.push(makeDesign('design_offset_surface', params, D.uniqueName(doc, `${a.name || src.name} ${label}`), a.color || src.material?.color));
+    }
+    ctx.selection.set(made.map((m) => m.id));
+    return { created: made.map((m) => ({ id: m.id, name: m.name, ...m.surface })) };
+  }, true);
+  def('terrain', 'show_triangles', 'Draw the triangle edges of surfaces (or any shape) over their shading, to review a TIN; show false hides them again. A display setting of each entity, saved with the model.', obj({ ids, show: bool('default true') }), (a) => {
+    const ents = targets(ctx, a).filter((e) => e.mesh);
+    if (!ents.length) throw new Error('Pick a surface (or shape) to show its triangles.');
+    for (const e of ents) if (a.show === false) delete e.show_triangles;
+    else e.show_triangles = true;
+    return { ids: ents.map((e) => e.id), show_triangles: a.show !== false };
+  }, true);
   def('terrain', 'design_road', 'A simple road surface: centreline points, width, crossfall falling both ways from the crown.', obj({ centre: { type: 'array', description: 'centreline point names or [x, y, z]' }, width: num('m, default 7'), crossfall: num('%, default −2.5'), name: common.name, color: common.color }, ['centre']), (a) => makeDesign('design_road', { centre: a.centre.map(designRef), width: a.width ?? 7, crossfall: a.crossfall ?? -2.5 }, a.name, a.color || '#3c3f44'), true);
 
   // ---------------------------------------------------------------- drawings: underlays, PDF, images, georeferencing (#140–#146)
@@ -4319,7 +4354,7 @@ function registerCore(reg, ctx) {
     ctx.selection.set(made.filter((e) => !S.isPoint(e)).map((e) => e.id).slice(0, 2000));
     return report.done({ format: fmt.id, file: a.path ? String(a.path).split(/[\\/]/).pop() : undefined, ...(extra || {}) });
   }, true);
-  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks), geojson and shp (points, lines, polygons with attributes). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf, geojson, shp'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file') }, ['format']), async (a) => {
+  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks), geojson and shp (points, lines, polygons with attributes). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf, geojson, shp'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file'), points: bool('LandXML: write the survey points (CgPoints), default true') }, ['format']), async (a) => {
     const fmt = F.getFormat(a.format);
     if (!fmt) {
       if (!MODEL_FORMATS.includes(a.format)) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);

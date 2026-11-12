@@ -79,7 +79,16 @@ export function buildSurface(doc, p) {
     constrain(path, l.id);
     if (l.line?.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
   }
-  // a drawn outline and voids in plan (#212), next to the boundaries made of points
+  // a drawn outline and voids in plan (#212), next to the boundaries made of points: each ring is draped on the
+  // surface as it would be without it and constrained, so the TIN is cut along it, not along whole triangles
+  const rings = [...(p.outline?.length >= 3 ? [[p.outline, 'outline']] : []), ...(p.voids || []).filter((h) => h.length >= 3).map((h, i) => [h, `void ${i + 1}`])];
+  if (rings.length) {
+    const pre = TR.triangulate(v, { constraints }).faces;
+    for (const [ring, owner] of rings) {
+      const path = TR.drapeRing(ring, v, pre);
+      if (path.length >= 2) constrain([...path, path[0]], owner);
+    }
+  }
   if (p.outline?.length >= 3) outer.push(p.outline);
   for (const h of p.voids || []) if (h.length >= 3) holes.push(h);
   const { faces, failed } = TR.triangulate(v, { constraints, outer, holes, maxEdge: p.max_edge || 0 });
@@ -190,6 +199,13 @@ export function surfaceDefinition(doc, e) {
   };
 }
 
+/**
+ * Why an entity may not be moved, rotated or scaled (null: it may). A TIN built from survey points sits where they were
+ * measured; the transform commands refuse it, and tools (the gizmo, Move) can check this before they start.
+ */
+export const fixedInPlace = (e) =>
+  e?.derived?.generator === 'surface' ? `${e.name} is a surveyed surface: it sits where its points were measured, so it cannot be moved, rotated or scaled. Move its points instead (surface_points move, edit_points), or bake a copy to place freely.` : null;
+
 /** World mesh of a surface entity, and a height sampler over it. */
 export const surfaceSampler = (doc, e) => TR.sampler(D.worldMesh(doc, e));
 
@@ -275,10 +291,12 @@ design('design_plane', 'Plane through three points, or a point with a slope and 
 design('design_trench', 'Trench along a line: bottom width, depth or inverts, side slopes to the ground', { from: 'start', to: 'end', bottom: 'm', depth: 'm', invert_a: 'm (local)', invert_b: 'm (local)', side_slope: 'H:V', surface: 'ground' }, (p, doc) =>
   TR.trench(refPoint(doc, p.from), refPoint(doc, p.to), { ...p, ground: groundOf(doc, p.surface) }),
 (p) => (p.surface ? [p.surface] : []));
-design('design_offset_surface', 'A surface moved up or down (e.g. a topsoil strip)', { surface: 'surface id', offset: 'm' }, (p, doc) => {
-  const m = D.worldMesh(doc, D.getEntity(doc, p.surface));
-  return { v: m.v.map((q) => [q[0], q[1] + (p.offset || 0), q[2]]), f: m.f.map((f) => [...f]) };
-}, (p) => [p.surface]);
+design('design_offset_surface', 'A surface moved up or down (e.g. a topsoil strip), along its normals, or part way to another surface (a layer between two)', { surface: 'surface id', offset: 'm', normal: 'offset along the surface normals', to: 'other surface id', fraction: 'of the way to it (0–1)' }, (p, doc) => {
+  const src = D.getEntity(doc, p.surface);
+  const other = p.to && D.getEntity(doc, p.to);
+  if (!src || (p.to && !other)) throw new Error('The surface this layer follows was deleted.');
+  return SF.offsetMesh(D.worldMesh(doc, src), { distance: p.offset || 0, normal: !!p.normal, to: other ? surfaceSampler(doc, other).z : null, fraction: p.fraction ?? 0.5 });
+}, (p) => [p.surface, ...(p.to ? [p.to] : [])]);
 design('design_road', 'Simple road: centreline, width, crossfall', { centre: 'points', width: 'm', crossfall: '%' }, (p, doc) => TR.roadDesign(p.centre.map((q) => refPoint(doc, q)), p));
 
 // ---------------------------------------------------------------- terrain depth (#121, #123, #120, #34, #35)

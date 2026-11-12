@@ -170,7 +170,8 @@ function faceUp(v, [a, b, c]) {
   return n[1] < 0 ? [a, c, b] : [a, b, c];
 }
 
-const isSurface = (e) => e.mesh && (e.derived?.generator === 'surface' || e.meta?.surface);
+const TERRAIN = new Set(['surface', 'design_offset_surface', 'smoothed_surface', 'contour_surface', 'finished_ground', 'design_surface']); // generators whose result is ground
+const isSurface = (e) => e.mesh && (TERRAIN.has(e.derived?.generator) || e.meta?.surface);
 const fmt = (x) => (Math.round(x * 1e4) / 1e4).toString();
 
 export function writeLandXml(doc, { ents, opts = {} }) {
@@ -196,7 +197,7 @@ export function writeLandXml(doc, { ents, opts = {} }) {
     g.crs ? X.el('CoordinateSystem', { ...(g.crs.epsg ? { epsgCode: g.crs.epsg } : {}), ...(g.crs.name ? { name: g.crs.name } : {}) }) : null,
     X.el('Project', { name: opts.name || 'MyModellerReel model' }),
     X.el('Application', { name: 'MyModellerReel', manufacturer: 'MyModellerReel', version: opts.version || '' }),
-    pts.length ? X.el('CgPoints', {}, pts.map((p) => X.el('CgPoint', { name: p.name, code: p.point.code || undefined, desc: p.point.desc || undefined }, nez(D.worldMatrix(doc, p).elements.slice(12, 15))))) : null,
+    pts.length && opts.points !== false ? X.el('CgPoints', {}, pts.map((p) => X.el('CgPoint', { name: p.name, code: p.point.code || undefined, desc: p.point.desc || undefined }, nez(D.worldMatrix(doc, p).elements.slice(12, 15))))) : null,
     surfaces.length
       ? X.el(
           'Surfaces',
