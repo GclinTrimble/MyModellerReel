@@ -13,11 +13,11 @@ You want a kerb, a pipe, a handrail or a wall that follows a path, and that upda
 3. Edit the curve (move its points, or `set_curve`): the sweep follows.
    ![Edit the curve (move its points, or set_curve): the sweep follows.](media/live-sweep-along-a-curve/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Draw a smooth kerb line through (-2,0,2), (2,0,1), (5,0,-2), (8,0,-3) and sweep a kerb along it.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

@@ -3,7 +3,7 @@
 
 export const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum'];
 const READS = /^(list_|get_|query_)|^(select|screenshot|measure|bounds_of|raycast|what_is_at|model_info|find_free_space|complete_lesson|my_insights|ai_setup_status|undo|redo|run_script)$/;
-/** By hand, a command the copilot ran would have taken about this long (s): the "time saved" estimate. */
+/** By hand, a command Plumb ran would have taken about this long (s): the "time saved" estimate. */
 export const SECONDS_PER_CALL = 30;
 const IDLE = 5 * 60e3; // a gap longer than this is not modelling time
 
@@ -22,7 +22,7 @@ export const TRACKS = [
   { id: 'presenter', label: 'Presenter', icon: 'image', what: 'stills, sheets and looks', tiers: [1, 10, 50, 200], value: sumOf(['render_image', 'ai_render', 'export_drawing', 'set_effects', 'set_environment']) },
   { id: 'director', label: 'Director', icon: 'film-slate', what: 'animations and videos', tiers: [1, 10, 50, 200], value: sumOf(['render_video', 'build_sequence', 'animate', 'add_keyframe', 'turntable']) },
   { id: 'sharer', label: 'Sharer', icon: 'share-network', what: 'saves and exports', tiers: [1, 10, 50, 200], value: sumOf(['save', 'export', 'export_web_viewer', 'export_points']) },
-  { id: 'pilot', label: 'AI pilot', icon: 'sparkle', what: 'requests to the copilot', tiers: [1, 10, 50, 250], value: (s) => s.ai?.requests || 0 },
+  { id: 'pilot', label: 'AI pilot', icon: 'sparkle', what: 'requests to Plumb', tiers: [1, 10, 50, 250], value: (s) => s.ai?.requests || 0 },
   { id: 'explorer', label: 'Explorer', icon: 'compass', what: 'different commands used', tiers: [10, 25, 50, 100], value: (s) => Object.keys(s.commands || {}).length },
   { id: 'regular', label: 'Regular', icon: 'flame', what: 'days in a row (longest streak)', tiers: [2, 5, 10, 30], value: (s) => streaks(s.days).longest },
   { id: 'learner', label: 'Learner', icon: 'graduation-cap', what: 'lessons and tutorials completed', tiers: [1, 5, 10, 25], value: (s, l = {}) => (l.lessons || 0) + (l.tutorials || 0) },
@@ -30,7 +30,7 @@ export const TRACKS = [
 
 const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
 
-/** The stats after one command (new object). info.ai: a copilot request with this many commands run. */
+/** The stats after one command (new object). info.ai: a request to Plumb with this many commands run. */
 export function record(stats = {}, name, { now = Date.now(), ai = null } = {}) {
   const s = { commands: {}, days: {}, minutes: 0, ai: { requests: 0, calls: 0 }, ...structuredClone(stats) };
   s.first ||= dayOf(now);

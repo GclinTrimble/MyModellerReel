@@ -1,6 +1,6 @@
 # How do I…
 
-Help by intent: each page is one goal, with the clicks, a prompt for the copilot, and the commands for scripts, the HTTP API and MCP. The same pages are in the app (**Help › How do I…**, F1).
+Help by intent: each page is one goal, with the clicks, a prompt for Plumb, and the commands for scripts, the HTTP API and MCP. The same pages are in the app (**Help › How do I…**, F1).
 
 ## Modelling
 
@@ -32,8 +32,8 @@ Help by intent: each page is one goal, with the clicks, a prompt for the copilot
 
 ## AI and insight
 
-- [Ask the copilot to build or change something](ask-the-copilot.md)
-- [Show the copilot a picture or a sketch](show-the-copilot-a-sketch.md)
+- [Ask Plumb to build or change something](ask-the-copilot.md)
+- [Show Plumb a picture or a sketch](show-the-copilot-a-sketch.md)
 - [Check a model and count what is in it](review-and-quantities.md)
 
 Sample files for trying them: [samples/](samples/).

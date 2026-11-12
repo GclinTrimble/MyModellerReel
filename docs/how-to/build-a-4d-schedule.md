@@ -15,11 +15,11 @@ You have the construction programme (Excel, MS Project or Primavera) and want th
 3. Play it: the date and the tasks under way show at the top left. Render it as a video.
    ![Play it: the date and the tasks under way show at the top left. Render it as a ](media/build-a-4d-schedule/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\plans\programme.xml and build the model from it, two seconds per week, with the parts rising into place.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

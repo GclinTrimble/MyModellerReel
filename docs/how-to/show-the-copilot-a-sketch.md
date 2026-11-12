@@ -1,6 +1,6 @@
-# Show the copilot a picture or a sketch
+# Show Plumb a picture or a sketch
 
-Some shapes are quicker to draw than to describe. Show the copilot a photo, a screenshot or a sketch, or mark up the
+Some shapes are quicker to draw than to describe. Show Plumb a photo, a screenshot or a sketch, or mark up the
 model itself; sketch a profile by hand and get clean, dimensioned lines without drawing every offset.
 
 ## In the app
@@ -19,7 +19,7 @@ model itself; sketch a profile by hand and get clean, dimensioned lines without 
 4. Sweep the new profile along a curve like any other.
    ![The sketched kerb swept along a line](media/show-the-copilot-a-sketch/02.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > (with a photo of a garden wall) Model this wall along the curve I selected: same coping, 1.2 m tall.
 
@@ -42,5 +42,5 @@ await api.sweep({ path: 'Kerb line', profile: 'Upstand kerb' });
 
 ## Related
 
-- [Ask the copilot to build or change something](howto:ask-the-copilot)
+- [Ask Plumb to build or change something](howto:ask-the-copilot)
 - [Run a kerb along a curve that stays live](howto:live-sweep-along-a-curve)

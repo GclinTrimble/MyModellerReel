@@ -17,11 +17,11 @@ You want to show how a building or a site goes up, phase by phase, with captions
 4. **File › Export video** [Export video](action:exportVideo): MP4, WebM or GIF, rendered frame by frame at any size.
    ![File › Export video Export video: MP4, WebM or GIF, rendered frame by frame at a](media/construction-sequence-video/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a bottom-up build sequence of the whole model with a caption per level, then render a 1080p MP4.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

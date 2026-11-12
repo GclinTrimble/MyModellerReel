@@ -17,11 +17,11 @@ You want sizes and names on the model that stay right when it changes, construct
 5. **Tools › 3D text…** [3D text](action:text3d): letters extruded, standing or flat on the ground.
    ![Tools › 3D text… 3D text: letters extruded, standing or flat on the ground.](media/dimension-and-label/01.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Dimension the width and depth of the house, label each room with its name and floor area, and put a 0.6 m sign saying RIVERSIDE in front of it.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

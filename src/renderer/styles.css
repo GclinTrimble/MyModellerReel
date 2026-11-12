@@ -574,6 +574,14 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .menu-pop .has-sub.open { background: var(--my-accent-tint); }
 #menu-sub { position: fixed; z-index: 51; }
 body.no-toolbar .workspace { grid-template-columns: 0 1fr var(--dock-w); }
+/* side panel hidden (#236): a rail of tab icons */
+body.no-dock { --dock-w: 44px; }
+body.no-dock .dock { grid-template-rows: 1fr; }
+body.no-dock .dock-body { display: none; }
+body.no-dock #dock-tabs { flex-direction: column; border-bottom: 0; overflow: hidden auto; }
+body.no-dock #dock-tabs button { flex: none; font-size: 0; padding: var(--my-space-1) 0; }
+.tabs .dock-toggle { flex: 0 0 auto; padding: var(--my-space-1); justify-content: center; }
+body.no-dock .tabs .dock-toggle .ph { transform: scaleX(-1); }
 body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; overflow: hidden; }
 /* learning modules (#213) and guided steps (#214) */
 .learn { display: flex; flex-direction: column; gap: var(--my-space-1); margin-bottom: var(--my-space-3); }
@@ -601,7 +609,7 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .ins-medal { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--my-surface-2); color: var(--my-text-muted); border: 2px solid var(--my-border); }
 .ins-medal.tier-0 { border-color: var(--tier-0); color: var(--tier-0); } .ins-medal.tier-1 { border-color: var(--tier-1); color: var(--tier-1); }
 .ins-medal.tier-2 { border-color: var(--tier-2); color: var(--tier-2); } .ins-medal.tier-3 { border-color: var(--tier-3); color: var(--tier-3); }
-/* local AI setup (#224), what the copilot made (#225), start here and topics in place (#223) */
+/* local AI setup (#224), what Plumb made (#225), start here and topics in place (#223) */
 .ai-setup { display: flex; flex-direction: column; gap: var(--my-space-2); margin: var(--my-space-2) 0; }
 .setup-steps { display: flex; flex-direction: column; gap: var(--my-space-1); }
 .setup-step { display: flex; gap: var(--my-space-2); align-items: center; padding: var(--my-space-1) var(--my-space-2); border-radius: var(--my-radius-sm); color: var(--my-text-muted); }
@@ -641,7 +649,7 @@ body.no-toolbar .toolbar { visibility: hidden; width: 0; padding: 0; border: 0; 
 .cogo-result { position: sticky; bottom: 0; z-index: 1; box-shadow: var(--my-shadow-2); }
 .cogo-trav .form-row > .field { flex: 1; min-width: 0; }
 
-/* pictures and sketches for the copilot (#229, #230) */
+/* pictures and sketches for Plumb (#229, #230) */
 .chat-compose { border-top: 1px solid var(--my-border); }
 .chat-compose .chat-input { border-top: 0; flex-wrap: wrap; align-items: center; }
 .chat-compose .chat-input textarea { flex: 1 1 100%; }

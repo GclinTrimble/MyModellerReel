@@ -1,4 +1,4 @@
-// The sketch pad (#229, #230): draw over a snapshot of the view or on plain paper to show the copilot what you mean, or
+// The sketch pad (#229, #230): draw over a snapshot of the view or on plain paper to show Plumb what you mean, or
 // sketch a profile that turns into clean straight lines at a real size. Strokes stay vectors until the end, so Straighten
 // can redraw them as a tidy outline with each side's length as you go.
 import { h, icon } from './ui.js';
@@ -11,7 +11,7 @@ const CLEAN = '#2f6f86';
 
 /**
  * Open the pad. mode 'chat' resolves to { image, note } (or null); mode 'profile' saves a sweep profile, or hands the
- * sketch to the copilot. background: 'view' (a snapshot of the 3D view) or 'paper'.
+ * sketch to Plumb. background: 'view' (a snapshot of the 3D view) or 'paper'.
  */
 export async function sketchPad(app, { mode = 'chat', background = mode === 'profile' ? 'paper' : 'view' } = {}) {
   const strokes = [];

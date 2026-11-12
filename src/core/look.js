@@ -1,6 +1,6 @@
 // How the model looks (#57–#62): texture projection (UVs from positions, so any polygon mesh can take an image),
 // light, environment, effect and style settings with their defaults and checks. The renderer draws them
-// (src/renderer/presentation.js); this module stays pure for tests and for the copilot's guide.
+// (src/renderer/presentation.js); this module stays pure for tests and for Plumb's guide.
 
 export const PROJECTIONS = ['box', 'planar', 'cylindrical'];
 export const LIGHT_KINDS = ['point', 'spot', 'area'];

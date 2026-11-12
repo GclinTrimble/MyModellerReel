@@ -1,4 +1,4 @@
-// The copilot's agent loop, free of DOM and Electron: the in-app copilot and the eval harness (npm run eval) share it.
+// Plumb's agent loop, free of DOM and Electron: the in-app assistant and the eval harness (npm run eval) share it.
 // Three wire protocols: Anthropic Messages (Claude), Ollama native chat (local models), OpenAI-compatible chat.
 import { GUIDE } from './commands.js';
 import { routeTools, describe } from './routing.js';
@@ -9,7 +9,7 @@ export const protocolOf = (provider) => (provider === 'anthropic' ? 'anthropic' 
 
 export function systemPrompt({ doc, selection = [], time = 0, vision = false, skill = null, small = false }) {
   const list = doc.entities.slice(0, 80).map((e) => `${e.id} "${e.name}"${e.parent ? ` in ${e.parent}` : ''}`).join(', ');
-  return `You are the modelling and animation copilot inside MyModellerReel, a desktop 3D modeller with push/pull modelling and keyframe animation.
+  return `You are Plumb, the modelling and animation assistant inside MyModellerReel, a desktop 3D modeller with push/pull modelling and keyframe animation.
 You act by calling tools: each call changes the live model the user is looking at.
 Work like an expert: plan briefly, use realistic real-world dimensions, prefer fewer bigger steps (run_script for anything repetitive), name things clearly, group parts that belong together.
 Prefer relations to coordinates: place_on, against, stack, align, distribute, find_free_space.

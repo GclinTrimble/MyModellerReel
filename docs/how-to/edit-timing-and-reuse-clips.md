@@ -13,11 +13,11 @@ You animated one door and want every door to do it, the whole thing a bit slower
 3. Select a keyframe, the curve button: drag the two handles of its easing (or pick Overshoot, Slow start…).
    ![Select a keyframe, the curve button: drag the two handles of its easing (or pick](media/edit-timing-and-reuse-clips/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Save the front door opening as a clip, play it on the other three doors one second apart, then make the whole animation 50 % slower.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

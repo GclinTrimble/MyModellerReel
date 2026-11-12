@@ -15,11 +15,11 @@ You have a PDF plan and want it lying in the model at the right scale and in the
 4. **Drawings › Georeference report** [Report](action:georefReport): the residual of each point and the RMS; turn a bad point off and it refits.
    ![Drawings › Georeference report Report: the residual of each point and the RMS; t](media/put-a-pdf-in-place/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\plans\site.pdf at 1:500 and georeference it: the grid crosses at its corners are E 650000 / 650100, N 5400000 / 5400080.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
