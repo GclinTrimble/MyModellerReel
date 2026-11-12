@@ -1,5 +1,5 @@
 // The in-app assistant (Plumb): a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
-// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on.
+// registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on. One Assistant per agent
 // profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
 import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
