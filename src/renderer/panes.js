@@ -380,15 +380,22 @@ export class Panes {
     const scenes = this.vp.store.doc.scenes || [];
     const roads = !p.main && this.vp.store.doc.entities.some((e) => e.derived?.generator === 'corridor');
     const flat = is2D(cfg);
-    const name = cfg.view === 'scene' ? cfg.scene : LABEL[cfg.view] || cfg.view;
-    const btn = (ic, label, onclick) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick }, icon(ic));
-    // just the pane's number (#205): its view, projection, wireframe, maximise and window are in the view bar's
-    // Views menu, which acts on the pane last worked in; a road drawing keeps its own stepping buttons
+    const select = h(
+      'select.pane-view',
+      { 'aria-label': `View ${n}`, onchange: (e) => (e.target.value.startsWith('scene:') ? run('set_pane', { pane: n, scene: e.target.value.slice(6) }) : run('set_pane', { pane: n, view: e.target.value })) },
+      ...LY.VIEWS.filter((v) => roads || !LY.ROAD_VIEWS.includes(v) || v === cfg.view).map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
+      ...(['custom', 'scene'].includes(cfg.view) ? [h('option', { value: cfg.view, selected: true, disabled: true }, cfg.view === 'scene' ? cfg.scene : LABEL.custom)] : []),
+      ...scenes.map((s) => h('option', { value: `scene:${s.name}` }, `Scene: ${s.name}`)),
+    );
+    const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
     const el = h(
       'div.pane-head',
-      { onclick: () => this.focus(p.i), ondblclick: (e) => !e.target.closest('button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: `View ${n}: ${name}. Click to work in it, double-click to maximise or restore` },
-      h('span.pane-num', { 'aria-label': `View ${n}: ${name}` }, String(n)),
-      ...(cfg.view === 'section' ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))] : []),
+      { ondblclick: (e) => !e.target.closest('select, button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: 'Double-click to maximise or restore' },
+      h('span.pane-num', {}, String(n)),
+      select,
+      ...(cfg.view === 'section'
+        ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))]
+        : []),
       ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
       btn(L.max === p.i ? 'corners-in' : 'corners-out', L.max === p.i ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: L.max === p.i ? 0 : n })),
       ...(p.main ? [] : [btn('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane: n }))]),
