@@ -11,6 +11,9 @@ test('profiles: Plumb always first, ids unique, fields filled', () => {
   assert.equal(list[1].provider, 'anthropic');
   assert.equal(list[1].skill, 'survey');
   assert.match(list[1].color, /^#[0-9a-f]{6}$/);
+  assert.equal(list[0].icon, 'bird', 'each agent wears an animal icon');
+  assert.equal(normalizeProfile({ name: 'X', icon: 'cat' }).icon, 'cat');
+  assert.equal(normalizeProfile({ name: 'X', icon: 'nope' }).icon, 'bird');
   assert.equal(normalizeProfile({ name: 'X', provider: 'nope', skill: 'none' }).provider, null);
   assert.equal(normalizeProfile({ name: 'X', provider: 'builtin', model: 'qwen3-8b' }).provider, 'builtin', 'the built-in model, per profile (#238)');
   assert.equal(normalizeProfiles([{ id: 'plumb', name: 'Plumb', instructions: 'Be brief.' }])[0].instructions, 'Be brief.');

@@ -10,6 +10,8 @@ import { diffDocs } from './document.js';
 
 export const DEFAULT_AGENT = 'plumb';
 export const AGENT_COLORS = ['#7aa2f7', '#e0a458', '#9ece6a', '#f7768e', '#bb9af7', '#2ac3de'];
+// Phosphor animal icons an agent can wear (Plumb is the bird)
+export const AGENT_ICONS = ['bird', 'cat', 'dog', 'fish', 'horse', 'rabbit', 'cow', 'butterfly', 'bug-beetle', 'shrimp', 'paw-print'];
 
 /** A profile with every field filled. provider / model null: the app's AI settings. skill: a skill id or null. */
 export function normalizeProfile(p = {}, i = 0) {
@@ -23,6 +25,7 @@ export function normalizeProfile(p = {}, i = 0) {
     toolset: p.toolset ? String(p.toolset) : 'auto',
     instructions: String(p.instructions || ''),
     color: /^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : AGENT_COLORS[i % AGENT_COLORS.length],
+    icon: AGENT_ICONS.includes(p.icon) ? p.icon : AGENT_ICONS[i % AGENT_ICONS.length],
   };
 }
 

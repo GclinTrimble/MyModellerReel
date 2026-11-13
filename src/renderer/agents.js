@@ -1,12 +1,14 @@
 // Agent profiles (#243): one Assistant (thread, queue, model) per profile, a shared Crew for the rules of working at
 // once, the Agents panel, and the Ask prompt at the cursor (#244). Commands reach it as ctx.agents.
-import { Crew, normalizeProfiles, normalizeProfile, DEFAULT_AGENT } from '../core/agents.js';
+import { Crew, normalizeProfiles, normalizeProfile, DEFAULT_AGENT, AGENT_ICONS } from '../core/agents.js';
 import { SKILLS } from '../core/skills.js';
 import { TOOLSETS } from '../core/routing.js';
 import { Assistant } from './ai.js';
 import { h, icon } from './ui.js';
 
 const KEY = 'mymodellerreel.agents';
+/** An agent's animal icon in its colour. */
+export const agentBadge = (p) => h(`i.ph-fill.ph-${p.icon}.agent-dot`, { 'aria-hidden': 'true', style: { color: p.color } });
 
 export class Agents {
   constructor(app) {
@@ -137,7 +139,7 @@ export class Agents {
           h(
             `div.agent-row${a.status === 'working' ? '.busy' : ''}`,
             { role: 'listitem', dataset: { agent: a.id } },
-            h('span.agent-dot', { style: { background: a.color } }),
+            agentBadge(a),
             h('div.grow', {}, h('div', {}, a.name), h('div.small.muted', {}, `${a.status === 'working' ? 'Working' : 'Idle'}${a.queued ? ` · ${a.queued} queued` : ''}${a.last_task ? ` · ${a.last_task.slice(0, 60)}` : ''}`)),
             btn('chat-circle', `Open ${a.name}'s thread`, () => this.open(a.id)),
             a.status === 'working' ? btn('stop', `Stop ${a.name}`, () => run('stop_agent', { agent: a.id })) : null,
@@ -176,24 +178,45 @@ export class Agents {
     const toolset = h('select', {}, ['auto', ...Object.keys(TOOLSETS)].map((k) => h('option', { value: k, selected: (p?.toolset || 'auto') === k }, k)));
     const instructions = h('textarea', { rows: 4, placeholder: 'What it always keeps in mind, e.g. "You check levels and drainage; answer in short lists."' }, p?.instructions || '');
     const color = h('input', { type: 'color', value: p?.color || '#7aa2f7' });
-    const body = h('div.agent-form', {}, f('Name', name), f('Provider', provider), f('Model', modelField), f('Skill', skill), f('Tools', toolset), f('Instructions', instructions), f('Colour', color));
+    let pickedIcon = p?.icon || AGENT_ICONS[this.profiles.length % AGENT_ICONS.length];
+    const icons = h('div.agent-icons', { role: 'radiogroup', 'aria-label': 'Icon' });
+    const showIcons = () => icons.replaceChildren(...AGENT_ICONS.map((k) => h('button.icon-btn', { type: 'button', role: 'radio', title: k, 'aria-label': k, 'aria-checked': String(k === pickedIcon), style: { color: color.value }, onclick: () => ((pickedIcon = k), showIcons()) }, icon(k, true))));
+    color.addEventListener('input', showIcons);
+    showIcons();
+    const body = h('div.agent-form', {}, f('Name', name), f('Provider', provider), f('Model', modelField), f('Skill', skill), f('Tools', toolset), f('Instructions', instructions), f('Icon', icons), f('Colour', color));
     if ((await this.app.ui.modal(p ? `Edit ${p.name}` : 'New agent', body, [['Save', 'save'], ['Cancel', null]])) !== 'save') return;
-    const args = { name: name.value.trim(), provider: provider.value, model: provider.value === 'builtin' && builtins.length ? builtinModel.value : model.value.trim(), skill: skill.value, toolset: toolset.value, instructions: instructions.value, color: color.value };
+    const args = { name: name.value.trim(), provider: provider.value, model: provider.value === 'builtin' && builtins.length ? builtinModel.value : model.value.trim(), skill: skill.value, toolset: toolset.value, instructions: instructions.value, color: color.value, icon: pickedIcon };
     if (p) args.id = p.id;
     this.app.reg.run('save_agent', args).catch((e) => this.app.ui.toast(e.message, 'danger'));
   }
 
-  // ---------------------------------------------------------------- Ask at the cursor (#244)
-  /** The small prompt at (x, y) client pixels (default: the last pointer position over the view); point: what is there. */
-  askAt(x = this.pointer?.x ?? innerWidth / 2, y = this.pointer?.y ?? innerHeight / 2, point = undefined) {
+  // ---------------------------------------------------------------- one prompt: search, commands and Ask (#244)
+  /**
+   * Ctrl+K, Ctrl+Space, right-click › Ask… and the status-bar search all open this: matching commands listed above the
+   * field, the agent, voice and Send. (x, y) client pixels, default the pointer over the view, else just above the
+   * search bar; point: what is there. above: (x, y) is where the prompt's bottom edge goes.
+   */
+  askAt(x, y, point = undefined, above = false) {
     const app = this.app;
     this.closeAsk();
+    if (x === undefined) {
+      if (this.pointer) ({ x, y } = this.pointer);
+      else {
+        const r = document.getElementById('palette-btn').getBoundingClientRect();
+        (x = r.left), (y = r.top - 4), (above = true), (point = null);
+      }
+    }
     const vp = app.viewport;
     if (point === undefined) point = (document.elementFromPoint(x, y) === vp.canvas && vp.pick({ clientX: x, clientY: y })?.point?.toArray()) || null;
     const ids = [...app.selection];
+    const down = !above && y < 320; // too near the top: the list opens below the field
     const pick = h('select.agent-pick', { 'aria-label': 'Agent' }, this.profiles.map((p) => h('option', { value: p.id, selected: p.id === this.current.profile.id }, p.name)));
-    const input = h('input.ask-input', { placeholder: 'Ask…  (Enter sends, Esc closes)', 'aria-label': 'Ask an agent' });
+    const badge = h('span.agent-badge');
+    const showBadge = () => badge.replaceChildren(agentBadge(this.thread(pick.value).profile));
+    showBadge();
+    const input = h('input.ask-input', { id: 'palette-input', placeholder: 'Search commands or ask…  (Enter, Esc closes)', 'aria-label': 'Search commands or ask an agent', autocomplete: 'off', spellcheck: false });
     const mic = h('button.btn.icon-only', { title: 'Hold to talk', 'aria-label': 'Hold to talk', onpointerdown: (e) => (e.preventDefault(), this.current.listen(input, mic)), onpointerup: () => this.current.hear(), onpointerleave: () => this.current.recorder && this.current.hear() }, icon('microphone'));
+    const list = h('ul', { id: 'palette-list', role: 'listbox', 'aria-label': 'Commands' });
     const send = () => {
       const text = input.value.trim();
       if (!text) return;
@@ -202,15 +225,45 @@ export class Agents {
       app.ui.toast(t.busy ? `${t.profile.name} will do it next (queued).` : `${t.profile.name} is on it.`);
       this.task(t.profile.id, text, { ids, point }).then((reply) => reply && app.ui.toast(`${t.profile.name}: ${reply.length > 220 ? `${reply.slice(0, 220)}…` : reply}`));
     };
+    let items = [];
+    let idx = 0;
+    const render = () => {
+      const q = input.value.trim();
+      items = app.ui.paletteItems(q.toLowerCase());
+      if (q) items.push({ label: `Ask ${pick.selectedOptions[0]?.text || 'the agent'}: "${q}"`, badge: this.thread(pick.value).profile, run: send });
+      idx = Math.max(0, Math.min(idx, items.length - 1));
+      list.replaceChildren(...items.map((it, i) => h('li', { role: 'option', 'aria-selected': String(i === idx), onclick: () => go(i) }, it.badge ? agentBadge(it.badge) : icon(it.icon || 'dot-outline'), h('span', {}, it.label), it.desc ? h('span.desc', {}, it.desc) : null, it.key ? h('span.key', {}, it.key) : null)));
+      list.children[idx]?.scrollIntoView({ block: 'nearest' });
+    };
+    const go = (i) => {
+      const it = items[i];
+      if (!it) return;
+      if (it.run === send) return send();
+      this.closeAsk();
+      it.run();
+    };
+    input.oninput = () => ((idx = 0), render());
+    pick.onchange = () => (showBadge(), render());
     input.onkeydown = (e) => {
-      if (e.key === 'Enter') e.preventDefault(), send();
-      if (e.key === 'Escape') e.preventDefault(), this.closeAsk();
+      // the best match sits next to the field: arrows move away from it and back
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') (idx += (e.key === 'ArrowDown') === down ? 1 : -1), render(), e.preventDefault();
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        // a sentence that is no command's name goes straight to the agent
+        const q = input.value.trim();
+        if (q.split(/\s+/).length > 2 && !items.slice(0, -1).some((x) => x.label.toLowerCase() === q.toLowerCase())) send();
+        else go(idx);
+      } else if (e.key === 'Escape') e.preventDefault(), this.closeAsk();
       e.stopPropagation();
     };
     const context = [ids.length ? `${ids.length} selected` : '', point ? `at ${point.map((v) => v.toFixed(2)).join(', ')}` : ''].filter(Boolean).join(' · ');
-    this.pop = h('div.ask-pop', { role: 'dialog', 'aria-label': 'Ask an agent', style: { left: `${Math.min(x, innerWidth - 380)}px`, top: `${Math.min(y, innerHeight - 110)}px` } }, h('div.row', {}, pick, input, mic, h('button.btn.primary.icon-only', { title: 'Send (Enter)', 'aria-label': 'Send', onclick: send }, icon('paper-plane-right'))), context ? h('div.small.muted', {}, context) : null);
+    const left = Math.max(8, Math.min(x, innerWidth - 568));
+    const edge = down ? { top: `${y}px` } : { bottom: `${Math.max(8, innerHeight - y - (above ? 0 : 48))}px` };
+    list.style.maxHeight = `${Math.max(120, Math.min(innerHeight * 0.52, (down ? innerHeight - y : y) - 90))}px`;
+    this.pop = h(`div.ask-pop${down ? '.down' : ''}`, { role: 'dialog', 'aria-label': 'Search commands or ask an agent', style: { left: `${left}px`, ...edge } }, list, h('div.row', {}, badge, pick, input, mic, h('button.btn.primary.icon-only', { title: 'Send to the agent', 'aria-label': 'Send', onclick: send }, icon('paper-plane-right'))), context ? h('div.small.muted', {}, context) : null);
     this.pop.point = point;
     document.body.append(this.pop);
+    render();
     this.outside = (e) => !this.pop?.contains(e.target) && this.closeAsk();
     setTimeout(() => addEventListener('pointerdown', this.outside, true));
     input.focus();

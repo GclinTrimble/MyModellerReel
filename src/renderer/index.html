@@ -38,9 +38,6 @@
         <span class="wordmark">My<b>Modeller</b><b class="reel">Reel</b></span>
       </div>
       <nav class="menubar" id="menubar" aria-label="Main menu"></nav>
-      <button class="search" id="palette-btn" title="Search commands or ask the AI (Ctrl+K)" aria-label="Search commands or ask the AI (Ctrl+K)">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i><span>Search commands or ask AI…</span><kbd>Ctrl K</kbd>
-      </button>
       <span class="doc-title" id="doc-title">Untitled</span>
     </header>
 
@@ -67,6 +64,9 @@
     </main>
 
     <footer class="statusbar">
+      <button class="search" id="palette-btn" title="Search commands or ask an agent (Ctrl+K, or Ctrl+Space at the cursor)" aria-label="Search commands or ask an agent (Ctrl+K)">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i><span>Search commands or ask…</span><kbd>Ctrl K</kbd>
+      </button>
       <span id="status-hint"></span>
       <span class="spacer"></span>
       <span class="api-pill" id="api-pill" title="Local API and MCP"></span>
@@ -75,10 +75,6 @@
 
     <div id="toasts" aria-live="polite"></div>
     <div class="menu-pop" id="menu-pop" hidden></div>
-    <dialog id="palette" class="palette">
-      <input id="palette-input" placeholder="Type a command, or ask the AI anything…" autocomplete="off" spellcheck="false" />
-      <ul id="palette-list"></ul>
-    </dialog>
     <dialog id="modal" class="modal"></dialog>
 
     <script type="module" src="./app.js"></script>

@@ -3,6 +3,7 @@
 // so anything a person can do, an AI can do, and anything a plugin adds, an AI can call.
 import { Matrix4, Vector3, Quaternion } from 'three';
 import * as G from './geometry.js';
+import { AGENT_ICONS } from './agents.js';
 import * as C from './curves.js';
 import * as P from './profiles.js';
 import * as R from './derived.js';
@@ -1831,7 +1832,6 @@ function registerCore(reg, ctx) {
     if (L.points.length < 2) throw new Error('A line needs at least 2 points.');
     return summary(doc, l);
   }, true);
-
   def('terrain', 'set_line_offsets', "Offset lines that follow a breakline / line: each h m right (+) or left (−) of its direction seen from above and v m up (+) or down (−), e.g. a kerb back h 0.15 v 0.15, a ditch bottom h −2 v −0.5. Several at once; they rebuild when its points move, and a breakline's offsets go into the surfaces built on it (surface: false leaves one out). An empty list removes them.", obj({ id, offsets: { type: 'array', description: 'the whole list (replaces the old one)', items: obj({ h: num('horizontal offset, m: + right, − left'), v: num('vertical offset, m: + up, − down (default 0)'), name: str('label, e.g. "Back of kerb"'), surface: bool('into the surface when the line is a breakline (default true)') }, ['h']) } }, ['id', 'offsets']), (a) => {
     const [l] = D.resolve(ctx.doc, a.id);
     if (!S.isLinework(l)) throw new Error(`${l.name} is not linework.`);
@@ -4341,6 +4341,10 @@ function registerCore(reg, ctx) {
     await ctx.io.setSettings({ language: a.lang });
     return { language: a.lang };
   });
+  def('scene', 'set_theme', 'The app colours: auto (follow the Windows light / dark setting), light or dark. The pick is remembered.', obj({ mode: str('auto | light | dark', ['auto', 'light', 'dark']) }, ['mode']), async (a) => {
+    uiHook('theme')(a.mode);
+    return { theme: a.mode };
+  });
 
   def('file', 'export_web_viewer', 'A web page of the model to send to anyone: one HTML file with the model, its animation and orbit controls, three.js inside (no app, no network).', obj({ path: str('absolute .html path'), title: str('the page title') }), async (a) => {
     if (!ctx.io?.webViewerParts) throw new Error('Needs the desktop app.');
@@ -4404,7 +4408,7 @@ function registerCore(reg, ctx) {
   };
   const agent = str('agent id or name (default: Plumb)');
   def('ai', 'list_agents', 'The agent profiles (Plumb is the default) with what each is doing (idle, working, queued tasks), and the changes held because two agents touched the same thing.', obj({}), () => crew().list());
-  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('builtin | anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb') }), (a) => crew().save(a));
+  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('builtin | anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb'), icon: str('animal icon', AGENT_ICONS) }), (a) => crew().save(a));
   def('ai', 'remove_agent', 'Delete an agent profile (not Plumb).', obj({ agent }, ['agent']), (a) => crew().remove(a.agent));
   def('ai', 'ask_agent', 'Give an agent a task: it joins that agent\'s queue and runs when the agent is free, alongside other agents. Returns at once (the reply goes to its thread).', obj({ agent, text: str('the task'), ids: { ...ids, description: 'entities to point it at' }, point: v3('a point in the model, world metres') }, ['text']), (a) => crew().ask(a.agent, a.text, { ids: a.ids, point: a.point }));
   def('ai', 'stop_agent', 'Stop an agent\'s running turn and clear its queue (what it did so far stays; undo removes it).', obj({ agent }), (a) => crew().stop(a.agent));
@@ -5463,10 +5467,14 @@ function registerCore(reg, ctx) {
     return path;
   };
 
-  def('terrain', 'surface_contours', 'Contour lines of a surface every interval (major lines every n), live: they follow the surface. Labels show on major lines. Run again to change the interval.', obj({ id, interval: num('m, default 1'), major_every: num('a major line every n (default 5)'), base: num('a level the contours line up with (project, default 0)'), smooth: num('rounding passes 0–3 (default 1)'), layer: str('layer (default "Contours")'), name: common.name }, ['id']), (a) => {
+  def('terrain', 'surface_contours', 'Contour lines of a surface every interval (major lines every n), live: they follow the surface. Labels show on major lines. Run again to change the interval; show false removes them.', obj({ id, interval: num('m, default 1'), major_every: num('a major line every n (default 5)'), base: num('a level the contours line up with (project, default 0)'), smooth: num('rounding passes 0–3 (default 1)'), layer: str('layer (default "Contours")'), name: common.name, show: bool('default true') }, ['id']), (a) => {
     const doc = ctx.doc;
     const s = surfaceOf(a.id);
     let g = doc.entities.find((e) => e.contours?.surface === s.id);
+    if (a.show === false) {
+      if (g) D.removeEntity(doc, g);
+      return { id: s.id, contours: 'none' };
+    }
     if (!g) {
       L.ensureLayer(doc, a.layer || 'Contours');
       g = D.addEntity(doc, { type: 'group', name: a.name || D.uniqueName(doc, `${s.name} contours`), tag: a.layer || 'Contours', contours: { surface: s.id } });
@@ -5474,6 +5482,22 @@ function registerCore(reg, ctx) {
     Object.assign(g.contours, { interval: a.interval ?? g.contours.interval ?? 1, major_every: a.major_every ?? g.contours.major_every ?? 5, base: a.base ?? g.contours.base ?? 0, smooth: a.smooth ?? g.contours.smooth ?? 1, stamp: null });
     SW.syncTerrain(doc);
     return { id: g.id, name: g.name, levels: g.contours.levels, lines: D.childrenOf(doc, g.id).length };
+  }, true);
+  def('terrain', 'slope_arrows', 'Arrows on a surface pointing downhill every spacing m, longer where steeper; each is named by its grade (%). Live: they follow the surface. show false removes them.', obj({ id, spacing: num('m between arrows (default 5)'), show: bool('default true'), layer: str('layer (default "Slope arrows")') }, ['id']), (a) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(a.id);
+    let g = doc.entities.find((e) => e.slopeArrows?.surface === s.id);
+    if (a.show === false) {
+      if (g) D.removeEntity(doc, g);
+      return { id: s.id, slope_arrows: 'none' };
+    }
+    if (!g) {
+      L.ensureLayer(doc, a.layer || 'Slope arrows');
+      g = D.addEntity(doc, { type: 'group', name: D.uniqueName(doc, `${s.name} slope arrows`), tag: a.layer || 'Slope arrows', slopeArrows: { surface: s.id } });
+    }
+    Object.assign(g.slopeArrows, { spacing: a.spacing ?? g.slopeArrows.spacing ?? 5, stamp: null });
+    SW.syncTerrain(doc);
+    return { id: g.id, name: g.name, arrows: D.childrenOf(doc, g.id).length };
   }, true);
   def('terrain', 'export_contours', 'Write a contour group as DXF 3D polylines at their elevations (project coordinates).', obj({ id: str('contour group'), path: str('absolute .dxf path') }, ['id', 'path']), async (a) => {
     const [g] = D.resolve(ctx.doc, a.id);

@@ -8,7 +8,7 @@ You would rather say what you want than click it: Plumb (Claude, or a local mode
 
 1. The AI panel: type what you want in plain words and press Enter. It sees your selection; each of its turns is one undo step; the stop button stops it.
    ![The AI panel: type what you want in plain words and press Enter. It sees your se](media/ask-the-copilot/01.jpg)
-2. **Ctrl+K** searches every command by what you want to do ("hinge a door") and can ask the AI from there.
+2. **Ctrl+K** (or the search at the bottom of the window) searches every command by what you want to do ("hinge a door") and can ask an agent from there. Over the model, Ctrl+K and Ctrl+Space open it where you point, with that point; the matches list above the field.
    ![Ctrl+K searches every command by what you want to do ("hinge a door") and can as](media/ask-the-copilot/02.jpg)
 3. While Plumb works, its card at the end of the thread says what it does now (thinking, reasoning, running a command), the seconds so far and the step; **Stop** ends the turn and keeps what is done. Each command shows as it runs, with its arguments, then a tick or the error and its time, and the model in the view changes as it goes. A model that reasons first shows its reasoning folded, with the latest words.
    ![While Plumb works: what it does now, the time so far, each command as it runs, and Stop](media/ask-the-copilot/03.jpg)

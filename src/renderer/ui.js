@@ -14,6 +14,7 @@ import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
 import * as Assets from '../core/assets.js';
 import * as SW from '../core/sitework.js';
+import { isSurface } from '../core/project.js';
 import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
@@ -1376,6 +1377,7 @@ export class UI {
     this.renderProposal();
     this.renderMacro();
     this.renderManager();
+    this.renderSelectionBar(); // its toggles follow the model
     this.app.tools?.tool?.renderBar?.(); // the in-view bar of a tool follows the library and the selection
     const chip = this.$('context-chip');
     const ctx = this.app.context && this.app.entity(this.app.context);
@@ -1409,21 +1411,22 @@ export class UI {
     );
   }
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
+  // '# Name' starts a labelled group, '-' an unlabelled one; tabs and groups go in the order the work is done
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'fieldbook', 'mapLayers', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
-      Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
-      Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
-      Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
-      Earthworks: ['cutFill', 'volumeReport', 'corridorVolumes', 'corridorSolids'],
-      Materials: ['tool:matbrush', 'materialManager'],
+      Survey: ['# Set up', 'coordSys', 'basePoint', 'mapPick', 'loadLibrary', 'featureCode', '# Bring in', 'importPoints', 'fieldbook', '# Points', 'tool:point', 'addPoint', 'cogo', 'processCodes', '# Show and share', 'survey', 'mapLayers', 'exportPoints'],
+      Surfaces: ['# Create', 'surface', 'contourZ', 'fromContours', 'groundFromCloud', 'importTerrain', '# Refine', 'breakline', 'boundary', 'editSurface', 'smooth', '# Check', 'checkSurface', 'analyze', 'contours'],
+      Design: ['# Platforms', 'pad', 'stamp', '# Along a line', 'road', 'lineSlope', 'trench', '# Surfaces', 'plane', 'offsetSurface', 'newTerrain', 'tool:sculpt', '# On the ground', 'drape', 'drapeImage', 'water'],
+      Roads: ['# Lay out', 'alignment', 'corridor', 'editCorridor', '# Review', 'roadViews', 'profile', 'sections', '# Into the ground', 'corridorSurface', 'applyCorridor'],
+      Earthworks: ['# Surfaces', 'cutFill', 'volumeReport', '# Roads', 'corridorVolumes', 'corridorSolids'],
+      Materials: ['# Surface materials', 'tool:matbrush', 'materialManager'],
     },
     Drawings: {
       '1 Bring in': ['importPdf', 'importImage', 'readDrawing', 'vectorise'],
       '2 Scale': ['tool:calibrate', 'drawingScale', 'snapDrawings'],
       '3 Place on the map': ['tool:control', 'georef', 'georefReport', 'worldFile'],
       '4 Take lines out': ['pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours'],
-      '5 Clean up': ['tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide'],
+      '5 Clean up': ['# Trim and extend', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', '# Shape', 'offset', 'fillet', 'chamfer', '# Tidy', 'joinCurves', 'explode', 'simplify', 'divide'],
       '6 To the model': ['elevate', 'toBreaklines', 'extrudeLines', 'sweepLines'],
     },
   };
@@ -1435,8 +1438,8 @@ export class UI {
       const tabs = {};
       let cur = 'Main';
       for (const id of this.menus[m] || []) {
-        if (id === '-') continue;
-        if (!this.actions[id] && !id.startsWith('tool:')) cur = id;
+        if (id === '-') (tabs[cur] ||= []).push(id); // the menu's separators divide the tab
+        else if (!this.actions[id] && !id.startsWith('tool:')) cur = id;
         else (tabs[cur] ||= []).push(id);
       }
       out[m === 'Tools' ? 'Draw and modify' : m] = tabs;
@@ -1470,6 +1473,15 @@ export class UI {
     } catch {}
     this.app.viewport.dirty = true;
   }
+  /** A tab's ids as [label, ids] groups: '# Name' starts a labelled group, '-' an unlabelled one; empty groups dropped. */
+  ribbonGroups(ids) {
+    const groups = [['', []]];
+    for (const id of ids) {
+      if (id === '-' || id.startsWith('# ')) groups.push([id === '-' ? '' : id.slice(2), []]);
+      else groups.at(-1)[1].push(id);
+    }
+    return groups.filter(([, g]) => g.length);
+  }
   renderRibbon() {
     let el = this.$('ribbon');
     if (!el) {
@@ -1490,12 +1502,59 @@ export class UI {
     };
     el.replaceChildren(
       h('div.ribbon-tabs', {}, h('select', { 'aria-label': 'Ribbon', onchange: (e) => this.setRibbon(e.target.value) }, Object.keys(this.ribbons()).map((n) => h('option', { value: n, selected: n === name }, t(n)))), ...Object.keys(tabs).map((k) => h('button.ribbon-tab', { role: 'tab', 'aria-selected': String(k === tab), onclick: () => this.setRibbon(name, k) }, k)), h('span.spacer'), h('button.icon-btn.sm', { title: 'Hide the ribbon', 'aria-label': 'Hide the ribbon', onclick: () => this.setRibbon(null) }, icon('x'))),
-      h('div.ribbon-body', {}, ...tabs[tab].map(item).filter(Boolean)),
+      h('div.ribbon-body', {}, ...this.ribbonGroups(tabs[tab]).map(([label, ids]) => h('div.ribbon-group', {}, h('div.ribbon-group-items', {}, ...ids.map(item).filter(Boolean)), label ? h('div.ribbon-group-label', {}, t(label)) : null))),
     );
     this.app.viewport.dirty = true;
   }
 
+  /**
+   * The floating bar at the bottom of the view while something is selected: details, zoom and ask; a surface from
+   * selected points and lines; on one surface, how it shows (triangles, colours, slope arrows, contours).
+   */
+  renderSelectionBar() {
+    const app = this.app;
+    const doc = app.store.doc;
+    let bar = this.$('selection-bar');
+    if (!bar) document.querySelector('.viewport-wrap').append((bar = h('div.selection-bar', { id: 'selection-bar', role: 'toolbar', 'aria-label': 'Selection' })));
+    const ents = app.selection.map((id) => app.entity(id)).filter(Boolean);
+    bar.hidden = !ents.length;
+    if (!ents.length) return bar.replaceChildren();
+    const go = (name, args) => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
+    const b = (label, ic, run, on) => h('button.sel-btn', { type: 'button', title: t(label), 'aria-pressed': on === undefined ? undefined : String(on), onclick: run }, icon(ic), h('span', {}, t(label)));
+    const items = [
+      b('Details', 'info', () => (this.setSidePanel(true), this.show('entity'))),
+      b('Zoom', 'magnifying-glass-plus', () => this.actions.zoomSel.run()),
+      b('Ask', 'chat-teardrop-dots', () => {
+        const r = bar.getBoundingClientRect();
+        app.agents.askAt(r.left, r.top - 6, null, true);
+      }),
+    ];
+    const all = ents.flatMap((e) => [e, ...D.descendants(doc, e.id)]);
+    const pts = all.filter(S.isPoint);
+    const lines = all.filter((e) => S.isLinework(e) || e.curve);
+    if (pts.length >= 3) {
+      const ids = (kind) => lines.filter((e) => (e.line?.kind || 'breakline') === kind).map((e) => e.id);
+      items.push(h('span.sel-sep'), b('Surface', 'mountains', () => go('create_surface', { points: pts.map((e) => e.id), breaklines: ids('breakline'), boundaries: ids('boundary') }).then((r) => r?.id && app.select([r.id]))));
+    }
+    const s = ents.length === 1 && isSurface(ents[0]) ? ents[0] : null;
+    if (s) {
+      const colour = (label, ic, kind) => b(label, ic, () => go('analyze_surface', { id: s.id, kind: s.analysis?.kind === kind ? 'none' : kind }), s.analysis?.kind === kind);
+      const arrows = doc.entities.some((x) => x.slopeArrows?.surface === s.id);
+      const contours = doc.entities.find((x) => x.contours?.surface === s.id);
+      items.push(
+        h('span.sel-sep'),
+        b('Triangles', 'triangle', () => go('show_triangles', { ids: [s.id], show: !s.show_triangles }), !!s.show_triangles),
+        colour('Elevation', 'chart-bar', 'elevation'),
+        colour('Slope', 'chart-line-up', 'slope'),
+        colour('Facing', 'compass', 'aspect'),
+        b('Arrows', 'arrow-down-right', () => go('slope_arrows', { id: s.id, show: !arrows }), arrows),
+        b('Contours', 'wave-sine', () => go('surface_contours', { id: s.id, show: !contours }), !!contours),
+      );
+    }
+    bar.replaceChildren(...items);
+  }
   onSelection() {
+    this.renderSelectionBar();
     // a drawing selected: offer its workflow (#197), once, if no ribbon is open
     const one = this.app.selection.length === 1 && this.app.entity(this.app.selection[0]);
     if (one?.underlay && !this.ribbon && !this.ribbonOffered) (this.ribbonOffered = true), this.setRibbon('Drawings', one.underlay.affine ? '2 Scale' : '1 Bring in');
@@ -1735,7 +1794,7 @@ export class UI {
       ['#toolbar', 'Tools', 'Draw (L, R, C, A…), push / pull (P), move (M), rotate (Q), measure (T). Hover a tool to see its key. While a tool works, type numbers: they go to the Measurements box.'],
       ['#vcb', 'Measurements box', 'Type exact values while drawing or moving: 2.5, 3,2, 150mm, 45°, x5 for five copies.'],
       ['#menubar', 'Menus', 'Everything has a menu entry: Site for survey and terrain, Drawings for PDFs and images, Animate for the timeline and videos.'],
-      ['#palette-btn', 'Search (Ctrl+K)', 'Find any command by what you want to do ("hinge a door"), or ask the AI from here.'],
+      ['#palette-btn', 'Search and ask (Ctrl+K)', 'Find any command by what you want to do ("hinge a door"), or ask an agent. Ctrl+K or Ctrl+Space over the model opens it where you point, with that point.'],
       ['#dock-tabs', 'Panels', 'AI chat, Outliner and layers, the selected entity, materials, scenes, the library, the survey table, settings.'],
       ['#timeline', 'Timeline', 'Keyframes, markers and captions; Animate › Render video turns it into an MP4.'],
       ['#api-pill', 'Automation', 'Every button is a command: scripts, the HTTP API and MCP (Claude and other AIs) drive the same ones.'],
@@ -2901,7 +2960,7 @@ export class UI {
       h('p.small.muted', {}, Object.keys(s.shortcuts || {}).length ? Object.entries(s.shortcuts).map(([k, v]) => `${k} → ${v}`).join(' · ') : 'None of your own yet.'),
       h('div.row', {}, h('button.btn.sm', { onclick: () => this.commandDialog('set_shortcut', { key: 'Ctrl+Shift+F', action: 'filletEdges' }) }, icon('keyboard'), 'Add a shortcut…')),
       h('h3', {}, t('Appearance')),
-      h('label.row', {}, h('input', { type: 'checkbox', checked: document.documentElement.classList.contains('dark'), onchange: () => app.toggleTheme() }), 'Dark theme'),
+      h('label.field', {}, h('span', {}, t('Theme')), h('select', { onchange: (e) => app.reg.run('set_theme', { mode: e.target.value }) }, [['auto', t('Auto (follow Windows)')], ['light', t('Light')], ['dark', t('Dark')]].map(([v, l]) => h('option', { value: v, selected: v === app.themeMode }, l)))),
       app.startup.supported &&
         h(
           'label.row',
@@ -3504,52 +3563,24 @@ export class UI {
     );
   }
 
-  // ---------------------------------------------------------------- command palette (Ctrl+K)
+  // ---------------------------------------------------------------- search and commands (the list in the Ask prompt, agents.askAt)
+  /** Actions and commands matching q (lower case): ones without required parameters run at once, the others open their form. */
+  paletteItems(q) {
+    const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
+    const cmds = this.app.reg.list().map((c) => ({
+      label: c.name,
+      desc: c.description,
+      icon: (c.params.required || []).length ? 'textbox' : 'terminal',
+      run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+    }));
+    return [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
+  }
   buildPalette() {
-    const dlg = this.$('palette');
-    const input = this.$('palette-input');
-    const list = this.$('palette-list');
-    let items = [];
-    let idx = 0;
-    const render = () => {
-      const q = input.value.trim().toLowerCase();
-      const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
-      // Every command: ones without required parameters run at once, the others open their form.
-      const cmds = this.app.reg.list().map((c) => ({
-        label: c.name,
-        desc: c.description,
-        icon: (c.params.required || []).length ? 'textbox' : 'terminal',
-        run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
-      }));
-      items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
-      if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });
-      idx = Math.min(idx, items.length - 1);
-      list.replaceChildren(...items.map((it, i) => h('li', { 'aria-selected': String(i === idx), onclick: () => go(i) }, icon(it.icon || 'dot-outline'), h('span', {}, it.label), it.desc ? h('span.desc', {}, it.desc) : null, it.key ? h('span.key', {}, it.key) : null)));
-      list.children[idx]?.scrollIntoView({ block: 'nearest' });
+    // Ctrl+K and Ctrl+Space are one prompt: at the pointer over the view, else just above this button
+    this.openPalette = () => this.app.agents.askAt();
+    this.$('palette-btn').onclick = () => {
+      const r = this.$('palette-btn').getBoundingClientRect();
+      this.app.agents.askAt(r.left, r.top - 4, null, true);
     };
-    const go = (i) => {
-      const it = items[i];
-      dlg.close();
-      it?.run();
-    };
-    input.oninput = () => ((idx = 0), render());
-    input.onkeydown = (e) => {
-      if (e.key === 'ArrowDown') (idx = Math.min(items.length - 1, idx + 1)), render(), e.preventDefault();
-      else if (e.key === 'ArrowUp') (idx = Math.max(0, idx - 1)), render(), e.preventDefault();
-      else if (e.key === 'Enter') {
-        // A sentence with no matching command goes straight to the AI.
-        const q = input.value.trim();
-        if (q.split(/\s+/).length > 2 && !items.slice(0, -1).some((x) => x.label.toLowerCase() === q.toLowerCase())) go(items.length - 1);
-        else go(idx);
-      }
-    };
-    this.openPalette = () => {
-      input.value = '';
-      idx = 0;
-      render();
-      dlg.showModal();
-      input.focus();
-    };
-    this.$('palette-btn').onclick = this.openPalette;
   }
 }

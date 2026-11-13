@@ -370,7 +370,7 @@ function stampOf(e) {
   return `${h.toFixed(3)}|${e.position.join(',')}|${e.mesh.f.length}`;
 }
 
-/** After every change: contour groups and analysis colours follow their surfaces. */
+/** After every change: contour groups, slope arrows and analysis colours follow their surfaces. */
 export function syncTerrain(doc) {
   const baseZ = S.geo(doc).base?.[2] ?? 0;
   for (const g of doc.entities.filter((x) => x.contours)) {
@@ -389,6 +389,18 @@ export function syncTerrain(doc) {
       }
     c.stamp = st;
     c.levels = levels.length;
+  }
+  for (const g of doc.entities.filter((x) => x.slopeArrows)) {
+    const s = D.getEntity(doc, g.slopeArrows.surface);
+    if (!s?.mesh) continue;
+    const st = `${stampOf(s)}|${g.slopeArrows.spacing}`;
+    if (g.slopeArrows.stamp === st) continue;
+    for (const old of D.childrenOf(doc, g.id)) D.removeEntity(doc, old);
+    for (const a of SF.slopeArrows(D.worldMesh(doc, s), { spacing: g.slopeArrows.spacing })) {
+      const { mesh, origin } = G.recenter({ v: a.pts.map(D.round3), f: [] });
+      D.addEntity(doc, { type: 'curve', parent: g.id, name: `${a.grade} %`, tag: g.tag, curve: { kind: 'polyline', points: mesh.v, closed: false }, position: D.round3(origin), material: { color: '#2f5f86' }, meta: { grade: a.grade, bearing: a.bearing } });
+    }
+    g.slopeArrows.stamp = st;
   }
   for (const e of doc.entities.filter((x) => x.analysis && x.mesh)) {
     const other = e.analysis.other && D.getEntity(doc, e.analysis.other);
