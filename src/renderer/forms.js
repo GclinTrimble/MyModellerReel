@@ -2,8 +2,39 @@
 // right control for each value — the model's points to choose from, numbers with their unit and default, bearings in
 // degrees or DMS, colours with swatches, choices as buttons — checked as you type, help in the ⓘ tooltip, alternative
 // inputs as modes (params.ui.modes), required fields first and the rest folded under "More options".
-import { h, icon } from './ui.js';
+import { h, icon, infoTip } from './ui.js';
 import { kindOf, defaultOf, exampleOf, tupleLabels, readPoint, readAngle, readNumber } from '../core/fields.js';
+import * as S from '../core/survey.js';
+import { featureType } from '../core/trimble.js';
+
+const TYPE_ICON = { point: 'map-pin-simple', line: 'line-segments', polygon: 'polygon' };
+/**
+ * A feature library's codes as a searchable grid: colour, point / line / polygon, code, description, layer. Clicking a
+ * row (or Enter in the search) gives onPick(code); extra(row) adds buttons to a row.
+ */
+export function codeGrid(codes, onPick, { extra, query = '' } = {}) {
+  const search = h('input', { type: 'search', value: query, placeholder: 'Search code, description, layer…', 'aria-label': 'Search the codes', autocomplete: 'off', spellcheck: false });
+  const list = h('div.code-grid', { role: 'listbox', 'aria-label': 'Feature codes' });
+  const lib = { featureCodes: codes };
+  const draw = () => {
+    const rows = S.searchCodes(codes, search.value);
+    list.replaceChildren(
+      ...rows.slice(0, 400).map((r) => {
+        const type = featureType(r);
+        return h('div.code-row', { role: 'option', title: [r.category, r.lineStyle && `line style ${r.lineStyle}`, r.attrs?.length && `attributes: ${r.attrs.map((a) => a.name).join(', ')}`].filter(Boolean).join(' · '), onclick: () => onPick?.(r.code) }, h('i.code-swatch', { style: { background: S.codeColor(lib, r.code) } }), h('span.code-type', { title: type, 'aria-label': type }, icon(TYPE_ICON[type])), h('b', {}, r.code), h('span.code-desc', {}, r.description || ''), h('span.code-layer', {}, r.layer || ''), extra ? h('span.code-acts', {}, extra(r)) : null);
+      }),
+      ...(rows.length > 400 ? [h('div.code-empty', {}, `${rows.length - 400} more: search to narrow.`)] : rows.length ? [] : [h('div.code-empty', {}, Object.keys(codes).length ? 'No code matches.' : 'No codes in this library yet.')]),
+    );
+  };
+  search.oninput = draw;
+  search.onkeydown = (e) => {
+    e.stopPropagation();
+    const first = e.key === 'Enter' && S.searchCodes(codes, search.value)[0];
+    if (first) (e.preventDefault(), onPick?.(first.code));
+  };
+  draw();
+  return { el: h('div.code-browser', {}, search, list), search, draw };
+}
 
 export const SWATCHES = ['#c8553d', '#e8bc5e', '#4c7a5a', '#2f6f86', '#1e3a4c', '#7a5c8c', '#b5492b', '#8a6d3b', '#9aa3ab', '#3c3f44', '#d9d4c7', '#ffffff'];
 const ENTITY_KEYS = new Set(['id', 'corridor', 'alignment', 'surface', 'existing', 'design', 'from_face', 'from', 'to', 'target', 'path', 'profile_from', 'parent', 'of', 'curve', 'outline']);
@@ -13,7 +44,7 @@ const SNAP = 0.25; // m: a pick this close to a named point uses its name
 /** "line_weight" → "Line weight"; a few words people use instead of the API's. */
 export function human(k) {
   const words = { id: 'Which one', ids: 'Which ones', epsg: 'EPSG code', crs: 'Coordinate system', fov: 'Field of view', ior: 'Index of refraction', vcb: 'Value', dof: 'Depth of field', ao: 'Ambient occlusion', n: 'Northing', e: 'Easting', z: 'Elevation', dz: 'Height difference' };
-  return words[k] || k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  return words[k] || k.replace(/_/g, ' ').replace(/(\D)(\d)$/, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 }
 /** The unit at the start of a description ("m", "mm", "%", "degrees", "H:V"…), shown after a number. */
 export function unitOf(desc = '') {
@@ -49,12 +80,13 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   const snapName = (p) => pts.find((q) => Math.hypot(q.position[0] - p[0], q.position[1] - p[1], q.position[2] - p[2]) < SNAP)?.name || r3(p);
   const posOf = (name) => r3(pts.find((q) => q.name === name).position);
   const modes = c.params.ui?.modes || [];
-  let mode = Math.max(0, modes.findIndex((m) => m.fields.some((k) => preset[k] !== undefined)));
-  const inMode = (k) => modes.findIndex((m) => m.fields.includes(k));
-  const needed = (k) => req.has(k) || (modes.length && inMode(k) === mode && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
+  // the mode that the preset fills most
+  const filled = (m) => m.fields.filter((k) => preset[k] !== undefined).length;
+  let mode = modes.reduce((best, m, i) => (filled(m) > filled(modes[best]) ? i : best), 0);
+  const needed = (k) => req.has(k) || (modes.length && modes[mode].fields.includes(k) && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
   const fields = {};
 
-  const tip = (s) => (s.description ? h('span.form-tip', { title: s.description, 'aria-label': s.description, tabindex: 0 }, icon('info')) : null);
+  const tip = (s) => (s.description ? infoTip(s.description) : null);
   const field = (k, s) => {
     const v = preset[k];
     const kind = kindOf(s);
@@ -90,7 +122,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       const inp = h('input', { value: v === undefined ? '' : Array.isArray(v) ? v.join(', ') : v, list: L.points, placeholder: pts.length ? `e.g. ${pts[0].name}${namesOnly ? '' : ', or x, y, z'}` : namesOnly ? 'a point name' : 'x, y, z' });
       const fn = () => readPoint(inp.value, pointNames, { namesOnly });
       live(inp, fn);
-      const pb = pick && !namesOnly && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; if (p) (inp.value = [snapName(p)].flat().join(', ')), inp.dispatchEvent(new Event('input')); } }, icon('crosshair'), 'Pick in the view');
+      const pb = pick && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const [p] = (await pick(1, `Click the ${human(k).toLowerCase()} in the view`)) || []; const v = p && snapName(p); if (namesOnly && Array.isArray(v)) msg.textContent = 'Click on a survey point.'; else if (v) (inp.value = [v].flat().join(', ')), inp.dispatchEvent(new Event('input', { bubbles: true })); } }, icon('crosshair'), namesOnly ? 'Pick' : 'Pick in the view');
       control = h('div.form-row.form-grow', {}, pb, inp);
       read = checked(fn);
     } else if (kind === 'points' || isPoints(s)) {
@@ -108,6 +140,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
         if (pb) pb.hidden = inp.hidden;
         const r = fn();
         msg.textContent = r.error || '';
+        chips.dispatchEvent(new Event('input', { bubbles: true })); // a live preview hears the list change
       };
       const add = () => {
         const r = readPoint(inp.value, pointNames);
@@ -118,8 +151,8 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
         show();
       };
       inp.onchange = add; // a choice from the list, or typed and left
-      inp.onkeydown = (e) => e.key === 'Enter' && (e.preventDefault(), add());
-      const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) vals.push(coords ? r3(p) : snapName(p)); show(); } }, icon('crosshair'), 'Pick in the view');
+      inp.onkeydown = (e) => void (e.key === 'Enter' && (e.preventDefault(), add()));
+      const pb = pick && h('button.btn.sm', { type: 'button', onclick: async () => { const got = await pick(count ? count - vals.length : 0, count ? `Click ${count - vals.length} point(s) in the view` : 'Click the points in the view; Enter when done'); for (const p of got || []) { const v = coords ? r3(p) : snapName(p); if (!(s.ui?.names && Array.isArray(v))) vals.push(v); } show(); } }, icon('crosshair'), 'Pick in the view');
       control = h('div.form-stack', {}, chips, h('div.form-row.form-grow', {}, inp, pb));
       show();
       read = checked(fn);
@@ -202,6 +235,18 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       // which thing: click it in the view (#220), the list stays for those who know the name
       const pb = isThing && pickEntity && h('button.btn.sm.primary', { type: 'button', title: 'Click it in the view', onclick: async () => { const id = await pickEntity(`Click the ${human(k).toLowerCase()} in the view`); const e = id && app.store.doc.entities.find((x) => x.id === id); if (e) inp.value = e.name; } }, icon('cursor-click'), 'Pick in the view');
       control = pb ? h('div.form-row.form-grow', {}, pb, inp, dl) : h('div.form-stack', {}, inp, dl);
+      // a feature code: Browse opens the library's codes to pick from
+      if (s.ui?.kind === 'code' && Object.keys(doc.featureCodes || {}).length) {
+        let grid;
+        const bb = h('button.btn.sm', { type: 'button', 'aria-expanded': 'false', onclick: () => {
+          if (grid) return (grid.el.remove(), (grid = null), bb.setAttribute('aria-expanded', 'false'));
+          grid = codeGrid(doc.featureCodes, (c) => ((inp.value = c), grid.el.remove(), (grid = null), bb.setAttribute('aria-expanded', 'false')), { query: inp.value });
+          control.append(grid.el);
+          bb.setAttribute('aria-expanded', 'true');
+          grid.search.focus();
+        } }, icon('squares-four'), 'Browse');
+        control = h('div.form-stack', {}, h('div.form-row.form-grow', {}, inp, bb), dl);
+      }
       read = () => {
         const t = inp.value.trim();
         if (!t) return undefined;
@@ -224,12 +269,12 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   };
 
   const keys = Object.keys(props);
-  const modeKeys = modes.flatMap((m) => m.fields);
-  const main = keys.filter((k) => !modeKeys.includes(k) && (req.has(k) || preset[k] !== undefined || k === 'ids' || k === 'id')); // which thing(s) it acts on come first
+  const modeKeys = keys.filter((k) => modes.some((m) => m.fields.includes(k))); // in schema order; a field may serve several modes
+  const main = keys.filter((k) => !modeKeys.includes(k) && (req.has(k) || preset[k] !== undefined || k === 'ids' || k === 'id' || c.params.ui?.main?.includes(k))); // which thing(s) it acts on come first; ui.main: shown, not under More
   const more = keys.filter((k) => !modeKeys.includes(k) && !main.includes(k));
   const showMode = () => {
     for (const k of modeKeys) {
-      fields[k].row.hidden = inMode(k) !== mode;
+      fields[k].row.hidden = !modes[mode].fields.includes(k);
       fields[k].star.hidden = !needed(k);
     }
     modeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(i === mode)));
@@ -250,23 +295,26 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   if (modes.length) showMode();
   return {
     el,
-    read() {
+    /** The arguments, or a throw naming the field. quiet: no messages under the fields (a live preview while typing). */
+    read({ quiet = false } = {}) {
       const args = {};
-      for (const f of Object.values(fields)) f.msg.textContent = '';
+      const say = (f, m) => quiet || (f.msg.textContent = m);
+      for (const f of Object.values(fields)) say(f, '');
       for (const [k, f] of Object.entries(fields)) {
         if (f.row.hidden) continue; // another mode's field
         let v;
         try {
           v = f.read();
         } catch (e) {
-          f.msg.textContent = e instanceof SyntaxError ? 'This is not valid; check the brackets and commas.' : e.message;
-          throw new Error(`${human(k)}: ${f.msg.textContent}`);
+          const m = e instanceof SyntaxError ? 'This is not valid; check the brackets and commas.' : e.message;
+          say(f, m);
+          throw new Error(`${human(k)}: ${m}`);
         }
         if (v !== undefined) args[k] = v;
       }
       for (const k of Object.keys(fields))
         if (!fields[k].row.hidden && needed(k) && args[k] === undefined && k !== 'ids') {
-          fields[k].msg.textContent = 'Needed.';
+          say(fields[k], 'Needed.');
           throw new Error(`${human(k)} is needed.`);
         }
       return args;

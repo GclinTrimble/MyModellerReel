@@ -15,11 +15,11 @@ You have a drone or laser scan of the site and want to design on it: see it in t
 4. The [Walk](tool:walk) tool stands you at eye height (arrow keys or WASD, drag to look). The line, rectangle and tape tools snap to the cloud's points.
    ![Walk to: stand at eye height in the scan](media/scan-to-ground/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:/scans/site.las, make the ground surface from it with a 2 m cell, and stand me at the south-west corner looking at the building.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

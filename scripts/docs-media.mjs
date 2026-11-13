@@ -30,8 +30,9 @@ const none = () => run('select', { mode: 'none' });
 let dir;
 let n = 0;
 let last = null;
-/** One step: a toast naming it, then a capture that waited for the window to repaint. */
-async function shot(label) {
+/** One step: a toast naming it, then a capture that waited for the window to repaint (moving: a view that never
+ * settles, e.g. a running turn's clock, is taken once). */
+async function shot(label, { moving = false } = {}) {
   await js(`document.querySelectorAll('.toast').forEach((t) => t.remove()); ${label ? `const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = ${JSON.stringify(label)}; document.getElementById('toasts').append(t);` : ''} window.mmr.app.ui.setStatus(''); window.mmr.app.viewport.render(); return 1;`);
   let prev = null;
   let png = null;
@@ -39,6 +40,10 @@ async function shot(label) {
     await wait(i ? 900 : 2500);
     const p = await req('GET', '/api/window-screenshot');
     if (p.subarray(1, 4).toString() !== 'PNG') continue;
+    if (moving) {
+      png = p;
+      break;
+    }
     if (prev && p.equals(prev) && !(last && p.equals(last))) {
       png = p;
       break;
@@ -290,6 +295,23 @@ const PAGES = {
     await js("window.mmr.app.ui.attributeTable('L-TREE'); return 1;");
     await shot('');
   },
+  async 'work-with-several-agents'() {
+    await fresh();
+    await run('new_from_template', { id: 'house' });
+    await camera([16, 9, 18], [0, 1.5, 0]);
+    await run('save_agent', { name: 'Site surveyor', skill: 'survey', instructions: 'You check levels and drainage; answer in short lists.', color: '#e0a458' });
+    await run('save_agent', { name: 'Landscaper', instructions: 'You plant and pave around buildings.', color: '#9ece6a' });
+    await panel('agents');
+    await none();
+    await shot('The Agents panel: Plumb and your own agents, each with its model, skill and thread');
+    await js("window.mmr.app.agents.editDialog(window.mmr.app.agents.profiles[1]); return 1;");
+    await shot('Each agent: name, model, skill, tools, standing instructions and colour');
+    await js("document.getElementById('modal').close(); const r = window.mmr.app.viewport.canvas.getBoundingClientRect(); const p = window.mmr.app.agents.askAt(r.left + r.width * 0.45, r.top + r.height * 0.55); p.querySelector('select').value = 'landscaper'; p.querySelector('input').value = 'Put a paved terrace here, 3 m deep'; return 1;");
+    await shot('Ctrl+Space or right-click › Ask…: a prompt where you point, with the point and the selection');
+    await js("window.mmr.app.agents.closeAsk(); return 1;");
+    await run('remove_agent', { agent: 'Site surveyor' });
+    await run('remove_agent', { agent: 'Landscaper' });
+  },
   async 'ask-the-copilot'() {
     await fresh();
     await run('new_from_template', { id: 'house' });
@@ -300,6 +322,30 @@ const PAGES = {
     await shot('Type what you want in plain words; Enter sends');
     await js("window.mmr.app.ui.openPalette(); const i = document.querySelector('#palette-input'); i.value = 'hinge a door'; i.dispatchEvent(new Event('input')); return 1;");
     await shot('');
+    await clean();
+    // a running turn (#257), from a scripted model so it needs none: reasoning, then commands landing one by one
+    await js(`const a = window.mmr.app, t = a.agents.current, sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const call = (n, x) => ({ function: { name: n, arguments: x } });
+      const plan = [
+        { think: 'The house is 10 m wide. A 2 m terrace along the south wall, then four posts and two beams for the pergola.', calls: [call('create_box', { width: 10, height: 0.15, depth: 2, position: [0, 0, 5], name: 'Terrace' })] },
+        { calls: [-4.8, 4.8].flatMap((x) => [call('create_cylinder', { radius: 0.08, height: 2.6, position: [x, 0.15, 5.8], name: 'Post' })]) },
+        { calls: [call('create_box', { width: 10, height: 0.2, depth: 0.12, position: [0, 2.75, 5.8], name: 'Beam' })] },
+        { text: 'Done: a 10 × 2 m terrace and a pergola over it.' },
+      ];
+      window.__realChat = a.chat;
+      a.chat = async () => {
+        const s = plan.shift();
+        if (s.think) { t.delta('<think>'); for (const w of s.think.split(' ')) (t.delta(w + ' '), await sleep(70)); t.delta('</think>'); }
+        await sleep(2500);
+        return s.calls ? { message: { role: 'assistant', content: '', tool_calls: s.calls }, prompt_eval_count: 2400, eval_count: 60 } : { message: { role: 'assistant', content: s.text }, prompt_eval_count: 300, eval_count: 20 };
+      };
+      t.reset();
+      t.send('Add a 2 m deep terrace along the south wall, and a pergola over it');
+      return 1;`);
+    await wait(4000);
+    await shot('While Plumb works: what it does now, the time so far, each command as it runs, and Stop', { moving: true });
+    await wait(9000);
+    await js('window.mmr.app.chat = window.__realChat; return 1;');
   },
   async 'review-and-quantities'() {
     await fresh();
@@ -380,6 +426,58 @@ const PAGES = {
     await run('drape', { ids: ['Pavilion'], surface: 'Ground' });
     await none();
     await shot('Site › Drape: the pavilion sits on the platform');
+  },
+  async 'import-survey-points'() {
+    await fresh();
+    await run('import_points', { path: `${SAMPLES}/site-points.csv` });
+    await run('set_style', { point_labels: 'code' });
+    await camera([75, 45, 30], [28, 0, -24]);
+    await js(`window.mmr.app.ui.importPointsDialog(${JSON.stringify(`${SAMPLES}/utilities.csv`)}); return 1;`);
+    await wait(800);
+    await shot('Site › Import points: the file split into columns, a role per column');
+    // the crew column is not worth keeping
+    await js("const s = document.querySelector('#modal select[aria-label=\"Column 9\"]'); s.value = 'ignore'; s.dispatchEvent(new Event('change')); return 1;");
+    await wait(500);
+    await js("document.querySelector('#modal .points-wizard').scrollLeft = 9999; return 1;");
+    await wait(500);
+    await wait(500);
+    await shot('Pick what each column holds: Diameter, Material and Inspected stay as attributes, Crew is ignored');
+    await js("document.querySelector('#modal footer .btn.primary').click(); return 1;");
+    await wait(800);
+    await run('select', { ids: ['U1'] });
+    await panel('entity');
+    await shot('Each point keeps its attributes: the Entity panel shows and edits them');
+    await clean();
+    await run('import', { path: `${SAMPLES}/field.jxl` });
+    await run('zoom_extents', {});
+    await none();
+    await shot('JobXML and LandXML points come in through Import points too, with codes and attributes');
+    },
+  async 'feature-code-libraries'() {
+    await fresh();
+    await run('import_feature_library', { path: `${SAMPLES}/site-codes.fxl`, name: 'Site codes', replace: true });
+    await run('import_feature_library', { path: `${SAMPLES}/library.fxl`, name: 'Old library', replace: true });
+    await js("window.mmr.app.ui.featureLibrariesDialog('Site codes'); return 1;");
+    await shot('Site › Feature code libraries: an FXL from Feature Definition Manager, kept by name');
+    await js('window.mmr.app.ui.closeModal(); return 1;');
+    const at = (n, e, code) => run('add_point', { n: 5400000 + n, e: 650000 + e, z: 10, ...(code ? { code } : {}) });
+    for (const [n, e] of [[0, 0], [0, 12], [0, 24], [2, 34]]) await at(n, e, 'ROKERB');
+    for (const [n, e] of [[8, 4], [9, 18], [7, 30]]) await at(n, e, 'VETRE');
+    await at(5, 10, 'SUBEN');
+    await at(4, 20);
+    await run('use_feature_library', { name: 'Site codes' });
+    await run('set_style', { point_labels: 'code' });
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('Use in this model: the kerb joins up, codes take their layers and colours');
+    await js("window.mmr.app.tools.set('point'); window.mmr.app.ui.codeCard({ clientX: innerWidth * 0.35, clientY: innerHeight * 0.3 }, '', 'Code of the new point'); setTimeout(() => { const i = document.querySelector('.code-card input'); i.value = 'kerb'; i.dispatchEvent(new Event('input')); document.querySelector('.code-browse').click(); }, 300); return 1;");
+    await shot('Survey point: ▦ browses the library; Enter with no code places a point without one');
+    await js("document.querySelector('.code-card input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); window.mmr.app.tools.set('select'); return 1;");
+    await js("window.mmr.app.ui.commandDialog('edit_library_code', { library: 'Site codes', code: 'ROKERB', description: 'Back of kerb', type: 'line', layer: 'WS-Road_Kerb', color: '#ff5500', line_style: 'Dashed' }, { form: true }); return 1;");
+    await shot('Edit a code: description, type, layer, colour, line style, attributes');
+    await js('window.mmr.app.ui.closeModal(); return 1;');
+    await run('manage_feature_library', { name: 'Old library', action: 'delete' });
   },
   async 'bring-in-field-and-gis-data'() {
     await fresh();
@@ -1058,6 +1156,26 @@ const PAGES = {
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
     await run('set_style', { grid: true });
   },
+  async 'place-on-a-map'() {
+    await fresh();
+    await run('create_box', { width: 12, height: 9, depth: 8, name: 'Pavilion', color: '#e9e4d8', position: [40, 0, 60] });
+    await js("window.mmr.app.pickLocation(); return 1;");
+    await wait(800);
+    await js("const d = document.querySelector('#modal'); const [la, lo] = d.querySelectorAll('input'); la.value = '48.8582'; lo.value = '2.2945'; la.dispatchEvent(new Event('change')); return 1;");
+    await shot('Site › Base point from a map: click where the model origin is; the coordinate system is suggested');
+    await js("document.querySelector('#modal footer .btn.primary').click(); return 1;");
+    await camera([150, 160, 230], [0, 0, 0]);
+    await shot('The map under the model: the origin is where you clicked');
+    await run('set_view_overlay', { map: 'imagery', grid: true });
+    await camera([30, 420, 60], [30, 0, 30]);
+    await shot('Imagery and the grid: Easting and Northing in Lambert-93');
+    await js("window.mmr.app.groundMap.open = true; window.mmr.app.groundMap.sync(); return 1;");
+    await run('set_view_overlay', { map: 'topo' });
+    await camera([-180, 170, 240], [0, 0, 0]);
+    await shot('Layers (bottom left): Map, Imagery, Topo, None and the grid');
+    await js("window.mmr.app.groundMap.open = false; return 1;");
+    await run('set_view_overlay', { map: 'none', grid: false });
+  },
   async 'everyday-workflow'() {
     await fresh();
     await js("window.mmr.app.ui.setRibbon(null); window.mmr.app.ui.setSideToolbar(true); return 1;");
@@ -1093,6 +1211,26 @@ const PAGES = {
     await shot('Any menu as a ribbon: Draw and modify, Edit, View, Animate, Site, Drawings');
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
   },
+  async 'tie-lines-to-points'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    await run('import_points', { text: ['100,0,0,0,EP', '101,5,10,0.5,EP', '102,0,10,0,GND', '103,5,0,0.4,GND'].join('\n') });
+    await run('set_base_point', { e: 0, n: 0, z: 0 });
+    await run('set_style', { grid: false }).catch(() => {});
+    await camera([5, 18, 8], [5, 0, -2.5]);
+    await js("window.mmr.app.tools.set('line'); return 1;");
+    const at = (name) => js(`const p = window.mmr.doc.entities.find((e) => e.name === '${name}'); const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...p.position)); return [Math.round(s.x), Math.round(s.y)];`);
+    const [a, b] = [await at('100'), await at('101')];
+    const down = (x, y) => [{ type: 'mouseMove', x, y }, { type: 'wait', ms: 150 }, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'left', clickCount: 1 }, { type: 'wait', ms: 150 }];
+    await req('POST', '/api/input', { events: [{ type: 'mouseMove', x: a[0] + 30, y: a[1] + 30 }, { type: 'wait', ms: 100 }, { type: 'mouseMove', x: a[0] + 4, y: a[1] - 3 }] });
+    await shot('Line tool: the cursor snaps to a survey point and names it (point · code)');
+    await req('POST', '/api/input', { events: [...down(a[0] + 4, a[1] - 3), ...down(b[0] - 3, b[1] + 4), { type: 'keyDown', keyCode: 'Escape' }, { type: 'keyUp', keyCode: 'Escape' }] });
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select([window.mmr.doc.entities.find((e) => e.type === 'curve').id]); return 1;");
+    await shot('Each end is tied to its point: orange rings on the selected line');
+    await run('edit_points', { points: ['101'], e: 7, n: 1.5, z: 1.5 });
+    await shot('Point 101 moves (edited or dragged): the line follows');
+    await js("window.mmr.app.tools.set('select'); return 1;");
+  },
   async 'edit-a-surface-by-hand'() {
     await fresh();
     await js("window.mmr.app.ui.setRibbon(null); return 1;");
@@ -1112,8 +1250,57 @@ const PAGES = {
     await shot('Draw a hole (H): a pond or a building left out of the surface');
     await run('set_surface_sources', { id: 'Existing ground', outline: [[0, -2], [25, 0], [25, -25], [3, -22]] });
     await shot('Draw the outline (B); "max 30" or "min 0.5" limits the triangle sides');
+    await run('surface_breaklines', { id: 'Existing ground', action: 'add', points: [[2, 1.5, -20], [12, 1.5, -12], [22, 1.5, -4]] });
+    await camera([12.5, 22, 18], [12.5, 0, -12.5]);
+    await run('set_camera', { projection: 'perspective' });
+    await shot('Draw a breakline (L): the triangles follow it');
+    await camera([12.5, 45, -12.49], [12.5, 0, -12.5]);
+    await js("window.mmr.app.tools.set('select'); window.mmr.app.select([window.mmr.doc.entities.find((e) => e.name === 'Existing ground').id]); window.mmr.app.ui.show('entity'); window.mmr.app.tools.set('surfedit'); window.mmr.app.tools.tool.setMode('grips'); return 1;");
+    await shot('The Entity panel lists the points, breaklines, outline and holes; G drags their corners');
     await run('set_camera', { projection: 'perspective' });
     await js("window.mmr.app.tools.set('select'); return 1;");
+  },
+  async 'review-and-layer-a-surface'() {
+    await fresh();
+    await js("window.mmr.app.ui.setRibbon(null); return 1;");
+    const pts = [];
+    let k = 1;
+    for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) pts.push([k++, (1000 + i * 4 + (j % 2) * 0.7).toFixed(3), (2000 + j * 4 + (i % 3) * 0.5).toFixed(3), (100 + 2 * Math.sin(i / 3) + 1.5 * Math.cos(j / 4)).toFixed(3), 'GND'].join(','));
+    for (let i = 0; i <= 8; i++) pts.push([`K${i}`, (1002 + i * 4.5).toFixed(3), '2019.5', (100.5 + i * 0.2).toFixed(3), 'KERB'].join(','));
+    await run('import_points', { text: pts.join('\n'), format: 'PNEZD' });
+    await run('add_breakline', { points: Array.from({ length: 9 }, (_, i) => `K${i}`), name: 'Kerb line', tag: 'Kerbs' });
+    const s = await run('create_surface', { name: 'Existing ground' });
+    await run('show_triangles', { ids: [s.id] });
+    await camera([20.5, 38, 22], [20.5, -1, -20.3]);
+    await js(`window.mmr.app.select(['${s.id}']); window.mmr.app.ui.show('entity'); return 1;`);
+    await shot('Show triangles: every edge of the TIN over its shading');
+    // the clicks run after this command, so the rebuild it causes does not clear the highlight
+    const click = (sel, text) => js(`setTimeout(() => [...document.querySelectorAll('${sel}')].find((x) => x.textContent.includes('${text}'))?.click(), 400); return 1;`);
+    const panelTo = () => js("document.querySelector('.surf-members')?.scrollIntoView({ block: 'start' }); return 1;");
+    await click('.surf-count', 'Points');
+    await wait(600);
+    await click('.surf-group-head span', 'KERB');
+    await wait(600);
+    await panelTo();
+    await shot('Points 130, by code: click KERB and its points light up');
+    await run('surface_boundary', { id: s.id, action: 'add_void', points: [[8, -14], [17, -11], [22, -20], [14, -27], [7, -22]] });
+    await click('.surf-count', 'Voids');
+    await wait(600);
+    await click('.surf-item', 'Void 1');
+    await wait(600);
+    await panelTo();
+    await shot('A void is cut along the outline you draw, at the ground height');
+    await run('offset_surfaces', { surface: s.id, distance: -1.5, count: 2, color: '#b58a57' });
+    await camera([62, 8, 12], [20.5, -2.5, -20.3]);
+    await js(`window.mmr.app.select(['${s.id}']); return 1;`);
+    await shot('Offset… two layers 1.5 m apart under the ground, live');
+    await camera([20.5, 38, 22], [20.5, -1, -20.3]);
+    await run('move', { ids: [s.id], by: [5, 0, 0] }).catch((e) => js(`window.mmr.app.ui.toast(${JSON.stringify(e.message.replace(/^move: /, ''))}, 'danger'); return 1;`));
+    await wait(300);
+    await js("document.querySelectorAll('.toast').forEach((t, i, all) => i < all.length - 1 && t.remove()); window.mmr.app.viewport.render(); return 1;");
+    await wait(2500);
+    const file = path.join(dir, `${String(++n).padStart(2, '0')}.png`);
+    fs.writeFileSync(file, await req('GET', '/api/window-screenshot'));
   },
   async 'learn-step-by-step'() {
     await fresh();
@@ -1133,12 +1320,31 @@ const PAGES = {
     await shot('Each step moves on when you have done it; the lesson earns its points');
     await js('window.mmr.app.learning.stop(); return 1;');
   },
+  async 'my-tools-and-skills'() {
+    await fresh();
+    await camera([6, 5, 9], [2, 0, 2]);
+    // the answer comes from the configured model; here a scripted one stands in so the page does not need a model
+    await js(`const a = window.mmr.app; a.realChat = a.chat; a.chat = async () => { const t = '1. Draw the path with the **Curve** tool (U): click the points, press Enter [1].\\n2. **Tools › Sweep a profile along a path…** and pick the kerb profile [1].\\n3. Move the curve points later: the kerb follows [1].'; const p = a.settings.ai.provider; return p === 'anthropic' ? { content: [{ type: 'text', text: t }] } : p === 'ollama' ? { message: { role: 'assistant', content: t } } : { choices: [{ message: { role: 'assistant', content: t } }] }; }; await a.help.ask('how do I run a kerb along a curve'); a.chat = a.realChat; return 1;`);
+    await shot('Help › Ask Plumb: an answer from the help pages, with its sources');
+    const c = await run('create_curve', { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' });
+    await run('sweep', { path: c.id, profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' });
+    await run('save_tool', { name: 'Kerb return', description: 'A kerb round a corner', steps: [{ command: 'create_curve', args: { points: [[0, 0, 0], [4, 0, 0], [4, 0, 4]], kind: 'spline', name: 'Kerb line' }, made: 'k1' }, { command: 'sweep', args: { path: 'k1', profile: 'rectangle', profile_params: { width: 0.15, height: 0.3 }, color: '#b9b2a3', name: 'Kerb' } }] });
+    await run('save_skill', { name: 'Site kerbs', description: 'Kerbs and returns the way our office draws them', prompt: 'Kerbs are 150 mm upstands; returns have a 6 m radius.', toolset: ['create_curve', 'sweep'] });
+    await panel('mytools');
+    await shot('My tools: run, edit, export or delete what Plumb saved');
+    await js("window.mmr.app.ui.runMyTool('kerb_return'); return 1;");
+    await shot('Run it with other values');
+    await clean();
+    // the docs run against a real library: leave nothing behind
+    await run('delete_my_tool', { name: 'kerb_return' });
+    await run('delete_my_tool', { name: 'site_kerbs' });
+  },
   async 'first-steps-with-the-copilot'() {
     await fresh();
-    await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
+    await run('use_ai_model', { provider: 'builtin', model: 'qwen3-4b' });
     await camera([16, 10, 18], [0, 1.5, 0]);
     await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
-    await shot('First time: the copilot sets up its model on your PC (install, start, download)');
+    await shot('First time: one download and Plumb runs its model on your PC');
     // what a turn leaves: the shapes it drafted (here made by the same commands), listed to select or edit
     const b = await run('create_box', { width: 10, height: 3, depth: 6, name: 'Building' });
     await js(`const ai = window.mmr.app.ai; const m = (c, t) => Object.assign(document.createElement('div'), { className: c, textContent: t }); ai.add(m('msg user', 'Draw a 10 m by 6 m rectangle and pull it up 3 m into a building')); ai.add(m('msg assistant', 'Done: a 10 × 6 × 3 m building, Building. Change its sizes in the Entity panel or ask me.')); ai.add(ai.madeList([window.mmr.doc.entities.find((e) => e.id === '${b.id}')])); return 1;`);

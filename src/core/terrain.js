@@ -49,6 +49,40 @@ export function triangulate(pts, { constraints = [], outer = [], holes = [], max
   return { faces, failed };
 }
 
+/**
+ * A closed plan ring [[x, z], …] laid on a TIN (pts, faces): its corners and every point where it crosses a triangle
+ * edge, with the surface height there ([x, y, z]), in order. Corners off the surface are left out. Constraining these
+ * gives a void / outline a clean edge that follows the ground.
+ */
+export function drapeRing(ring, pts, faces) {
+  const zAt = sampler({ v: pts, f: faces }).z;
+  const edges = new Map();
+  for (const f of faces) for (let k = 0; k < 3; k++) edges.set(Math.min(f[k], f[(k + 1) % 3]) + ',' + Math.max(f[k], f[(k + 1) % 3]), [f[k], f[(k + 1) % 3]]);
+  const E = [...edges.values()];
+  const out = [];
+  ring.forEach((p, i) => {
+    const q = ring[(i + 1) % ring.length];
+    const y = zAt(p[0], p[1]);
+    if (y !== null) out.push([p[0], y, p[1]]);
+    const r = [q[0] - p[0], q[1] - p[1]];
+    const [x0, x1, z0, z1] = [Math.min(p[0], q[0]), Math.max(p[0], q[0]), Math.min(p[1], q[1]), Math.max(p[1], q[1])];
+    const hits = [];
+    for (const [a, b] of E) {
+      const [A, B] = [pts[a], pts[b]];
+      if (Math.max(A[0], B[0]) < x0 || Math.min(A[0], B[0]) > x1 || Math.max(A[2], B[2]) < z0 || Math.min(A[2], B[2]) > z1) continue;
+      const s = [B[0] - A[0], B[2] - A[2]];
+      const w = [A[0] - p[0], A[2] - p[1]];
+      const d = r[0] * s[1] - r[1] * s[0];
+      if (Math.abs(d) < 1e-12) continue;
+      const t = (w[0] * s[1] - w[1] * s[0]) / d;
+      const u = (w[0] * r[1] - w[1] * r[0]) / d;
+      if (t > 1e-9 && t < 1 - 1e-9 && u >= 0 && u <= 1) hits.push([t, [A[0] + s[0] * u, A[1] + (B[1] - A[1]) * u, A[2] + s[1] * u]]);
+    }
+    for (const [, h] of hits.sort((m, n) => m[0] - n[0])) out.push(h);
+  });
+  return out;
+}
+
 /** Flip the edge shared by two triangles (by vertex index), if they form a convex quad. Returns true when flipped. */
 export function swapEdge(faces, pts, a, b) {
   const has = (f) => f.includes(a) && f.includes(b);

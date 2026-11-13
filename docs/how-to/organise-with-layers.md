@@ -13,11 +13,11 @@ You want to show, hide and lock groups of things, draw on the right layer, and k
 3. The table icon opens a layer's attribute table: typed fields from the layer's schema, sort, filter, edit in place, select the rows.
    ![The table icon opens a layer's attribute table: typed fields from the layer's sc](media/organise-with-layers/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Hide the TIN layer, lock the survey points, and set species oak on every tree.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

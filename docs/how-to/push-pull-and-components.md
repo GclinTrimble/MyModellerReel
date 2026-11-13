@@ -17,11 +17,11 @@ You want a simple building block (a cabin, a kiosk, a shelf unit), with openings
 5. Change any copy (paint it, push a face): every copy follows. **Edit › Make unique** lets one go its own way.
    ![Change any copy (paint it, push a face): every copy follows. Edit › Make unique ](media/push-pull-and-components/05.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a 3 × 2 m cabin, 2.4 m high, with a window recess on the front, then two linked copies 4 m apart.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

@@ -1,8 +1,8 @@
-# Ask the copilot to build or change something
+# Ask Plumb to build or change something
 
-You would rather say what you want than click it: the copilot (Claude, or a local model) drives the same commands as the menus.
+You would rather say what you want than click it: Plumb (Claude, or a local model) drives the same commands as the menus.
 
-![Ask the copilot to build or change something](media/ask-the-copilot/ask-the-copilot.gif)
+![Ask Plumb to build or change something](media/ask-the-copilot/ask-the-copilot.gif)
 
 ## In the app
 
@@ -10,12 +10,15 @@ You would rather say what you want than click it: the copilot (Claude, or a loca
    ![The AI panel: type what you want in plain words and press Enter. It sees your se](media/ask-the-copilot/01.jpg)
 2. **Ctrl+K** searches every command by what you want to do ("hinge a door") and can ask the AI from there.
    ![Ctrl+K searches every command by what you want to do ("hinge a door") and can as](media/ask-the-copilot/02.jpg)
+3. While Plumb works, its card at the end of the thread says what it does now (thinking, reasoning, running a command), the seconds so far and the step; **Stop** ends the turn and keeps what is done. Each command shows as it runs, with its arguments, then a tick or the error and its time, and the model in the view changes as it goes. A model that reasons first shows its reasoning folded, with the latest words.
+   ![While Plumb works: what it does now, the time so far, each command as it runs, and Stop](media/ask-the-copilot/03.jpg)
+4. A finished turn keeps its numbers: total time, model time, tool time, steps, tokens and tokens per second. Click them for each step.
 
-## Ask the copilot
+## Ask Plumb
 
 > Add a 2 m deep terrace along the south wall, and a pergola over it.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
@@ -27,7 +30,8 @@ await fetch('http://127.0.0.1:7717/api/run', { method: 'POST', headers: { author
 ## Good to know
 
 - **AI › Propose AI changes for review** shows the changes as a preview to accept or reject.
-- Skills (Architecture, Landscape, Jobsite…) give the copilot domain know-how.
+- Skills (Architecture, Landscape, Jobsite…) give Plumb domain know-how.
+- The command `ai_turns` (also over the HTTP API and MCP) gives the last turns' timings and each step's: model time against tool time shows where a slow turn spends it.
 
 ## Related
 

@@ -34,7 +34,7 @@ export function surfaceSources(doc, p) {
     pts = S.points(doc).filter((x) => want.has(S.parseCode(x.point.code).code));
   } else pts = [];
   const lw = (spec, kind) =>
-    (spec === undefined || spec === 'all' ? doc.entities.filter((x) => S.isLinework(x) && x.line.kind === kind) : spec === 'none' ? [] : spec.map((id) => D.getEntity(doc, id)).filter(Boolean)).filter((x) => S.isLinework(x));
+    (spec === undefined || spec === 'all' ? doc.entities.filter((x) => S.isLinework(x) && x.line.kind === kind) : spec === 'none' ? [] : spec.map((id) => D.getEntity(doc, id)).filter(Boolean)).filter((x) => S.isLinework(x) || (kind === 'breakline' && x.curve)); // a listed curve is a breakline too (#239)
   return { points: pts.filter((x) => !excluded.has(x.id)), breaklines: lw(p.breaklines, 'breakline'), boundaries: lw(p.boundaries, 'boundary') };
 }
 
@@ -68,13 +68,27 @@ export function buildSurface(doc, p) {
   const owners = [];
   const outer = [];
   const holes = [];
-  for (const l of [...src.breaklines, ...src.boundaries]) {
-    const path = S.lineworkPath(doc, l);
+  const constrain = (path, owner) => {
     const ids = path.map(vertexOf);
-    for (let k = 1; k < ids.length; k++) for (const seg of splitAtPoints(v, ids[k - 1], ids[k])) constraints.push(seg), owners.push(l.id);
-    if (l.line.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
+    for (let k = 1; k < ids.length; k++) for (const seg of splitAtPoints(v, ids[k - 1], ids[k])) constraints.push(seg), owners.push(owner);
+  };
+  // breaklines drawn on the surface itself: [[x, y, z], …] in the model (#239)
+  (p.lines || []).forEach((path, i) => path.length >= 2 && constrain(path, `line ${i + 1}`));
+  for (const l of [...src.breaklines, ...src.boundaries]) {
+    const path = l.line ? S.lineworkPath(doc, l) : D.curvePoints(doc, l, 8);
+    constrain(path, l.id);
+    if (l.line?.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
   }
-  // a drawn outline and voids in plan (#212), next to the boundaries made of points
+  // a drawn outline and voids in plan (#212), next to the boundaries made of points: each ring is draped on the
+  // surface as it would be without it and constrained, so the TIN is cut along it, not along whole triangles
+  const rings = [...(p.outline?.length >= 3 ? [[p.outline, 'outline']] : []), ...(p.voids || []).filter((h) => h.length >= 3).map((h, i) => [h, `void ${i + 1}`])];
+  if (rings.length) {
+    const pre = TR.triangulate(v, { constraints }).faces;
+    for (const [ring, owner] of rings) {
+      const path = TR.drapeRing(ring, v, pre);
+      if (path.length >= 2) constrain([...path, path[0]], owner);
+    }
+  }
   if (p.outline?.length >= 3) outer.push(p.outline);
   for (const h of p.voids || []) if (h.length >= 3) holes.push(h);
   const { faces, failed } = TR.triangulate(v, { constraints, outer, holes, maxEdge: p.max_edge || 0 });
@@ -117,6 +131,81 @@ function insideTri([x, z], [a, b, c]) {
   return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
 }
 
+// ---------------------------------------------------------------- the editable definition (#239)
+
+export const SURFACE_VERSION = 2;
+
+/** Old surface params → the current definition: every list present, unusable rings dropped, no repeats. */
+export function migrateSurface(p) {
+  if (p.version >= SURFACE_VERSION) return p;
+  const ring = (r) => Array.isArray(r) && r.length >= 3;
+  const out = { ...p, version: SURFACE_VERSION, exclude: [...new Set(p.exclude || [])], lines: (p.lines || []).filter((l) => l.length >= 2), voids: (p.voids || []).filter(ring) };
+  if (!ring(out.outline)) delete out.outline;
+  return out;
+}
+
+/** Every surface in a document onto the current definition (when a file opens). */
+export function migrateSurfaces(doc) {
+  for (const e of doc.entities) if (e.derived?.generator === 'surface') e.derived.params = migrateSurface(e.derived.params);
+  return doc;
+}
+
+/** A plan ring [[x, z], …] after one vertex edit: move (index, to), insert (before index, to), remove (index). */
+export function editRing(ring, { action, index, to }) {
+  const r = ring.map((q) => [...q]);
+  if (action === 'insert') return r.splice(Math.max(0, Math.min(index ?? r.length, r.length)), 0, [to[0], to[1]]), r;
+  if (!(index >= 0 && index < r.length)) throw new Error(`No vertex ${index}: the ring has ${r.length} (0–${r.length - 1}).`);
+  if (action === 'move') r[index] = [to[0], to[1]];
+  else if (action === 'remove') {
+    if (r.length <= 3) throw new Error('A ring keeps at least 3 vertices (clear it instead).');
+    r.splice(index, 1);
+  } else throw new Error(`Unknown ring edit "${action}".`);
+  return r;
+}
+
+/** Where a new vertex goes so it splits the ring edge nearest the plan point [x, z]. */
+export function ringInsertIndex(ring, [x, z]) {
+  let best = 0;
+  let bestD = Infinity;
+  ring.forEach((a, k) => {
+    const b = ring[(k + 1) % ring.length];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+    const d = Math.hypot(a[0] + t * dx - x, a[1] + t * dz - z);
+    if (d < bestD) (bestD = d), (best = k + 1);
+  });
+  return best;
+}
+
+/** What a surface is made of, for the panel and the AI: counts and the lists behind them. */
+export function surfaceDefinition(doc, e) {
+  const p = migrateSurface(e.derived.params);
+  const src = surfaceSources(doc, p);
+  const name = (id) => D.getEntity(doc, id)?.name || id;
+  return {
+    points: src.points.length,
+    point_source: p.points === undefined || p.points === 'all' ? 'all' : Array.isArray(p.points) ? 'list' : 'codes',
+    excluded: p.exclude.map(name),
+    breaklines: src.breaklines.map((l) => ({ id: l.id, name: l.name })),
+    drawn_breaklines: p.lines.length,
+    boundaries: src.boundaries.map((l) => ({ id: l.id, name: l.name, kind: l.line.boundary || 'outer' })),
+    outline: p.outline || null,
+    voids: p.voids,
+    max_edge: p.max_edge || 0,
+    min_edge: p.min_edge || 0,
+    swaps: (p.swaps || []).map((s) => s.map(name)),
+    deleted_triangles: (p.deleted || []).length,
+  };
+}
+
+/**
+ * Why an entity may not be moved, rotated or scaled (null: it may). A TIN built from survey points sits where they were
+ * measured; the transform commands refuse it, and tools (the gizmo, Move) can check this before they start.
+ */
+export const fixedInPlace = (e) =>
+  e?.derived?.generator === 'surface' ? `${e.name} is a surveyed surface: it sits where its points were measured, so it cannot be moved, rotated or scaled. Move its points instead (surface_points move, edit_points), or bake a copy to place freely.` : null;
+
 /** World mesh of a surface entity, and a height sampler over it. */
 export const surfaceSampler = (doc, e) => TR.sampler(D.worldMesh(doc, e));
 
@@ -132,7 +221,7 @@ const world = (fn) => (args) => {
 registerGenerator('surface', {
   description: 'TIN surface from survey points, breaklines and boundaries (stays live)',
   world: true,
-  params: { points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_edge: 'drop triangles with a shorter side, m', outline: 'plan outline [[x, z], …]', voids: 'areas left out [[[x, z], …], …]', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand', adjustments: 'sculpt / stamp operations applied on top (design adjustments)' },
+  params: { version: 'definition version (2)', points: '"all", point ids, or { codes: [...] }', breaklines: '"all", "none" or ids (linework or curves)', lines: 'breaklines drawn on the surface [[[x, y, z], …], …]', boundaries: '"all", "none" or ids', exclude: 'point ids left out', max_edge: 'drop triangles with a longer side, m', min_edge: 'drop triangles with a shorter side, m', outline: 'plan outline [[x, z], …]', voids: 'areas left out [[[x, z], …], …]', min_z: 'ignore points below, m', max_z: 'ignore points above, m', deleted: '[[x, z], …] triangles removed by hand', swaps: '[[point, point], …] edges flipped by hand', adjustments: 'sculpt / stamp operations applied on top (design adjustments)' },
   inputsFrom: (p, doc) => {
     const s = surfaceSources(doc, p);
     return [...s.points, ...s.breaklines, ...s.boundaries].map((x) => x.id);
@@ -202,10 +291,12 @@ design('design_plane', 'Plane through three points, or a point with a slope and 
 design('design_trench', 'Trench along a line: bottom width, depth or inverts, side slopes to the ground', { from: 'start', to: 'end', bottom: 'm', depth: 'm', invert_a: 'm (local)', invert_b: 'm (local)', side_slope: 'H:V', surface: 'ground' }, (p, doc) =>
   TR.trench(refPoint(doc, p.from), refPoint(doc, p.to), { ...p, ground: groundOf(doc, p.surface) }),
 (p) => (p.surface ? [p.surface] : []));
-design('design_offset_surface', 'A surface moved up or down (e.g. a topsoil strip)', { surface: 'surface id', offset: 'm' }, (p, doc) => {
-  const m = D.worldMesh(doc, D.getEntity(doc, p.surface));
-  return { v: m.v.map((q) => [q[0], q[1] + (p.offset || 0), q[2]]), f: m.f.map((f) => [...f]) };
-}, (p) => [p.surface]);
+design('design_offset_surface', 'A surface moved up or down (e.g. a topsoil strip), along its normals, or part way to another surface (a layer between two)', { surface: 'surface id', offset: 'm', normal: 'offset along the surface normals', to: 'other surface id', fraction: 'of the way to it (0–1)' }, (p, doc) => {
+  const src = D.getEntity(doc, p.surface);
+  const other = p.to && D.getEntity(doc, p.to);
+  if (!src || (p.to && !other)) throw new Error('The surface this layer follows was deleted.');
+  return SF.offsetMesh(D.worldMesh(doc, src), { distance: p.offset || 0, normal: !!p.normal, to: other ? surfaceSampler(doc, other).z : null, fraction: p.fraction ?? 0.5 });
+}, (p) => [p.surface, ...(p.to ? [p.to] : [])]);
 design('design_road', 'Simple road: centreline, width, crossfall', { centre: 'points', width: 'm', crossfall: '%' }, (p, doc) => TR.roadDesign(p.centre.map((q) => refPoint(doc, q)), p));
 
 // ---------------------------------------------------------------- terrain depth (#121, #123, #120, #34, #35)

@@ -9,10 +9,13 @@ import * as L from '../core/layers.js';
 import { LIBRARY as TX_LIBRARY } from '../core/textures.js';
 import { fillet as fillet2d } from '../core/drafting.js';
 import { formatLength } from '../core/units.js';
+import { parseLength } from '../core/fields.js';
 import * as MD from '../core/modeling.js';
+import * as SW from '../core/sitework.js';
 import { floorAt, blocked } from './scale.js';
 import * as TK from '../core/takeoff.js';
 import { h } from './ui.js';
+import { previewTies } from '../core/ties.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -39,8 +42,8 @@ const HIGHLIGHT = 0xe8bc5e;
 const TX_NAMES = new Set(Object.keys(TX_LIBRARY));
 
 /** Snap kinds (#180) and their defaults; doc.settings.snaps overrides them (set_snaps). */
-export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true };
-export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
+export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, survey: true, tie: true };
+export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points', survey: 'Survey points', tie: 'Tie lines to survey points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
 export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], ['paint', 'matbrush'], 'eraser', 'section'];
@@ -72,7 +75,7 @@ export const TOOLS = [
   { id: 'dimension', label: 'Dimension (two points)', key: 'D', icon: 'arrows-horizontal', group: 'construct' },
   { id: 'label', label: 'Label (click a shape; type a template)', key: 'K', icon: 'tag', group: 'construct' },
   { id: 'text', label: 'Text (no leader)', key: '', icon: 'text-t', group: 'construct' },
-  { id: 'surfedit', label: 'Edit surface (swap, delete, add or remove points, outline, holes)', key: '', icon: 'triangle', group: 'site' },
+  { id: 'surfedit', label: 'Edit surface (points, breaklines, outline and holes, swap, delete)', key: '', icon: 'triangle', group: 'site' },
   { id: 'basepoint', label: 'Base point (click a point, type its coordinates)', key: '', icon: 'crosshair-simple', group: 'site' },
   { id: 'paint', label: 'Paint Bucket (Alt samples)', key: 'B', icon: 'paint-bucket', group: 'construct' },
   { id: 'matbrush', label: 'Material brush (paint surface materials for takeoff)', key: '', icon: 'paint-brush', group: 'construct' },
@@ -84,13 +87,7 @@ export const TOOLS = [
   { id: 'pan', label: 'Pan (right mouse)', key: 'H', icon: 'hand', group: 'camera' },
 ];
 
-/** "1.5" → 1.5 m · "150mm" · "15cm" · "3'" · '6"'. Returns metres. */
-export function parseLength(s) {
-  const m = String(s).trim().match(/^(-?[\d.]+)\s*(mm|cm|m|km|'|"|ft|in)?$/i);
-  if (!m) return NaN;
-  const f = { mm: 0.001, cm: 0.01, m: 1, km: 1000, "'": 0.3048, ft: 0.3048, '"': 0.0254, in: 0.0254 }[(m[2] || 'm').toLowerCase()];
-  return parseFloat(m[1]) * f;
-}
+export { parseLength } from '../core/fields.js';
 let display = {};
 /** The model's display units (#52): set by the app when the document changes. */
 export const setDisplay = (d) => (display = d);
@@ -199,13 +196,18 @@ export class Tools {
       this.set('pick');
     });
   }
-  /** Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). */
-  pickPoints(count = 1, hint = '') {
+  /**
+   * Let the user click points in the view for a form: resolves with them (count 0: until Enter / Esc). A pick-first
+   * session (#234) hears each move and point, can refuse a point or an early Enter, and makes Esc step back.
+   */
+  pickPoints(count = 1, hint = '', session = null) {
     const back = this.id === 'pick' ? 'select' : this.id;
     return new Promise((resolve) => {
       this.pickCount = count;
-      this.pickHint = `${hint || 'Click a point.'}${count === 1 ? '' : ' Enter when done, Esc to stop.'}`;
+      this.pickHint = `${hint || 'Click a point.'}${count === 1 || session ? '' : ' Enter when done, Esc to stop.'}`;
+      this.pickSession = session;
       this.pickDone = (pts) => {
+        this.pickSession = null;
         this.clear();
         setTimeout(() => this.set(back));
         resolve(pts);
@@ -276,17 +278,18 @@ export class Tools {
     // which snaps are on (#180): the model's settings, or only one kind for the next click
     const S = { ...SNAPS, ...(this.app.store.doc.settings.snaps || {}) };
     const on = (k) => (this.only ? this.only === k : S[k] !== false);
-    const cat = (kind) => (/Mid|middle/.test(kind) ? 'midpoint' : kind === 'Point cloud' ? 'cloud' : 'endpoint');
+    const cat = (kind) => (/Mid|middle/.test(kind) ? 'midpoint' : kind === 'Point cloud' ? 'cloud' : kind === 'Survey point' ? 'survey' : 'endpoint');
     if (from && this.lock) return done({ point: closestOnLine(ray, from, AXES[this.lock]), kind: `On ${AXIS_NAME[this.lock]} axis`, axis: this.lock, hit });
     let best = null;
     let bestD = SNAP_PX;
     for (const s of [...extra.map((p) => ({ p, kind: 'Endpoint' })), ...vp.snapPoints()]) {
       if (!on(cat(s.kind))) continue;
       const sp = vp.toScreen(s.p);
-      const d = Math.hypot(sp.x - mx, sp.y - my);
+      const d = Math.hypot(sp.x - mx, sp.y - my) - (s.point ? 4 : 0); // a survey point wins over a vertex on it
       if (!sp.behind && d < bestD) (bestD = d), (best = s);
     }
-    if (best) return done({ point: best.p.clone(), kind: best.kind, hit, snapped: true });
+    // pointId: what a vertex placed here ties to (unless set_snaps tie: false)
+    if (best) return done({ point: best.p.clone(), kind: best.kind, label: best.label, pointId: best.point && on('tie') ? best.point : null, hit, snapped: true });
     if (from && on('axis'))
       for (const k of ['x', 'z', 'y']) {
         const p = closestOnLine(ray, from, AXES[k]);
@@ -309,7 +312,7 @@ export class Tools {
     const wrap = this.vp.canvas.parentElement.getBoundingClientRect(); // the view area: every docked pane is inside it
     if (this.vp.input.ownerDocument !== document) return void (this.label.hidden = true); // a detached pane
     Object.assign(this.label.style, { left: `${s.x - wrap.left}px`, top: `${s.y - wrap.top}px` });
-    this.label.textContent = r.kind;
+    this.label.textContent = r.label ? `${r.kind} ${r.label}` : r.kind;
     this.label.dataset.kind = r.axis || r.kind.split(' ')[0].toLowerCase();
     this.label.hidden = false;
   }
@@ -347,10 +350,15 @@ export class Tools {
     const face = { v: e.mesh.f[hit.faceIndex].map((i) => e.mesh.v[i]), f: [e.mesh.f[hit.faceIndex].map((_, k) => k)] };
     this.ghost(face, hit.object.matrixWorld, HIGHLIGHT, 0.45);
   }
+  /** What a transform can take under the mouse: a survey point wins over the surface under it, then faces, then lines. */
+  hitAt(ev) {
+    const mesh = this.vp.pick(ev); // also aims the ray for the two below
+    return this.vp.pickPoint() || mesh || this.vp.pickCurve();
+  }
   /** Ids to act on: the selection, else what is under the mouse. */
   targetsAt(ev) {
     if (this.app.selection.length) return this.app.selection;
-    const hit = this.vp.pick(ev);
+    const hit = this.hitAt(ev);
     return hit ? [this.app.pickTarget(hit.entityId)] : [];
   }
   run(name, args) {
@@ -458,6 +466,7 @@ class SelectTool {
     const g = this.grip;
     const inf = this.t.infer(ev, { from: g.p, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(V(0, 1, 0), g.p) });
     g.to = inf.point.clone();
+    g.pin = inf.pointId;
     this.t.vp.overlay.clear();
     this.t.lines([g.p, g.to], inf.axis ? AXIS_COLORS[inf.axis] : ACCENT);
     this.t.status(`Move the ${g.kind === 'edge' ? 'edge' : g.kind === 'point' ? 'curve point' : 'corner'} ${fmt(g.to.distanceTo(g.p))}. Let go where it goes.`);
@@ -471,7 +480,7 @@ class SelectTool {
     if (g.kind === 'point') {
       const m = new THREE.Matrix4().fromArray(D.worldMatrix(this.t.app.store.doc, g.e).elements);
       const pts = g.e.curve.points.map((p, i) => (i === g.ids[0] ? to.toArray() : V(...p).applyMatrix4(m).toArray()));
-      await this.t.run('set_curve', { id: g.e.id, points: pts });
+      await this.t.run('set_curve', { id: g.e.id, points: pts, ...(g.pin ? { ties: [{ vertex: g.ids[0], point: g.pin }] } : {}) });
     } else await this.t.run('move_elements', { id: g.e.id, vertices: g.ids, by });
     this.gripKey = null;
   }
@@ -656,14 +665,23 @@ class LineTool extends DrawBase {
   cancel() {
     if (this.pts.length >= 2) this.t.guard(() => this.finish());
     this.pts = [];
+    this.pins = [];
     this.t.clear();
   }
-  async finish() {
-    const pts = this.pts.filter((p, i, a) => !i || p.distanceTo(a[i - 1]) > 1e-6).map((p) => p.toArray());
+  /** The points without repeats, and the ties of those that were snapped to survey points. */
+  kept() {
+    const keep = this.pts.map((p, i) => i).filter((i) => !i || this.pts[i].distanceTo(this.pts[i - 1]) > 1e-6);
+    const ties = keep.flatMap((i, k) => (this.pins?.[i] ? [{ vertex: k, point: this.pins[i] }] : []));
+    const pts = keep.map((i) => this.pts[i].toArray());
     this.pts = [];
+    this.pins = [];
     this.t.clear();
+    return { pts, ties: ties.length ? ties : undefined };
+  }
+  async finish() {
+    const { pts, ties } = this.kept();
     if (pts.length < 2) return;
-    await this.t.run('create_curve', { points: pts, kind: 'polyline', name: 'Line' });
+    await this.t.run('create_curve', { points: pts, kind: 'polyline', name: 'Line', ties });
     this.t.status(`Line of ${pts.length - 1} segment${pts.length > 2 ? 's' : ''} kept. ${this.hint}`);
   }
   dbl() {
@@ -714,6 +732,7 @@ class LineTool extends DrawBase {
       this.pts.push(...arc.slice(0, -1).map((p) => p.clone()));
     }
     await this.add(inf.point);
+    if (inf.pointId && this.pts.at(-1)?.equals(inf.point)) (this.pins ||= [])[this.pts.length - 1] = inf.pointId;
   }
   async add(p) {
     if (this.pts.length >= 3 && p.distanceTo(this.pts[0]) < 1e-4) {
@@ -738,6 +757,7 @@ class LineTool extends DrawBase {
   }
   async commit(points, name) {
     this.pts = [];
+    this.pins = [];
     return DrawBase.prototype.commit.call(this, points, name);
   }
 }
@@ -965,6 +985,7 @@ class MoveTool extends XformBase {
     this.previewWorld((m) => new THREE.Matrix4().makeTranslation(this.delta.x, this.delta.y, this.delta.z).multiply(m));
     for (const l of this.t.vp.overlay.children.slice()) this.t.vp.overlay.remove(l);
     this.t.lines([this.base, this.base.clone().add(this.delta)], axis ? AXIS_COLORS[axis] : 0x1d262c);
+    if (!this.t.copy) for (const c of previewTies(this.t.app.store.doc, this.ids, this.delta.toArray())) this.t.lines(c.points, 0xe0782f); // tied lines follow live
     this.t.status(`${this.t.copy ? 'Copy' : 'Move'} ${fmt(this.delta.length())}`);
   }
   async down(ev) {
@@ -1078,7 +1099,7 @@ class ScaleTool {
     this.prev = t.app.store.doc.settings.gizmo || null;
   }
   async down(ev) {
-    const hit = this.t.vp.pick(ev) || this.t.vp.pickCurve();
+    const hit = this.t.hitAt(ev);
     if (!hit) return this.t.app.select([]);
     const id = this.t.app.pickTarget(hit.entityId);
     const e = this.t.app.entity(id);
@@ -1755,15 +1776,14 @@ class PathTool extends LineTool {
     return fillet2d(pts.map((p) => [p[0], p[2]]), this.radius).map(([x, z]) => [x, y, z]);
   }
   async finish(alignment = false) {
-    const pts = this.pts.filter((p, i, a) => !i || p.distanceTo(a[i - 1]) > 1e-6).map((p) => p.toArray());
-    this.pts = [];
-    this.t.clear();
+    const { pts, ties } = this.kept();
     if (pts.length < 2) return;
     if (alignment) {
       const r = await this.t.run('create_alignment', { points: pts, radii: pts.slice(1, -1).map(() => this.radius), name: 'Alignment' });
       return this.t.status(`${r.name}: ${fmt(r.length ?? 0)} long. Change its radii in the Entity panel; Site › Corridor puts a road on it.`);
     }
-    await this.t.run('create_curve', { points: this.smooth ? pts : this.rounded(pts), kind: this.smooth ? 'spline' : 'polyline', name: 'Path' });
+    const round = !this.smooth && this.radius && pts.length > 2; // rounding adds points: the ties would land on the wrong ones
+    await this.t.run('create_curve', { points: this.smooth ? pts : this.rounded(pts), kind: this.smooth ? 'spline' : 'polyline', name: 'Path', ties: round ? undefined : ties });
     this.t.status(`Path kept. ${this.hint}`);
   }
 }
@@ -1828,25 +1848,46 @@ class PlaceTool extends MoveTool {
 }
 
 /**
- * Edit a surface by hand (#212). Modes (keys, or the value box): D delete a triangle, W swap the edge you click,
- * A add a point, R leave a point out, B draw the outline, H draw a hole; "max 30" / "min 0.5" set the longest and
- * shortest triangle side. Enter finishes an outline or hole; U restores the triangles.
+ * Edit a surface by hand (#212, #240). Modes (keys): D delete a triangle, W swap the edge you click, A add a point
+ * (type "z 102.5" for its elevation), M move a point (drag it in plan, Shift-drag up and down, or click it and type
+ * "z 101"), X delete a point, R leave a point out, L draw a breakline (Shift+click a line to use it), B draw the
+ * outline, H draw a hole, G edit the outline and holes with grips. "max 30" / "min 0.5" set the longest and shortest
+ * triangle side. Enter finishes a line, outline or hole; U restores the triangles. Every edit is a command (#239).
  */
+const r3 = (x) => Math.round(x * 1000) / 1000;
 class SurfaceEditTool {
-  static MODES = { d: ['delete', 'Delete a triangle: click it'], w: ['swap', 'Swap an edge: click near it'], a: ['add', 'Add a point: click on the surface'], r: ['remove', 'Leave a point out: click near it'], b: ['outline', 'Draw the outline: click its corners, Enter to finish'], h: ['void', 'Draw a hole: click its corners, Enter to finish'] };
-  vcbLabel = 'max m · min m';
+  static MODES = {
+    d: ['delete', 'Delete a triangle: click it'],
+    w: ['swap', 'Swap an edge: click near it'],
+    a: ['add', 'Add a point: click (type "z 102.5" first for its elevation)'],
+    m: ['move', 'Move a point: drag it in plan, Shift-drag up or down, or click it and type "z 101"'],
+    x: ['erase', 'Delete a survey point: click it'],
+    r: ['remove', 'Leave a point out: click near it'],
+    l: ['breakline', 'Draw a breakline: click its points, Enter to finish (Shift+click a line to use it)'],
+    b: ['outline', 'Draw the outline: click its corners, Enter to finish'],
+    h: ['void', 'Draw a hole: click its corners, Enter to finish'],
+    g: ['grips', 'Outline and holes: drag a corner, click an edge to add one, Alt+click a corner to remove it'],
+  };
+  vcbLabel = 'z · max · min';
   constructor(t) {
     this.t = t;
     this.mode = 'delete';
     this.pts = [];
-    this.surface = this.pickSurface();
+    this.z = null; // typed elevation for new points
+    this.sid = this.pickSurface()?.id || null;
     this.say();
   }
+  /** The surface, looked up each time: undo swaps the document under the tool. */
+  get surface() {
+    return this.t.app.entity(this.sid) || null;
+  }
   get hint() {
-    return `Edit surface${this.surface ? ` ${this.surface.name}` : ''}: ${Object.entries(SurfaceEditTool.MODES).find(([, [m]]) => m === this.mode)[1][1]}. Keys: D delete · W swap · A add · R remove point · B outline · H hole · U restore. Type "max 30" or "min 0.5" for triangle sides.`;
+    const keys = Object.entries(SurfaceEditTool.MODES).map(([k, [m]]) => `${k.toUpperCase()} ${m}`).join(' · ');
+    return `Edit surface${this.surface ? ` ${this.surface.name}` : ''}: ${Object.values(SurfaceEditTool.MODES).find(([m]) => m === this.mode)[1]}.${this.z !== null ? ` New points at z ${this.z}.` : ''} Keys: ${keys} · U restore. Type "max 30" or "min 0.5" for triangle sides.`;
   }
   say() {
     this.t.status(this.surface ? this.hint : 'Select a TIN surface first (or click one), then edit it.');
+    if (this.mode === 'grips') this.drawGrips();
   }
   pickSurface(id = null) {
     const app = this.t.app;
@@ -1854,24 +1895,40 @@ class SurfaceEditTool {
     return [id, ...app.selection].map((x) => app.entity(x)).find(isTin) || app.store.doc.entities.find(isTin) || null;
   }
   busy() {
-    return this.pts.length > 0;
+    return this.pts.length > 0 || !!this.drag;
+  }
+  setMode(mode) {
+    this.mode = mode;
+    this.cancel();
+    this.say();
   }
   key(ev) {
     const k = ev.key.toLowerCase();
-    if (ev.ctrlKey || ev.metaKey) return false;
-    if (SurfaceEditTool.MODES[k]) {
-      this.mode = SurfaceEditTool.MODES[k][0];
-      this.pts = [];
-      this.t.clear();
-      this.say();
-      return true;
-    }
-    if (k === 'u' && this.surface) return this.t.run('edit_triangles', { id: this.surface.id, action: 'restore' }).then(() => this.t.status('Triangles and points restored.')), true;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+    if (SurfaceEditTool.MODES[k]) return this.setMode(SurfaceEditTool.MODES[k][0]), true;
+    if (k === 'u' && this.surface) return this.run('edit_triangles', { action: 'restore' }, 'Triangles and points restored.'), true;
     return false;
   }
-  move(ev) {
-    const inf = this.t.infer(ev, { from: this.pts.at(-1) });
-    if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT, true));
+  /** Run a surface command on this surface, then say so (and redraw the grips). */
+  async run(name, args, done) {
+    const r = await this.t.run(name, { id: this.sid, ...args });
+    this.say();
+    if (done) this.t.status(done);
+    return r;
+  }
+  // ---------------------------------------------------------------- what is under the pointer
+  /** The survey point within a few pixels of the pointer. */
+  pointAt(ev, px = 12) {
+    const doc = this.t.app.store.doc;
+    let best = null;
+    for (const e of doc.entities)
+      if (e.type === 'point') {
+        const w = V(...D.worldMatrix(doc, e).elements.slice(12, 15));
+        const s = this.t.vp.toScreen(w);
+        const d = Math.hypot(s.x - ev.clientX, s.y - ev.clientY);
+        if (!s.behind && d < px && (!best || d < best.d)) best = { e, d, w };
+      }
+    return best;
   }
   /** The survey point nearest a world point (in plan). */
   nearestPoint(p, within = 3) {
@@ -1885,26 +1942,116 @@ class SurfaceEditTool {
       }
     return best;
   }
+  /** The outline (void undefined) and the voids as world rings, lifted onto the surface. */
+  rings() {
+    const s = this.surface;
+    if (!s?.derived) return [];
+    const z = SW.surfaceSampler(this.t.app.store.doc, s).z;
+    const low = Math.min(...D.worldMesh(this.t.app.store.doc, s).v.map((v) => v[1]));
+    const lift = (r) => r.map(([x, zz]) => V(x, (z(x, zz) ?? low) + 0.05, zz));
+    const p = s.derived.params;
+    return [...(p.outline ? [{ void: undefined, pts: lift(p.outline) }] : []), ...(p.voids || []).map((r, i) => ({ void: i, pts: lift(r) }))];
+  }
+  drawGrips(skip = null) {
+    this.t.clear();
+    const corners = [];
+    for (const r of this.rings()) {
+      if (skip && r.void === skip.void) continue;
+      this.t.lines(r.pts, r.void === undefined ? ACCENT : HIGHLIGHT, true);
+      corners.push(...r.pts);
+    }
+    if (!corners.length) return this.t.status('No outline or holes yet: B draws the outline, H a hole.');
+    const g = new THREE.Points(new THREE.BufferGeometry().setFromPoints(corners), new THREE.PointsMaterial({ color: ACCENT, size: 10, sizeAttenuation: false, depthTest: false }));
+    g.renderOrder = 999;
+    this.t.vp.overlay.add(g);
+    this.t.vp.dirty = true;
+  }
+  /** A ring corner near the pointer, else a ring edge (index: where a new corner goes). */
+  gripAt(ev, px = 12) {
+    let corner = null;
+    let edge = null;
+    const m = { x: ev.clientX, y: ev.clientY };
+    for (const r of this.rings())
+      r.pts.forEach((p, i) => {
+        const s = this.t.vp.toScreen(p);
+        const d = Math.hypot(s.x - m.x, s.y - m.y);
+        if (d < px && (!corner || d < corner.d)) corner = { ring: r, index: i, d, corner: true };
+        const q = this.t.vp.toScreen(r.pts[(i + 1) % r.pts.length]);
+        const [dx, dy] = [q.x - s.x, q.y - s.y];
+        const t = Math.max(0, Math.min(1, ((m.x - s.x) * dx + (m.y - s.y) * dy) / (dx * dx + dy * dy || 1)));
+        const de = Math.hypot(s.x + t * dx - m.x, s.y + t * dy - m.y);
+        if (de < px * 0.6 && (!edge || de < edge.d)) edge = { ring: r, index: i + 1, d: de, corner: false };
+      });
+    return corner || edge;
+  }
+  // ---------------------------------------------------------------- pointer
+  move(ev) {
+    const d = this.drag;
+    if (d?.grip) {
+      const p = this.t.infer(ev).point;
+      this.drawGrips(d.grip.ring);
+      this.t.lines(d.grip.ring.pts.map((q, i) => (i === d.grip.index ? p : q)), ACCENT, true);
+      return void (d.to = [r3(p.x), r3(p.z)]);
+    }
+    if (d?.point) {
+      this.t.clear();
+      if (ev.shiftKey) {
+        // up and down: metres per pixel there, from a 1 m step projected on the screen
+        const s0 = this.t.vp.toScreen(d.point.w);
+        const s1 = this.t.vp.toScreen(d.point.w.clone().add(V(0, 1, 0)));
+        d.dz = -(ev.clientY - d.y0) / (Math.hypot(s1.x - s0.x, s1.y - s0.y) || 1);
+        d.to = null;
+        this.t.lines([d.point.w, d.point.w.clone().add(V(0, d.dz, 0))], ACCENT);
+        return this.t.status(`${d.point.e.name}: ${d.dz >= 0 ? '+' : ''}${d.dz.toFixed(3)} m`);
+      }
+      const p = this.t.infer(ev).point;
+      d.to = [r3(p.x), r3(p.z)];
+      d.dz = 0;
+      return void this.t.lines([d.point.w, V(p.x, d.point.w.y, p.z)], ACCENT);
+    }
+    const inf = this.t.infer(ev, { from: this.pts.at(-1) });
+    if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT, this.mode !== 'breakline'));
+  }
   async down(ev) {
     const hit = this.t.vp.pick(ev);
-    if (hit && this.t.app.entity(hit.entityId)?.derived?.generator === 'surface') this.surface = this.t.app.entity(hit.entityId);
+    if (hit && !this.pts.length && this.t.app.entity(hit.entityId)?.derived?.generator === 'surface') this.sid = hit.entityId;
     if (!this.surface) return this.say();
-    const id = this.surface.id;
-    const p = (hit?.point || this.t.infer(ev).point).clone();
-    const at = [Math.round(p.x * 1000) / 1000, Math.round(p.z * 1000) / 1000];
-    if (this.mode === 'outline' || this.mode === 'void') return void this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
-    if (!hit && this.mode !== 'add') return this.t.status('Click on the surface.');
-    if (this.mode === 'delete') return this.t.run('edit_triangles', { id, action: 'delete', at });
-    if (this.mode === 'add') return this.t.run('edit_triangles', { id, action: 'add_point', at });
-    if (this.mode === 'remove') {
-      const n = this.nearestPoint(p);
-      if (!n) return this.t.status('No survey point near there.');
-      return this.t.run('edit_triangles', { id, action: 'remove_point', a: n.e.name });
+    if (this.mode === 'grips') {
+      const g = this.gripAt(ev);
+      if (!g) return this.t.status('Click a corner or an edge of the outline or a hole.');
+      const ring = g.ring.void === undefined ? {} : { void: g.ring.void };
+      if (g.corner && ev.altKey) return this.run('surface_boundary', { action: 'remove_vertex', ...ring, index: g.index }, 'Corner removed.');
+      if (g.corner) return void (this.drag = { grip: g });
+      const p = this.t.infer(ev).point;
+      return this.run('surface_boundary', { action: 'insert_vertex', ...ring, index: g.index, to: [r3(p.x), r3(p.z)] }, 'Corner added: drag it.');
     }
+    if (this.mode === 'move') {
+      const n = this.pointAt(ev);
+      if (!n) return this.t.status('Press on a survey point and drag it.');
+      this.picked = n.e.id;
+      return void (this.drag = { point: n, y0: ev.clientY, to: null, dz: 0 });
+    }
+    if (this.mode === 'breakline' && ev.shiftKey && !this.pts.length) {
+      const c = this.t.vp.pickCurve();
+      if (!c) return this.t.status('Shift+click a line or curve to make it a breakline.');
+      return this.run('surface_breaklines', { action: 'add', line: c.entityId }, `${this.t.app.entity(c.entityId)?.name} is now a breakline.`);
+    }
+    if (['outline', 'void', 'breakline'].includes(this.mode)) return void this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
+    const p = (hit?.point || this.t.infer(ev).point).clone();
+    const at = [r3(p.x), r3(p.z)];
+    if (this.mode === 'add') return this.run('surface_points', { action: 'add', at, ...(this.z !== null ? { z: this.z } : {}) }).then((r) => this.t.status(r.note));
+    if (this.mode === 'erase' || this.mode === 'remove') {
+      const n = this.pointAt(ev) || this.nearestPoint(p);
+      if (!n) return this.t.status('No survey point near there.');
+      return this.run('surface_points', { action: this.mode === 'erase' ? 'delete' : 'exclude', points: [n.e.id] }, `${n.e.name} ${this.mode === 'erase' ? 'deleted' : 'left out (the Surface panel brings it back)'}.`);
+    }
+    if (!hit) return this.t.status('Click on the surface.');
+    if (this.mode === 'delete') return this.run('edit_triangles', { action: 'delete', at });
     // swap: the triangle under the pointer, its edge nearest the click, the points at its two ends
-    const face = this.surface.mesh.f[hit.faceIndex];
-    const wm = new THREE.Matrix4().fromArray(D.worldMatrix(this.t.app.store.doc, this.surface).elements);
-    const corners = (face || []).map((i) => V(...this.surface.mesh.v[i]).applyMatrix4(wm));
+    const s = this.surface;
+    const face = s.mesh.f[hit.faceIndex];
+    const wm = new THREE.Matrix4().fromArray(D.worldMatrix(this.t.app.store.doc, s).elements);
+    const corners = (face || []).map((i) => V(...s.mesh.v[i]).applyMatrix4(wm));
     if (corners.length !== 3) return;
     let best = null;
     for (let k = 0; k < 3; k++) {
@@ -1915,28 +2062,51 @@ class SurfaceEditTool {
     }
     const [pa, pb] = [this.nearestPoint(best.a, 0.05), this.nearestPoint(best.b, 0.05)];
     if (!pa || !pb) return this.t.status('That edge does not join two survey points; swap works between points.');
-    return this.t.run('edit_triangles', { id, action: 'swap', a: pa.e.name, b: pb.e.name });
+    return this.run('edit_triangles', { action: 'swap', a: pa.e.name, b: pb.e.name });
+  }
+  async up() {
+    const d = this.drag;
+    this.drag = null;
+    if (!d) return;
+    if (d.grip) {
+      if (!d.to) return this.say();
+      return this.run('surface_boundary', { action: 'move_vertex', ...(d.grip.ring.void === undefined ? {} : { void: d.grip.ring.void }), index: d.grip.index, to: d.to }, 'Corner moved.');
+    }
+    this.t.clear();
+    const e = d.point.e;
+    if (d.dz) return this.run('surface_points', { action: 'move', points: [e.id], z: r3(e.point.z + d.dz) }, `${e.name} moved ${d.dz > 0 ? 'up' : 'down'} ${Math.abs(d.dz).toFixed(3)} m.`);
+    if (d.to && Math.hypot(d.to[0] - d.point.w.x, d.to[1] - d.point.w.z) > 1e-3) return this.run('surface_points', { action: 'move', points: [e.id], at: d.to }, `${e.name} moved.`);
+    this.t.status(`${e.name} (z ${e.point.z}): type "z 101.5" to set its elevation, or drag it.`);
   }
   async finish() {
-    if (this.pts.length < 3 || !this.surface) return this.cancel();
-    const ring = this.pts.map((q) => [Math.round(q.x * 1000) / 1000, Math.round(q.z * 1000) / 1000]);
-    const p = this.surface.derived.params;
+    if (this.pts.length < (this.mode === 'breakline' ? 2 : 3) || !this.surface) return this.cancel();
+    const pts = this.pts;
     this.pts = [];
     this.t.clear();
-    if (this.mode === 'outline') await this.t.run('set_surface_sources', { id: this.surface.id, outline: ring });
-    else await this.t.run('set_surface_sources', { id: this.surface.id, voids: [...(p.voids || []), ring] });
-    this.t.status(this.mode === 'outline' ? 'The surface now stays inside that outline.' : 'That area is left out of the surface.');
+    if (this.mode === 'breakline') return this.run('surface_breaklines', { action: 'add', points: pts.map((q) => q.toArray().map(r3)) }, 'Breakline added.');
+    const ring = pts.map((q) => [r3(q.x), r3(q.z)]);
+    if (this.mode === 'outline') return this.run('surface_boundary', { action: 'set', points: ring }, 'The surface now stays inside that outline.');
+    return this.run('surface_boundary', { action: 'add_void', points: ring }, 'That area is left out of the surface.');
   }
   cancel() {
     this.pts = [];
+    this.drag = null;
     this.t.clear();
   }
   vcb(text) {
-    const m = String(text).trim().match(/^(max|min)\s*([\d.]+)/i);
-    if (!m || !this.surface) return this.t.status('Type "max 30" or "min 0.5" (metres).');
-    return this.t.run('set_surface_sources', { id: this.surface.id, [`${m[1].toLowerCase()}_edge`]: +m[2] }).then(() => this.t.status(`${m[1] === 'max' ? 'Longest' : 'Shortest'} triangle side: ${m[2]} m.`));
+    const s = String(text).trim();
+    const z = s.match(/^z\s*(-?[\d.]+)?$/i);
+    if (z && this.mode === 'move' && this.picked && this.t.app.entity(this.picked)) {
+      if (!z[1]) return this.t.status('Type "z" and the elevation, e.g. "z 101.5".');
+      return this.run('surface_points', { action: 'move', points: [this.picked], z: +z[1] }, `Elevation ${z[1]}.`);
+    }
+    if (z) return (this.z = z[1] ? +z[1] : null), this.say();
+    const m = s.match(/^(max|min)\s*([\d.]+)/i);
+    if (!m || !this.surface) return this.t.status('Type "z 102.5" (elevation), "max 30" or "min 0.5" (metres).');
+    return this.run('set_surface_sources', { [`${m[1].toLowerCase()}_edge`]: +m[2] }, `${m[1] === 'max' ? 'Longest' : 'Shortest'} triangle side: ${m[2]} m.`);
   }
 }
+
 
 /** Points for a form (#201): click them (they snap); Enter, Esc or the count ends it. */
 class PickTool {
@@ -1944,13 +2114,21 @@ class PickTool {
     this.t = t;
     this.pts = [];
     this.hint = t.pickHint || 'Click a point.';
+    this.s = t.pickSession; // pick first (#234)
   }
   busy() {
     return true;
   }
   move(ev) {
     const inf = this.t.infer(ev, { from: this.pts.at(-1) });
-    if (this.pts.length) (this.t.vp.overlay.clear(), this.t.lines([...this.pts, inf.point], ACCENT));
+    this.s?.hover(inf.point, ev);
+    if (this.pts.length) this.draw(inf.point);
+  }
+  /** The rubber band: the points so far, to the cursor. */
+  draw(p) {
+    this.t.vp.overlay.clear();
+    this.t.vp.dirty = true;
+    if (this.pts.length) this.t.lines(p ? [...this.pts, p] : this.pts, ACCENT);
   }
   down(ev) {
     if (this.t.pickWhat === 'entity') {
@@ -1961,16 +2139,37 @@ class PickTool {
       this.pts.push(id);
       return this.finish();
     }
-    this.pts.push(this.t.infer(ev, { from: this.pts.at(-1) }).point.clone());
+    const p = this.t.infer(ev, { from: this.pts.at(-1) }).point.clone();
+    // picking first: a survey point under the cursor is taken at its position (and so by its name)
+    const sp = this.s && this.t.vp.pickPoint();
+    const at = sp && this.t.app.store.doc.entities.find((e) => e.id === sp.entityId)?.position;
+    this.add(at ? V(...at) : p);
+  }
+  /** A point clicked or typed. */
+  add(p) {
+    if (this.s && !this.s.accept(p, this.pts.length)) return;
+    this.pts.push(p);
+    this.s?.changed(this.pts);
+    this.draw();
     if (this.t.pickCount && this.pts.length >= this.t.pickCount) this.finish();
   }
-  finish() {
+  /** Esc while picking first: the last point goes, then the picking stops. */
+  key(ev) {
+    if (ev.key !== 'Escape' || !this.s) return false;
+    if (!this.pts.length) return this.cancel(), true;
+    this.pts.pop();
+    this.s.changed(this.pts);
+    this.draw();
+    return true;
+  }
+  finish(force = false) {
+    if (!force && this.s && !this.s.enough(this.pts)) return this.s.changed(this.pts);
     const done = this.t.pickDone;
     this.t.pickDone = null;
     done?.(this.pts);
   }
   cancel() {
-    this.finish();
+    this.finish(true);
   }
 }
 

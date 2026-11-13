@@ -91,7 +91,7 @@ test('my_insights and the local AI setup commands', async () => {
   await assert.rejects(reg.run('ai_setup_status', {}), /desktop app/);
   const calls = [];
   ctx.io = { ...(ctx.io || {}), settings: () => ({ ai: { ollama: { model: 'mistral' } } }), aiSetup: async (step, arg) => (calls.push([step, arg]), step === 'status' ? { provider: 'ollama', ollama: 'running', models: [], model: 'mistral', has_model: false } : { ok: true }) };
-  assert.equal((await reg.run('ai_setup_status', {})).next, 'download');
+  assert.equal((await reg.run('ai_setup_status', {})).next, 'pull');
   await reg.run('pull_ai_model', {});
   assert.deepEqual(calls.at(-1), ['pull', 'mistral']);
 });

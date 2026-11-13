@@ -1,5 +1,6 @@
 // Copy and paste (#39): entities with everything inside them, the components they use, between models too.
 import * as D from './document.js';
+import { remapTies } from './ties.js';
 
 const TAG = 'mymodellerreel_clipboard';
 
@@ -63,6 +64,7 @@ export function pasteEntities(doc, clip, { offset = [0, 0, 0], parent = null } =
     if (src.parent && idMap.has(src.parent)) e.parent = idMap.get(src.parent);
     if (e.line) e.line.points = e.line.points.map((p) => idMap.get(p) || p);
     if (e.derived) e.derived.inputs = (e.derived.inputs || []).map((p) => idMap.get(p) || p);
+    remapTies(e, idMap); // pasted without its points, a vertex is no longer tied
   }
   return tops;
 }

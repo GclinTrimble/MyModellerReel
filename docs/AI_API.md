@@ -1,7 +1,7 @@
 # AI, API, MCP and plugins
 
 Everything in MyModellerReel goes through **one command registry** (`src/core/commands.js`). The tool bar, menus,
-the in-app copilot, the HTTP API, the MCP server and plugins all call the same commands, so:
+Plumb, the in-app assistant, the HTTP API, the MCP server and plugins all call the same commands, so:
 
 - anything a person can do, an AI can do;
 - anything a plugin adds is instantly a button, an AI tool, an HTTP endpoint and an MCP tool.
@@ -10,7 +10,7 @@ the in-app copilot, the HTTP API, the MCP server and plugins all call the same c
 metres, **Y is up**, X red, Z green; new shapes sit on the ground with their pivot at the centre of their base;
 entities are referenced by id (`e12`) or exact name; omitting ids means "the selection".
 
-## 1. The copilot (inside the app)
+## 1. Plumb (inside the app)
 
 AI tab → type what you want. Provider in Settings:
 
@@ -21,7 +21,7 @@ AI tab → type what you want. Provider in Settings:
 | **OpenAI-compatible** | Any `/v1/chat/completions` server: Mistral's API (`https://api.mistral.ai/v1`), LM Studio, vLLM, llama.cpp. |
 
 API keys live in the app's data folder and are only used by the main process; the page never sees them.
-One AI turn (however many tool calls) is a single undo step. With **Propose** on (the branch icon in the copilot
+One AI turn (however many tool calls) is a single undo step. With **Propose** on (the branch icon in Plumb
 header, or AI → Propose), the turn's changes show as a tinted preview with red ghosts for removals, and wait for
 Accept or Reject. Any client can do the same with `propose` (`start`, `accept`, `reject`, `status`).
 
@@ -89,10 +89,10 @@ Invoke-RestMethod "http://127.0.0.1:$($a.port)/api/run" -Method Post -Headers @{
 | scene | `get_scene`, `get_entity` (faces with normals for push_pull), `list_elements`, `list_components`, `list_commands` (`query`, `toolset`), `select` (also `invert`), `select_where` (name, colour, tag, size, metadata, similar_to), `measure`, `bounds_of`, `raycast`, `find_free_space`, `what_is_at` (a point of the view), `screenshot` |
 | arrange | `align`, `distribute`, `place_on` (top or any face), `against`, `stack` |
 | create | `create_box`, `create_cylinder`, `create_cone`, `create_sphere`, `create_prism` (2D outline + height), `create_face` (any plane), `create_lathe` (revolve), `create_curve` (polyline, spline, bezier), `create_arc` (three-point, two-point with bulge, centre or pie, tangent), `sweep` (a profile along a curve or points), `place_component` |
-| parametric | `set_params`, `get_dependencies`, `bake`, `list_profiles`, `define_profile`, `list_generators`, `create_parametric` |
+| parametric | `set_params`, `get_dependencies`, `bake`, `list_profiles`, `define_profile`, `sketch_profile` (freehand strokes to a clean profile at a real size), `list_generators`, `create_parametric` |
 | recipe | `save_recipe`, `list_recipes`, `replay_recipe`, `record_macro`, `stop_macro` |
 | edit | `copy`, `cut`, `paste` (in place, between models, keeping real-world position), `purge`, `push_pull`, `move`, `rotate`, `scale`, `set_transform`, `duplicate` (linear + radial arrays), `mirror`, `delete`, `group`, `ungroup`, `set_pivot` (hinges), `set_material`, `set_properties`, `set_metadata`, `set_curve`, `imprint` (an outline on a face, for push_pull recesses, bosses and holes), `offset_face`, `move_elements` (a face, an edge such as "top front", a corner, or vertices), `repair_mesh`, `make_component` / `edit_component` / `make_unique` / `replace_component`, `set_tag_visibility`, `boolean`, `propose`, `undo`, `redo`, `new_model` (`duplicate` with `live: true` makes a live array) |
-| terrain | `set_coordinate_system`, `set_base_point`, `set_units`, `add_point` (N/E/Z, a model point, COGO bearing + distance, or a grid), `edit_points`, `import_points` (PNEZD/PENZD/XYZ text), `export_points`, `query_points`, `add_breakline`, `add_boundary`, `edit_linework`, `define_feature_code` / `load_feature_library` / `export_feature_library` / `process_codes` (field codes to linework and objects), `create_surface` (live TIN), `set_surface_sources`, `rebuild_surface`, `edit_triangles`, `check_surface`, `cut_fill` (map), `volume_report`, `cut_fill_at`, `create_alignment` / `set_alignment` (arcs and vertical curves), `create_corridor` (daylighting), `design_line_slope`, `design_plane`, `design_trench`, `design_offset_surface`, `design_road`, `surface_contours` (live, labelled) / `export_contours` / `label_contours`, `analyze_surface` (elevation, slope, aspect, difference; legend), `surface_profile`, `cross_sections`, `create_pad` / `set_batter` (batters that daylight, merged design surface), `smooth_surface`, `terrain_from_contours`, `assign_contour_elevations`, `create_terrain` / `sculpt_terrain` / `stamp` (sculpting), `drape`, `drape_image`, `water_level`, `import_terrain` (GeoTIFF / ASCII grid DEM), `text_to_points` |
+| terrain | `set_coordinate_system`, `set_base_point`, `set_units`, `add_point` (N/E/Z, a model point, COGO bearing + distance, or a grid), COGO: `cogo_inverse`, `cogo_traverse` (legs, sideshots, closure, compass rule), `cogo_intersect`, `cogo_station_offset`, `cogo_offset_point`, `cogo_curve`, `cogo_area` (directions as azimuths, quadrant bearings N45°30'E or turns R90 / AR270), `edit_points`, `import_points` (PNEZD/PENZD/XYZ text), `export_points`, `query_points`, `add_breakline`, `add_boundary`, `edit_linework`, `define_feature_code` / `load_feature_library` / `export_feature_library` / `process_codes` (field codes to linework and objects), `create_surface` (live TIN), `set_surface_sources`, `rebuild_surface`, `edit_triangles`, surface editing (#239): `surface_definition`, `surface_points` (add / move / delete / exclude / include), `surface_breaklines` (linework, curves or drawn), `surface_boundary` (outline and voids, vertex grips), `check_surface`, `cut_fill` (map), `volume_report`, `cut_fill_at`, `create_alignment` / `set_alignment` (arcs and vertical curves), `create_corridor` (daylighting), `design_line_slope`, `design_plane`, `design_trench`, `design_offset_surface`, `design_road`, `surface_contours` (live, labelled) / `export_contours` / `label_contours`, `analyze_surface` (elevation, slope, aspect, difference; legend), `surface_profile`, `cross_sections`, `create_pad` / `set_batter` (batters that daylight, merged design surface), `smooth_surface`, `terrain_from_contours`, `assign_contour_elevations`, `create_terrain` / `sculpt_terrain` / `stamp` (sculpting), `drape`, `drape_image`, `water_level`, `import_terrain` (GeoTIFF / ASCII grid DEM), `text_to_points` |
 | look | `set_style` (render_style: shaded, hidden_line, monochrome, sketchy), `set_camera` (lens mm, projection parallel, two_point), `set_effects` (ao, bloom, outline, dof, exposure, vignette), `set_environment` (studio, sky, sunset, night, hdri), `create_light` / `set_light` (point, spot, area), `set_texture` (image at real size: box, planar, cylindrical), `set_material_maps` (glass, clear coat, normal / roughness / AO maps), `set_geolocation`, `set_sun_time`, `animate_sun` (sun studies), `render_image` (path-traced still), `ai_render`, `generate_texture` (image model: ComfyUI or OpenAI-compatible) |
 | annotate | `add_dimension` (linear, aligned, radial, diameter, angular; follows the geometry), `add_label` (leader + live text template: {name} {area} {footprint} {volume} {height} {elevation} {meta.key}), `edit_annotation`, `list_annotations`, `add_guide` / `clear_guides`, `define_line_type` (and `line_type` / `line_weight` on `set_properties` and layers), `check_clashes` (real overlaps, volume and depth), `section_cut` |
 | power tools | `fillet_edges`, `chamfer_edges`, `loft`, `shell`, `thicken`, `inset_face`, `extrude_faces`, `divide_edge`, `weld_edges`, `split_solid`, `intersect_faces`, `subdivide` (Catmull-Clark), `deform` (taper, twist, bend, lattice; live), `simplify_mesh`, `set_symmetry`, `create_rectangle` (3 points), `set_axes` (turned axes, grid snap), `import_2d` (SVG / DXF floor plans), `curves_to_faces`, `array_grid`, `array_path`, `insert_asset` / `list_assets` (component library), `save_selection` / `select_set` / `delete_selection_set`; `set_layer` folder, `set_style` color_by |
@@ -188,4 +188,4 @@ mmr.registerGenerator('shelf', {
 
 Generators with `world: true` build in world space and return `G.recenter(mesh)` (`{ mesh, origin }`), like the
 built-in `sweep` and `array`. The built-in plugin's `create_stairs` and `create_wall` work this way.
-Ask the copilot "create a plugin that…" and it writes, saves and loads one with `create_plugin`.
+Ask Plumb "create a plugin that…" and it writes, saves and loads one with `create_plugin`.

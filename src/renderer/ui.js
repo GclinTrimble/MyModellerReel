@@ -8,10 +8,16 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt, BRUSH } from './tools.js';
 import * as TK from '../core/takeoff.js';
 import * as TX from '../core/textures.js';
-import { buildForm, SWATCHES } from './forms.js';
+import { buildForm, SWATCHES, codeGrid } from './forms.js';
+import { pickSteps } from '../core/fields.js';
+import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
+import * as SW from '../core/sitework.js';
+import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
+import { parseUserFile, fileName } from '../core/usertools.js';
+import { USER_SKILLS } from '../core/skills.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
 /** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
@@ -72,6 +78,34 @@ export function tidyPanel(panel, tab, label = tab) {
   return panel;
 }
 export const icon = (name, fill = false) => h(`i.ph${fill ? '-fill' : ''}.ph-${name}`, { 'aria-hidden': 'true' });
+/**
+ * An ⓘ that keeps explanations out of the way (#255): a short card on hover, focus or tap, placed inside the window.
+ * text: a string, or [title, body…]. Screen readers get the same text from the button itself.
+ */
+export function infoTip(text, label = 'More information') {
+  const [title, ...body] = Array.isArray(text) ? text : [null, text];
+  const pop = h('div.info-pop', { 'aria-hidden': 'true' }, title ? h('strong', {}, title) : null, ...body.map((b) => h('p', {}, b)));
+  const btn = h('button.info-tip', { type: 'button', 'aria-label': label }, icon('info'), h('span.sr-only', {}, [title, ...body].filter(Boolean).join('. ')));
+  const show = () => {
+    if (pop.isConnected) return;
+    document.body.append(pop);
+    const r = btn.getBoundingClientRect();
+    const { offsetWidth: w, offsetHeight: ht } = pop;
+    pop.style.left = `${Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8))}px`;
+    pop.style.top = `${r.bottom + 8 + ht < innerHeight ? r.bottom + 8 : Math.max(8, r.top - ht - 8)}px`;
+  };
+  const hide = () => pop.remove();
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
+  btn.addEventListener('keydown', (e) => e.key === 'Escape' && hide());
+  btn.addEventListener('click', (e) => (e.preventDefault(), e.stopPropagation(), pop.isConnected ? hide() : show()));
+  return btn;
+}
+/** The Survey tab's two views (#228): the points, and COGO. */
+export const surveyViews = (ui, current) =>
+  h('div.segmented.survey-views', { role: 'tablist', 'aria-label': 'Survey' }, ...[['survey', 'Points', 'map-pin'], ['cogo', 'COGO', 'compass-tool']].map(([tab, label, ic]) => h('button.seg', { type: 'button', role: 'tab', 'aria-selected': String(tab === current), 'aria-pressed': String(tab === current), onclick: () => ui.show(tab) }, icon(ic), label)));
 const iconBtn = (name, label, onclick, pressed) =>
   h('button.icon-btn', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(name));
 
@@ -92,6 +126,7 @@ export class UI {
       // each launch opens the last ribbon used, or the Site ribbon
       queueMicrotask(() => this.setRibbon(r?.name || 'Site', r?.tab));
       if (localStorage.getItem('mymodellerreel.toolbar') === '0') document.body.classList.add('no-toolbar');
+      if (localStorage.getItem('mymodellerreel.dock') === '0') document.body.classList.add('no-dock');
     } catch {}
     this.buildViewbar();
     this.buildTabs();
@@ -100,10 +135,12 @@ export class UI {
   }
 
   /** A form for any command, generated from its JSON Schema: the UI path to every command with parameters. */
-  async commandDialog(name, preset = {}) {
+  async commandDialog(name, preset = {}, { form: modal = false } = {}) {
     const c = this.app.reg.commands.get(name);
     if (!c) return this.toast(`No command ${name}`, 'danger');
     if (name === 'create_layer') return this.layerDialog(preset);
+    // points to pick: straight into the view (#234); the form is the last resort
+    if (!modal && pickSteps(c.params, preset).length) return this.app.pickFirst.start(name, preset);
     // a friendly form (#201): plain words, the right control per field, points picked in the view, errors in place
     const form = buildForm(this.app, c, preset, { pick: (n, hint) => this.pickInView(n, hint), pickEntity: (hint) => this.pickInView(0, hint, true) });
     const err = h('div.form-error.form-top', { role: 'alert' });
@@ -214,9 +251,24 @@ export class UI {
             h('div.code-item', { role: 'option', 'aria-selected': String(i === hi), onpointerdown: (e) => (e.preventDefault(), done(x.code)) }, icon(x.recent ? 'clock-counter-clockwise' : 'tag'), h('b', {}, x.code), h('span', {}, x.action)),
           ),
         );
-        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one.'));
+        if (!items.length) list.append(h('div.code-empty', {}, inp.value.trim() ? 'A new code: Enter to use it.' : 'No codes yet: type one, or Enter for a point without a code.'));
       };
-      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), title), inp, list, h('div.code-keys', {}, '↑↓ choose · Enter OK · Esc cancel · Tab completes'));
+      // Browse: the whole library as a searchable grid inside the card
+      let grid = null;
+      const lib = doc.featureCodes || {};
+      const browse = Object.keys(lib).length
+        ? h('button.icon-btn.sm.code-browse', { title: `Browse the ${Object.keys(lib).length} codes${doc.featureLibrary ? ` of ${doc.featureLibrary.name}` : ''}`, 'aria-label': 'Browse the feature codes', 'aria-expanded': 'false', onclick: () => {
+            if (grid) return (grid.el.remove(), (grid = null), card.classList.remove('wide'), browse.setAttribute('aria-expanded', 'false'), inp.focus());
+            grid = codeGrid(lib, (c) => done(c), { query: inp.value === current ? '' : inp.value });
+            grid.search.addEventListener('keydown', (e) => e.key === 'Escape' && done(null));
+            card.classList.add('wide');
+            list.after(grid.el);
+            browse.setAttribute('aria-expanded', 'true');
+            grid.search.focus();
+            place();
+          } }, icon('squares-four'))
+        : null;
+      const card = h('div.code-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('map-pin'), h('span.grow', {}, title), browse), inp, list, h('div.code-keys', {}, `↑↓ choose · Enter OK (empty: no code) · Esc cancel · Tab completes${browse ? ' · ▦ browse' : ''}`));
       const away = (e) => !card.contains(e.target) && done(null);
       const done = (code) => {
         card.remove();
@@ -249,9 +301,12 @@ export class UI {
       draw();
       document.body.append(card);
       // next to the click, inside the window
-      const r = card.getBoundingClientRect();
-      card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
-      card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      const place = () => {
+        const r = card.getBoundingClientRect();
+        card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
+        card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      };
+      place();
       // after the click that opened it: its mousedown would take the focus back and close the card
       setTimeout(() => {
         window.addEventListener('pointerdown', away, true);
@@ -394,14 +449,17 @@ export class UI {
       proposeToggle: { label: 'Propose AI changes for review', icon: 'git-pull-request', checked: () => app.ai.propose, run: () => app.ai.setPropose(!app.ai.propose) },
       proposeAccept: { label: 'Accept proposal', icon: 'check-circle', run: run('propose', { action: 'accept' }) },
       proposeReject: { label: 'Reject proposal', icon: 'x-circle', run: run('propose', { action: 'reject' }) },
+      sketchProfile: { label: 'Sketch a profile…', icon: 'scribble', run: () => sketchPad(app, { mode: 'profile' }).then(() => this.refresh()) },
+      sketchForAi: { label: 'Sketch for the AI…', icon: 'scribble', run: () => sketchPad(app, { mode: 'chat' }).then((r) => r && app.ai.attachPicture(r.image, r.note, true)) },
       sweep: { label: 'Sweep a profile along a path…', icon: 'path', run: form('sweep', () => (app.entity(sel()[0])?.curve ? { path: sel()[0] } : {})) },
       liveArray: { label: 'Live array of the selection…', icon: 'columns', run: form('duplicate', () => ({ live: 'true', count: 3, offset: [1, 0, 0] })) },
       bake: { label: 'Bake (freeze parameters)', icon: 'snowflake', run: () => sel().length && app.reg.run('bake', {}).then((r) => this.toast(`Baked ${r.baked.length}`)) },
       recordMacro: { label: 'Record macro', icon: 'record', checked: () => !!app.ctx.macro, run: () => (app.ctx.macro ? app.reg.run('stop_macro', {}).then((r) => this.toast(`Saved recipe "${r.name}" (${r.steps} steps)`)) : app.reg.run('record_macro', {})).catch((e) => this.toast(e.message, 'danger')) },
       saveRecipe: { label: 'Save recipe of this model…', icon: 'floppy-disk-back', run: form('save_recipe') },
       library: { label: 'Profiles, recipes and plugins', icon: 'books', run: () => this.show('library') },
+      myTools: { label: 'Manage my tools and skills…', icon: 'toolbox', run: () => this.show('mytools') },
       review: { label: 'Review my model', icon: 'list-checks', run: () => this.reviewDialog() },
-      importPoints: { label: 'Import points (CSV / TXT)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
+      importPoints: { label: 'Import points (CSV, TXT, JobXML, LandXML)…', icon: 'tray-arrow-down', run: () => this.importPointsDialog() },
       importPdf: { label: 'Import PDF drawing…', icon: 'file-pdf', run: async () => {
         const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'PDF drawing', extensions: ['pdf'] }] });
         if (path) this.commandDialog('import_pdf', { path, scale: '1:500', pages: [1] });
@@ -442,6 +500,7 @@ export class UI {
         if (path) run('export_points', { path })();
       } },
       addPoint: { label: 'Add point…', icon: 'map-pin', run: form('add_point') },
+      cogo: { label: 'COGO: inverse, traverse, intersect…', icon: 'compass-tool', run: () => this.show('cogo') },
       breakline: { label: 'Breakline through the selected points', icon: 'line-segment', run: run('add_breakline', {}) },
       boundary: { label: 'Boundary through the selected points', icon: 'polygon', run: run('add_boundary', {}) },
       surface: { label: 'Create surface (TIN)…', icon: 'mountains', run: form('create_surface', { name: 'Existing ground' }) },
@@ -563,12 +622,15 @@ export class UI {
       exportAll: { label: 'Export…', icon: 'export', key: 'Ctrl+E', run: () => this.exportDialog() },
       ribbon: { label: 'Ribbon: tools in tabs', icon: 'rows', checked: () => !!this.ribbon, run: () => this.setRibbon(this.ribbon ? null : 'Draw and modify') },
       sideToolbar: { label: 'Side toolbar', icon: 'sidebar', checked: () => !document.body.classList.contains('no-toolbar'), run: () => this.setSideToolbar(document.body.classList.contains('no-toolbar')) },
+      sidePanel: { label: 'Side panel', icon: 'sidebar-simple', key: 'Ctrl+B', checked: () => !document.body.classList.contains('no-dock'), run: () => this.setSidePanel(document.body.classList.contains('no-dock')) },
       ribbonSite: { label: 'Site ribbon: survey, surfaces, design, roads, earthworks', icon: 'mountains', checked: () => this.ribbon?.name === 'Site', run: () => this.setRibbon(this.ribbon?.name === 'Site' ? null : 'Site') },
       ribbonDrawings: { label: 'Drawings ribbon: bring in, scale, place, take lines out', icon: 'file-pdf', checked: () => this.ribbon?.name === 'Drawings', run: () => this.setRibbon(this.ribbon?.name === 'Drawings' ? null : 'Drawings') },
       exportSelection: { label: 'Export the selection…', icon: 'export', run: () => this.exportDialog('selection') },
       isolate: { label: 'Isolate (hide everything else)', icon: 'eye', run: () => sel().length && app.reg.run('set_properties', { ids: app.store.doc.entities.filter((e) => !e.parent && !sel().includes(e.id) && e.visible !== false).map((e) => e.id), visible: false }) },
       properties: { label: 'Properties', icon: 'info', run: () => this.show('entity') },
       exportUsdz: { label: 'Export USDZ (iPhone AR)…', icon: 'device-mobile', run: run('export', { format: 'usdz' }) },
+      referenceFile: { label: 'Reference a design (live)…', icon: 'link-simple', run: run('reference_file', {}) },
+      publishReference: { label: 'Publish as live reference…', icon: 'broadcast', checked: () => !!app.io.published, run: () => (app.io.published ? app.reg.run('publish_reference', { stop: true }) : app.reg.run('publish_reference', {})).then((r) => r.publishing === false && this.toast('Stopped publishing')).catch((e) => this.toast(e.message, 'danger')) },
       export3mf: { label: 'Export 3MF (3D printing)…', icon: 'printer', run: run('export', { format: '3mf' }) },
       compress: { label: 'Compress a GLB…', icon: 'file-zip', run: async () => {
         const path = await app.io.pick('glb', false);
@@ -596,21 +658,21 @@ export class UI {
       offsetSurface: { label: 'Design: offset surface…', icon: 'stack', run: form('design_offset_surface') },
       road: { label: 'Design: road…', icon: 'road-horizon', run: form('design_road') },
       featureCode: { label: 'Define feature code…', icon: 'tag', run: form('define_feature_code') },
-      loadLibrary: { label: 'Load feature library…', icon: 'books', run: async () => {
-        const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library', extensions: ['json'] }] });
-        if (path) run('load_feature_library', { path })();
-      } },
+      loadLibrary: { label: 'Feature code libraries…', icon: 'books', run: () => this.featureLibrariesDialog() },
       processCodes: { label: 'Process feature codes', icon: 'arrows-clockwise', run: () => app.reg.run('process_codes', {}).then((r) => this.toast(`${r.lines} lines, ${r.objects} objects${r.warnings.length ? `, ${r.warnings.length} warnings` : ''}`)) },
       coordSys: { label: 'Coordinate system…', icon: 'globe-hemisphere-west', run: () => this.crsDialog() },
       editSurface: { label: 'Edit surface by hand: swap, delete, points, outline, holes', icon: 'triangle', run: () => app.tools.set('surfedit') },
       basePoint: { label: 'Base point: click a point, type its coordinates', icon: 'crosshair', run: () => app.tools.set('basepoint') },
+      mapPick: { label: 'Base point from a map…', icon: 'map-trifold', run: () => app.pickLocation() },
       units: { label: 'Units…', icon: 'ruler', run: form('set_units') },
       survey: { label: 'Survey panel', icon: 'map-pin', run: () => this.show('survey') },
       quantities: { label: 'Quantities report…', icon: 'table', run: () => this.quantitiesDialog() },
       askAi: { label: 'Ask the AI', icon: 'sparkle', key: 'Ctrl+J', run: () => this.show('ai', true) },
       newChat: { label: 'New AI chat', icon: 'chat-circle', run: () => app.ai.reset() },
+      askHere: { label: 'Ask an agent here…', icon: 'chat-teardrop-dots', key: 'Ctrl+Space', run: () => app.agents.askAt() },
+      agents: { label: 'Agents…', icon: 'users-three', run: () => this.show('agents') },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
-      aiPanel: { label: 'Ask the copilot', icon: 'sparkle', run: () => this.show('ai') },
+      aiPanel: { label: 'Ask Plumb', icon: 'sparkle', run: () => this.show('ai') },
       aiFeedback: { label: 'Copilot feedback…', icon: 'thumbs-up', run: () => this.feedbackDialog() },
       aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
       insights: { label: 'My achievements', icon: 'trophy', run: () => ((this.app.learning.insightsOpen = true), (this.app.help.page = null), this.show('help')) },
@@ -626,15 +688,15 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
-      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'timeline', 'theme', 'perf'],
-      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library'],
+      View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
+      Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'units'],
+      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
-      AI: ['askAi', 'newChat', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiFeedback', 'aiSettings'],
+      AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiFeedback', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
@@ -660,7 +722,7 @@ export class UI {
       return h('button', { role: 'menuitem', 'aria-checked': a.checked ? String(!!on) : undefined, onclick: click }, on ? icon('check') : icon(a.icon || 'dot-outline'), t(a.label), a.key ? h('span.key', {}, a.key) : null);
     };
     // a long menu (#208): the items under each heading go into a sub-menu that opens beside it
-    const list = this.menus[name];
+    const list = name === 'Tools' ? [...this.menus.Tools, ...this.myToolItems()] : this.menus[name];
     const parts = [];
     if (list.length > 16) {
       let cur = null;
@@ -699,6 +761,85 @@ export class UI {
     Object.assign(pop.style, { left: `${r.left}px`, top: `${r.bottom + 4}px` });
     pop.hidden = false;
   }
+  /** Tools › My tools (#242): one menu item per saved tool, run through its form. */
+  myToolItems() {
+    return this.app.reg.list().filter((c) => c.category === 'my tools').map((c) => {
+      const id = `my:${c.name}`;
+      this.actions[id] = { label: `${c.description.split(':')[0]}…`, icon: 'wrench', run: () => this.runMyTool(c.name) };
+      return id;
+    });
+  }
+  runMyTool(name) {
+    const c = this.app.reg.commands.get(name);
+    return Object.keys(c?.params.properties || {}).length ? this.commandDialog(name) : this.app.reg.run(name, {}).catch((e) => this.toast(e.message, 'danger'));
+  }
+
+  /** My tools and skills (#242): what Plumb saved for you, to run, edit, share and delete. */
+  panel_mytools() {
+    const app = this.app;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => (this.toast(e.message, 'danger'), null));
+    const mine = app.reg.list().filter((c) => c.category === 'my tools').map((c) => c.name);
+    const full = (name) => app.reg.run('list_my_tools', { name });
+    const save = (x) => (x.kind === 'tool' ? run('save_tool', { name: x.title, description: x.description, steps: x.steps, params: x.params }) : run('save_skill', x));
+    const exportItem = async (x) => {
+      const p = await window.native.invoke('file:save-dialog', { defaultPath: fileName(x), filters: [{ name: 'MyModellerReel tool or skill', extensions: ['json'] }] });
+      if (p) await window.native.invoke('file:write', p, JSON.stringify(x, null, 2)), this.toast(`Exported to ${p}`);
+    };
+    const edit = async (x) => {
+      const area = h('textarea.code', { rows: 18, spellcheck: false, 'aria-label': 'Definition (JSON)' }, JSON.stringify(x, null, 2));
+      if (!(await this.modal(`Edit ${x.title || x.label}`, h('div', {}, h('p.small.muted', {}, x.kind === 'tool' ? 'Steps are commands with their arguments; "{{name}}" takes a parameter. Renaming makes a new tool.' : 'prompt is what Plumb reads; toolset lists the commands it uses.'), area), [['Save', true], ['Cancel', null]]))) return;
+      try {
+        const y = parseUserFile(area.value);
+        if (await save(y)) this.toast('Saved');
+      } catch (e) {
+        this.toast(e.message, 'danger');
+      }
+    };
+    const importFile = async () => {
+      const p = await window.native.invoke('file:open-dialog', { filters: [{ name: 'MyModellerReel tool or skill', extensions: ['json'] }] });
+      if (!p) return;
+      try {
+        const x = parseUserFile(await window.native.invoke('file:read-text', p));
+        if (await save(x)) this.toast(`Added ${x.title || x.label}`);
+      } catch (e) {
+        this.toast(e.message, 'danger');
+      }
+    };
+    const card = (x, ic, title, desc, main) =>
+      h(
+        'div.card',
+        {},
+        h('div.row', {}, icon(ic), h('b.grow', {}, title), h('span.small.muted', {}, x.name)),
+        desc ? h('div.small.muted', {}, desc) : null,
+        h(
+          'div.row.wrap',
+          {},
+          main,
+          h('button.btn.sm', { onclick: () => edit(x) }, icon('pencil-simple'), 'Edit'),
+          h('button.btn.sm', { onclick: () => exportItem(x) }, icon('export'), 'Export'),
+          h('button.icon-btn.sm', { title: 'Delete', 'aria-label': `Delete ${title}`, onclick: async () => (await this.modal(`Delete "${title}"?`, h('p', {}, 'Its file in your library is removed too.'), [['Delete', true], ['Cancel', null]])) && run('delete_my_tool', { name: x.name }) }, icon('trash')),
+        ),
+      );
+    const tools = h('div', {}, h('p.muted.small', {}, 'Loading…'));
+    Promise.all(mine.map(full)).then((xs) =>
+      tools.replaceChildren(
+        ...(xs.length ? xs.map((x) => card(x, 'wrench', x.title, `${x.description} · ${Object.keys(x.params).join(', ') || 'no parameters'}`, h('button.btn.sm.primary', { onclick: () => this.runMyTool(x.name) }, icon('play'), 'Run…'))) : [h('p.small.muted', {}, 'None yet.')]),
+      ),
+    );
+    const skills = Object.values(USER_SKILLS);
+    return h(
+      'div.panel',
+      {},
+      h('h3', {}, 'My tools'),
+      h('p.muted.small', {}, 'After Plumb has done something you will want again, say "save what we just did as a tool called Kerb return". The numbers become parameters; the tool is a command like any other: in Tools › My tools, command search (Ctrl+K), the API and MCP, and Plumb can call it.'),
+      tools,
+      h('h3', {}, 'My skills'),
+      h('p.muted.small', {}, 'Say "remember this as a skill: …" with how you like a kind of work done and the commands it uses. Pick it in the AI panel and Plumb follows it.'),
+      ...(skills.length ? skills.map((x) => card(x, 'graduation-cap', x.label, x.description, h('button.btn.sm.primary', { onclick: () => run('use_skill', { name: x.name }).then(() => this.toast(`Plumb now uses "${x.label}"`)) }, icon('sparkle'), 'Use'))) : [h('p.small.muted', {}, 'None yet.')]),
+      h('div.row.wrap', {}, h('button.btn', { onclick: importFile }, icon('download-simple'), 'Import a tool or skill…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder')),
+    );
+  }
+
   closeMenu() {
     this.$('menu-sub')?.remove();
     this.$('menu-pop').hidden = true;
@@ -814,81 +955,23 @@ export class UI {
       const parallel = (pane === 1 ? s.projection : cfg?.projection) === 'parallel';
       const wire = multi ? cfg?.style === 'wireframe' : !!s.wireframe;
       const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
-      const doc = this.app.store.doc;
-      // road drawings and scenes for the focused pane (they were the pane chip's drop-down)
-      const roads = pane > 1 && doc.entities.some((e) => e.derived?.generator === 'corridor');
-      const L = panes?.layout;
-      const maxed = multi && L.max === pane - 1;
-      // one compact bar (#205): what the pane chips used to carry acts here on the pane last worked in
-      const nav = () => [
-        ...NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) })),
-        '-',
-        { label: 'Zoom extents', icon: 'corners-out', key: 'Shift+Z', run: () => A.zoomExtents.run() },
-        ...(multi ? [{ label: A.fitPanes.label, icon: A.fitPanes.icon, run: A.fitPanes.run }] : []),
-        'Touchpad: Alt + drag orbits, Alt + Shift + drag pans, pinch zooms',
-      ];
-      const views = () => [
-        multi ? `View ${pane}` : 'Standard views',
-        ...['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run })),
-        ...(roads ? [{ label: 'Long profile', icon: 'chart-line', run: () => run('set_pane', { pane, view: 'profile' }) }, { label: 'Cross section', icon: 'line-segments', run: () => run('set_pane', { pane, view: 'section' }) }] : []),
-        '-',
-        { label: 'Parallel projection', icon: 'perspective', checked: () => parallel, run: () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }) },
-        { label: 'Wireframe', icon: 'cube-transparent', checked: () => wire, run: () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()) },
-        ...(multi ? [{ label: maxed ? 'Restore the views' : 'Maximise this view', icon: maxed ? 'corners-in' : 'corners-out', run: () => run('set_layout', { max: maxed ? 0 : pane }) }] : []),
-        ...(multi && pane > 1 ? [{ label: 'Move to its own window', icon: 'arrow-square-out', run: () => run('detach_pane', { pane }) }] : []),
-        ...((doc.scenes || []).length ? ['Scenes', ...doc.scenes.map((sc) => ({ label: sc.name, icon: 'camera', run: () => run('set_pane', { pane, scene: sc.name }) }))] : []),
-        'Layout',
-        ...['layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4'].map((k) => ({ label: A[k].label, icon: A[k].icon, run: A[k].run })),
-      ];
-      // [icon, label, run, pressed] is a button; [icon, label, items] a drop-down
-      const B = (ic, label, fn, pressed) => ({ ic, label, fn, pressed });
-      const D = (ic, label, items) => ({ ic, label, items });
-      // each group, wide (every button) or grouped (its buttons inside the drop-downs, which always hold everything)
-      const groups = (wide) => [
-        [
-          B('cursor', 'Select (Space)', () => this.app.tools.set('select'), tool === 'select'),
-          ...(wide[0]
-            ? [
-                B('perspective', parallel ? 'Parallel projection: click for perspective' : 'Perspective: click for parallel projection', () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }), parallel),
-                B('cube-transparent', 'Wireframe', () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()), wire),
-              ]
-            : []),
-        ],
-        [
-          D('cube', 'Views: standard views, projection, wireframe, layout', views),
-          D(navTool.icon, 'Navigate: orbit, pan, zoom, walk', nav),
-          ...(wide[1] ? [B('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run())] : []),
-        ],
-        wide[2]
-          ? [
-              D('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
-              D('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
-              ...['edges', 'shadows'].map((k) => B(A[k].icon, A[k].label, A[k].run, s[k])),
-            ]
-          : [D('eye', 'Display and snaps (stays open)', () => [...this.displayItems(), '-', ...this.snapSettings()])],
-        [B('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active)],
-      ];
-      const el = (c) => (c.items ? drop(c.ic, c.label, c.items) : btn(c.ic, c.label, c.fn, c.pressed));
-      // a folded group shows as a heading and its entries in the More menu
-      const asItems = (c) => (c.items ? ['-', c.label.split(/[:(]/)[0].trim(), ...c.items()] : [{ label: c.label, icon: c.ic, run: c.fn, checked: c.pressed === undefined ? undefined : () => c.pressed }]);
-      const room = (vb.parentElement?.clientWidth || innerWidth) - 24;
-      // shown: how many controls stay on the bar; the rest, last first, go into a More drop-down
-      const fits = (gs, shown = Infinity) => {
-        let n = 0;
-        const kept = gs.map((g) => g.filter(() => n++ < shown)).filter((g) => g.length);
-        const folded = gs.flat().slice(shown);
-        vb.replaceChildren(
-          ...kept.flatMap((g, i) => [...(i ? [h('span.sep')] : []), ...g.map(el)]),
-          ...(folded.length ? [h('span.sep'), drop('dots-three', 'More view tools', () => folded.flatMap(asItems).filter((it, i) => i || it !== '-'))] : []),
-        );
-        return vb.scrollWidth <= room;
-      };
-      // with room every button shows; narrower, the groups merge into their drop-downs (display first, then
-      // views, then projection), and only then do the last controls fold, one by one, into More. Never wraps.
-      const steps = [[1, 1, 1], [1, 1, 0], [1, 0, 0], [0, 0, 0]];
-      if (!steps.some((w) => fits(groups(w)))) for (let shown = groups([0, 0, 0]).flat().length - 1; shown >= 1 && !fits(groups([0, 0, 0]), shown); shown--);
-      // the pane chips step down from under the bar, so they follow its width
-      if (vb.offsetWidth !== this.viewbarW) (this.viewbarW = vb.offsetWidth), panes?.layout && panes.layoutDom();
+      vb.replaceChildren(
+        btn('cursor', 'Select (Space)', () => this.app.tools.set('select'), tool === 'select'),
+        btn('perspective', parallel ? 'Parallel projection: click for perspective' : 'Perspective: click for parallel projection', () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }), parallel),
+        btn('cube-transparent', 'Wireframe', () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()), wire),
+        h('span.sep'),
+        drop('cube', 'Standard views (in the pane you last worked in)', () => ['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run }))),
+        drop(navTool.icon, 'Navigate: orbit, pan, zoom window, walk', () => NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) }))),
+        btn('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run()),
+        drop('squares-four', 'Views: one, two, three or four panes', () => ['layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', '-', 'fitPanes'].map((k) => (k === '-' ? k : { label: A[k].label, icon: A[k].icon, run: A[k].run }))),
+        h('span.sep'),
+        drop('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
+        drop('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
+        ...['edges', 'shadows'].map((k) => btn(A[k].icon, A[k].label, A[k].run, s[k])),
+        h('span.sep'),
+        btn('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active),
+        btn('sidebar-simple', 'Side panel (Ctrl+B)', A.sidePanel.run, !document.body.classList.contains('no-dock')),
+      );
     };
     this.renderViewbar = render;
     new ResizeObserver(() => render()).observe(vb.parentElement);
@@ -902,7 +985,7 @@ export class UI {
     const A = this.actions;
     const app = this.app;
     const fmt = (format, label) => ({ label, run: (selection) => app.reg.run('export', { format, ...(selection ? { selection: true } : {}) }) });
-    const MODEL = [fmt('glb', 'GLB: one compact 3D file'), fmt('gltf', 'glTF'), fmt('obj', 'OBJ'), fmt('stl', 'STL (3D printing)'), fmt('3mf', '3MF (3D printing, with colours)'), fmt('usdz', 'USDZ (AR on iPhone and iPad)'), fmt('ifc', 'IFC (BIM)'), fmt('dxf', 'DXF (CAD)'), fmt('landxml', 'LandXML (surfaces, alignments, points)'), fmt('geojson', 'GeoJSON (GIS)'), fmt('shp', 'Shapefile (GIS)')];
+    const MODEL = [fmt('glb', 'GLB: one compact 3D file'), fmt('gltf', 'glTF'), fmt('obj', 'OBJ'), fmt('stl', 'STL (3D printing)'), fmt('3mf', '3MF (3D printing, with colours)'), fmt('usdz', 'USDZ (AR on iPhone and iPad)'), fmt('usda', 'OpenUSD (.usda text)'), fmt('ifc', 'IFC (BIM)'), fmt('dxf', 'DXF (CAD)'), fmt('landxml', 'LandXML (surfaces, alignments, points)'), fmt('geojson', 'GeoJSON (GIS)'), fmt('shp', 'Shapefile (GIS)')];
     const act = (label, id) => ({ label, run: () => A[id].run() });
     const WHAT = {
       model: ['The whole model', 'cube', [...MODEL, act('Web viewer: one HTML page that opens anywhere', 'webViewer'), act('Compress a GLB (meshopt or Draco)', 'compress')]],
@@ -951,6 +1034,8 @@ export class UI {
       ];
     } else {
       const mesh = vp.pick(ev);
+      // Ask… (#244): a prompt right here, with what is under the pointer
+      const ask = { label: 'Ask…', icon: 'chat-teardrop-dots', key: 'Ctrl+Space', run: () => app.agents.askAt(ev.clientX, ev.clientY, mesh?.point?.toArray()) };
       const hit = vp.pickAnnotation(ev) || vp.pickPoint() || mesh || vp.pickCurve() || vp.pickUnderlay();
       if (hit) {
         const id = app.pickTarget(hit.entityId);
@@ -961,12 +1046,15 @@ export class UI {
         const one = ents.length === 1 ? ents[0] : null;
         const pts = ents.filter((e) => e.type === 'point');
         const extra = [];
-        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
+        const brk = ents.filter((e) => S.isLinework(e) || e.curve);
+        if (pts.length >= 3) extra.push({ label: `Create a surface from these ${pts.length} points${brk.length ? ` and ${brk.length} line${brk.length > 1 ? 's' : ''}` : ''}`, icon: 'mountains', run: () => app.reg.run('create_surface', { points: pts.map((p) => p.id), ...(brk.length ? { breaklines: brk.map((l) => l.id) } : {}), name: 'Surface' }).then((r) => this.toast(`${r.name}: ${r.triangles ?? ''} triangles`)).catch((e) => this.toast(e.message, 'danger')) });
         if (one?.derived?.generator === 'corridor') extra.push(a('roadViews'), a('corridorSurface'), a('corridorVolumes'), a('corridorSolids'));
         if (one?.alignment) extra.push({ label: 'Corridor along this alignment…', icon: 'road-horizon', run: () => this.commandDialog('create_corridor', { alignment: one.name }) });
         if (one && (one.meta?.surface || one.derived?.generator === 'surface')) extra.push(a('editSurface'), a('contours'), a('analyze'));
         items = [
           one ? one.name : `${ents.length} selected`,
+          ask,
+          '-',
           ...extra.filter(Boolean),
           ...(extra.length ? ['-'] : []),
           a('zoomSel'),
@@ -985,7 +1073,7 @@ export class UI {
           '-',
           a('properties'),
         ];
-      } else items = [a('paste'), a('selectAll'), a('unhideAll'), a('sectionPlanes'), '-', a('zoomExtents'), ...['iso', 'top', 'front', 'right'].map((v) => a(v, `${A[v].label} view`)), '-', a('layout1'), a('layout4'), '-', a('exportAll')];
+      } else items = [ask, '-', a('paste'), a('selectAll'), a('unhideAll'), a('sectionPlanes'), '-', a('zoomExtents'), ...['iso', 'top', 'front', 'right'].map((v) => a(v, `${A[v].label} view`)), '-', a('layout1'), a('layout4'), '-', a('exportAll')];
     }
     const at = { getBoundingClientRect: () => ({ left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY }) };
     this.popAt(at, items.filter(Boolean));
@@ -1099,10 +1187,10 @@ export class UI {
       h('p.small.muted', {}, `Where is the project? Give its latitude and longitude (from a map, or the geolocation), or words such as a country. ${cur ? `Now: ${cur.epsg ? `EPSG:${cur.epsg} ` : ''}${cur.name || ''}.` : ''}`),
       h('div.row', {}, h('label.field.grow', {}, h('span', {}, 'Latitude'), lat), h('label.field.grow', {}, h('span', {}, 'Longitude'), lon)),
       h('label.field', {}, h('span', {}, 'Or words'), words),
-      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest')),
+      h('div.row', {}, h('button.btn.sm', { onclick: find }, icon('magnifying-glass'), 'Suggest'), h('button.btn.sm', { onclick: () => (this.closeModal(), app.pickLocation()) }, icon('map-trifold'), 'Pick on a map…')),
       list,
     );
-    for (const el of [lat, lon, words]) el.onkeydown = (e) => e.key === 'Enter' && find();
+    for (const el of [lat, lon, words]) el.onkeydown = (e) => void (e.key === 'Enter' && find()); // void: an onkeydown returning false swallows the key
     if (geo.latitude !== undefined || words.value) find();
     this.modal('Coordinate system', body);
   }
@@ -1144,6 +1232,7 @@ export class UI {
   buildTabs() {
     this.tabs = [
       ['ai', 'AI', 'sparkle'],
+      ['agents', 'Agents', 'users-three'],
       ['outliner', 'Outliner', 'tree-structure'],
       ['entity', 'Entity', 'info'],
       ['materials', 'Materials', 'palette'],
@@ -1152,41 +1241,50 @@ export class UI {
       ['survey', 'Survey', 'map-pin'],
       ['settings', 'Settings', 'gear'],
       ['help', 'Help', 'question'],
+      ['tool', 'Tool', 'crosshair'], // shown while a command picks (#235)
     ];
     // a vertical strip on the right (#user: horizontal tabs were hard to track); the top button retracts it all
     this.$('dock-tabs').replaceChildren(
-      h('button.icon-btn.dock-retract', { title: t('Hide the panels'), 'aria-label': t('Hide the panels'), onclick: () => this.setDock(document.body.classList.contains('dock-collapsed')) }, icon('caret-double-right')),
+      // the side panel's hide / show (Ctrl+B): the strip stays, like the tools on the left
+      h('button.icon-btn.dock-retract', { title: t('Hide the panels (Ctrl+B)'), 'aria-label': t('Hide the panels'), onclick: () => this.actions.sidePanel.run() }, icon('caret-double-right')),
       h('hr'),
-      ...this.tabs.map(([id, label, ic]) => h('button.icon-btn', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => this.show(id), dataset: { tab: id }, title: t(label), 'aria-label': t(label) }, icon(ic))),
+      ...this.tabs.map(([id, label, ic]) => h('button.icon-btn', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => (this.setSidePanel(true), this.show(id)), dataset: { tab: id }, 'aria-label': t(label), title: t(label), hidden: id === 'tool' && !this.app.pickFirst?.active }, icon(ic))),
     );
-    let open = true;
-    try {
-      open = localStorage.getItem('mymodellerreel.dock') !== '0';
-    } catch {}
-    this.setDock(open);
+    this.retractIcon();
   }
-  /** Show the panel, or fold it away: the tab bar stays, like the tools on the left. */
-  setDock(on) {
-    document.body.classList.toggle('dock-collapsed', !on);
-    const b = this.$('dock-tabs').querySelector('.dock-retract');
-    if (b) (b.firstChild.className = `ph ph-caret-double-${on ? 'right' : 'left'}`), (b.title = b.ariaLabel = t(on ? 'Hide the panels' : 'Show the panels'));
-    try {
-      localStorage.setItem('mymodellerreel.dock', on ? '1' : '0');
-    } catch {}
-    if (this.app.viewport) this.app.viewport.dirty = true;
+  /** The strip's top button says what it does: hide the panels, or show them again. */
+  retractIcon() {
+    const on = !document.body.classList.contains('no-dock');
+    const b = this.$('dock-tabs')?.querySelector('.dock-retract');
+    if (b) (b.firstChild.className = `ph ph-caret-double-${on ? 'right' : 'left'}`), (b.title = t(on ? 'Hide the panels (Ctrl+B)' : 'Show the panels (Ctrl+B)')), b.setAttribute('aria-label', b.title);
+  }
+  /** The Tool tab (#235): shown and opened while a command picks, then back to the tab before. */
+  toolTab(on, back = 'ai') {
+    const b = this.$('dock-tabs').querySelector('[data-tab=tool]');
+    if (b) b.hidden = !on;
+    if (on) this.show('tool');
+    else if (this.tab === 'tool') this.show(back === 'tool' ? 'ai' : back);
+  }
+  panel_tool() {
+    return this.app.pickFirst.panel();
   }
   show(tab, focus = false) {
-    if (document.body.classList.contains('dock-collapsed')) this.setDock(true);
     this.tab = tab;
-    for (const b of this.$('dock-tabs').querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    if (focus) this.setSidePanel(true);
+    for (const b of this.$('dock-tabs').querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === (tab === 'cogo' ? 'survey' : tab))); // COGO lives in the Survey tab
     this.renderDock();
     if (focus && tab === 'ai') this.app.ai.focus();
   }
   panel_help() {
     return this.app.help.panel();
   }
+  panel_agents() {
+    return this.app.agents.panel();
+  }
   renderDock() {
     const body = this.$('dock-body');
+    if (this.tab !== 'cogo') this.app.cogo?.unmount();
+    if (this.tab === 'cogo') return this.app.cogo.mount(body), (body.dataset.tab = 'cogo');
     if (this.tab === 'ai') {
       if (body.firstChild !== this.app.ai.el) body.replaceChildren(this.app.ai.el);
       return;
@@ -1242,7 +1340,7 @@ export class UI {
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint'],
+      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
       Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
@@ -1281,6 +1379,17 @@ export class UI {
       localStorage.setItem('mymodellerreel.ribbon', JSON.stringify(this.ribbon));
     } catch {}
     this.renderRibbon();
+  }
+  /** Show or hide the side panel (#236): hidden, only its tab icons stay and the view takes the width. */
+  setSidePanel(on) {
+    if (on === !document.body.classList.contains('no-dock')) return;
+    document.body.classList.toggle('no-dock', !on);
+    try {
+      localStorage.setItem('mymodellerreel.dock', on ? '1' : '0');
+    } catch {}
+    this.renderViewbar?.();
+    this.retractIcon();
+    this.app.viewport.dirty = true;
   }
   /** Show or hide the side toolbar (#209): with a ribbon open, its tools are there. */
   setSideToolbar(on) {
@@ -1355,7 +1464,7 @@ export class UI {
     const q = o.q.toLowerCase();
     const match = (e) => !q || e.name.toLowerCase().includes(q) || (e.tag || '').toLowerCase().includes(q) || (e.point?.code || '').toLowerCase().includes(q);
     const kind = (e) => (e.type === 'point' ? 'Survey points' : e.annotation ? 'Dimensions and labels' : e.underlay ? 'Drawings' : e.pointcloud ? 'Point clouds' : e.alignment ? 'Alignments' : e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.generator === 'finished_ground' ? 'Surfaces' : e.curve ? 'Lines and curves' : 'Groups and shapes');
-    const iconOf = (e) => (e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
+    const iconOf = (e) => (e.xref ? 'link-simple' : e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
     const order = [];
     const row = (e, depth) => {
       order.push(e.id);
@@ -1408,6 +1517,13 @@ export class UI {
         name,
         kids.length ? h('span.muted.small', {}, kids.length) : null,
         animated ? icon('film-strip') : null,
+        ...(e.xref
+          ? [
+              h('button.icon-btn.sm', { title: `Live reference to ${e.xref.path}: reload it`, 'aria-label': 'Reload reference', onclick: (ev) => (ev.stopPropagation(), run('reload_reference', { ids: [e.id] })) }, icon('arrows-clockwise')),
+              h('button.icon-btn.sm', { title: 'Bind: make it local (stops following the file)', 'aria-label': 'Bind reference', onclick: (ev) => (ev.stopPropagation(), run('bind_reference', { ids: [e.id] })) }, icon('link-break')),
+              h('button.icon-btn.sm', { title: 'Remove the reference', 'aria-label': 'Remove reference', onclick: (ev) => (ev.stopPropagation(), run('delete', { ids: [e.id] })) }, icon('trash')),
+            ]
+          : []),
         h('button.icon-btn.sm', { title: e.visible ? 'Hide' : 'Show', 'aria-label': e.visible ? 'Hide' : 'Show', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], visible: !e.visible })) }, icon(e.visible ? 'eye' : 'eye-slash')),
         h('button.icon-btn.sm', { title: e.locked ? 'Unlock' : 'Lock', 'aria-label': e.locked ? 'Unlock' : 'Lock', onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids: [e.id], locked: !e.locked })) }, icon(e.locked ? 'lock-simple' : 'lock-simple-open')),
       );
@@ -1528,7 +1644,7 @@ export class UI {
       h(
         'div.start',
         {},
-        h('p.small.muted', {}, 'Model, survey, draw and animate; ask the copilot in plain words. Pick a starting point:'),
+        h('p.small.muted', {}, 'Model, survey, draw and animate; ask Plumb in plain words. Pick a starting point:'),
         h('div.start-grid', {}, list.map((t) => h('button.start-card', { onclick: () => start(t.id) }, icon(ICON[t.id] || 'cube'), h('strong', {}, t.name), h('span.small.muted', {}, t.description)))),
         h('div.row.wrap', {}, h('button.btn', { onclick: () => (this.closeModal(), this.tour()) }, icon('compass'), 'Take the 2-minute tour'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.open.run()) }, icon('folder-open'), 'Open a file…'), h('button.btn', { onclick: () => (this.closeModal(), this.actions.import.run()) }, icon('tray-arrow-down'), 'Import LandXML, IFC, DXF…')),
       ),
@@ -1629,6 +1745,190 @@ export class UI {
   }
 
   /** An analysis legend (#121) under a coloured surface. */
+  /** Light up parts of a surface in the view without selecting them: entities, and a drawn path (points, voids). */
+  peek(ids = [], path = null, closed = false) {
+    this.app.viewport.peek(ids, path, closed);
+  }
+
+  /**
+   * What a TIN is made of as counts (Points 120 · Breaklines 4 · Voids 1 · Boundary): each opens a list grouped by code
+   * or layer; an item or a group lights up in the view, with its remove button; members are added from the selection.
+   */
+  surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const id = e.id;
+    const p = SW.migrateSurface(e.derived.params);
+    const open = this.surfOpen?.id === id ? this.surfOpen.kind : null;
+    const zAt = SW.surfaceSampler(doc, e).z;
+    const top = TR.surfaceStats(D.worldMesh(doc, e)).max_y;
+    const onGround = (ring) => ring.map(([px, pz]) => [px, zAt(px, pz) ?? top, pz]);
+    const selected = (test) => app.selection.map((i) => app.entity(i)).filter((x) => x && test(x));
+    // the lists, grouped: [{ group, items: [{ label, ids?, path?, closed?, remove? }] }]
+    const groupBy = (list, keyOf) => {
+      const m = new Map();
+      for (const it of list) (m.get(keyOf(it)) || m.set(keyOf(it), []).get(keyOf(it))).push(it);
+      return [...m].sort((a, b) => a[0].localeCompare(b[0])).map(([group, items]) => ({ group, items }));
+    };
+    const pts = SW.surfaceSources(doc, p).points;
+    const kinds = {
+      points: {
+        label: 'Points',
+        count: d.points,
+        groups: [
+          ...groupBy(pts, (q) => S.parseCode(q.point.code).code || 'No code').map((g) => ({ ...g, items: g.items.map((q) => ({ label: q.name, ids: [q.id], remove: [`Leave ${q.name} out of this surface`, () => run('surface_points', { id, action: 'exclude', points: [q.id] })] })) })),
+          ...(p.exclude.length ? [{ group: 'Left out', items: p.exclude.map((pid) => ({ label: app.entity(pid)?.name || pid, ids: [pid], bring: () => run('surface_points', { id, action: 'include', points: [pid] }) })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', () => {
+            const sel = selected(S.isPoint);
+            if (!sel.length) return this.toast('Select survey points first, then Add selected.');
+            run('surface_points', { id, action: 'include', points: sel.map((q) => q.id) });
+          }, 'Add the selected survey points'),
+          btn('New', 'plus', edit('add'), 'Click to add a new point on the surface'),
+          btn('Move', 'hand-pointing', edit('move')),
+          pointIds.length ? btn(shown(pointIds) ? 'Hide' : 'Show', shown(pointIds) ? 'eye-slash' : 'eye', toggle(pointIds), 'Show or hide the points') : null,
+        ],
+      },
+      breaklines: {
+        label: 'Breaklines',
+        count: d.breaklines.length + d.drawn_breaklines,
+        groups: [
+          ...groupBy(d.breaklines.map((l) => app.entity(l.id)).filter(Boolean), (l) => l.tag || 'No layer').map((g) => ({ ...g, items: g.items.map((l) => ({ label: l.name, ids: [l.id], remove: [`Stop using ${l.name} as a breakline`, () => run('surface_breaklines', { id, action: 'remove', line: l.id })] })) })),
+          ...(p.lines.length ? [{ group: 'Drawn on the surface', items: p.lines.map((path, i) => ({ label: `Drawn line ${i + 1}`, path, remove: [`Remove drawn line ${i + 1}`, () => run('surface_breaklines', { id, action: 'remove', index: i })] })) }] : []),
+        ],
+        actions: [
+          btn('Add selected', 'plus-circle', async () => {
+            const sel = selected((l) => S.isLinework(l) || l.curve);
+            if (!sel.length) return this.toast('Select lines (linework or curves) first, then Add selected.');
+            for (const l of sel) await run('surface_breaklines', { id, action: 'add', line: l.id });
+          }, 'Use the selected lines as breaklines'),
+          btn('Draw', 'line-segments', edit('breakline')),
+          lineIds.length ? btn(shown(lineIds) ? 'Hide' : 'Show', shown(lineIds) ? 'eye-slash' : 'eye', toggle(lineIds), 'Show or hide the breaklines') : null,
+        ],
+      },
+      voids: {
+        label: 'Voids',
+        count: d.voids.length,
+        groups: d.voids.length ? [{ group: 'Drawn', items: d.voids.map((r, i) => ({ label: `Void ${i + 1} · ${r.length} corners`, path: onGround(r), closed: true, remove: [`Remove void ${i + 1}`, () => run('surface_boundary', { id, action: 'remove_void', void: i })] })) }] : [],
+        actions: [
+          btn('Draw', 'polygon', edit('void'), 'Draw a closed outline: the surface is cut along it'),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'add_void', from: c.id });
+          }, 'A void from the selected closed curve'),
+          d.voids.length ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+      boundary: {
+        label: 'Boundary',
+        count: d.outline ? null : d.boundaries.length || null,
+        groups: [
+          ...(d.outline ? [{ group: 'Outline', items: [{ label: `Outline · ${d.outline.length} corners`, path: onGround(d.outline), closed: true, remove: ['Clear the outline', () => run('surface_boundary', { id, action: 'clear' })] }] }] : []),
+          ...(d.boundaries.length ? [{ group: 'Boundary lines', items: d.boundaries.map((b) => ({ label: `${b.name} (${b.kind})`, ids: [b.id] })) }] : []),
+        ],
+        actions: [
+          btn(d.outline ? 'Redraw' : 'Draw', 'polygon', edit('outline')),
+          btn('From selected', 'plus-circle', () => {
+            const [c] = selected((l) => l.curve);
+            if (!c) return this.toast('Select a closed curve first.');
+            run('surface_boundary', { id, action: 'set', from: c.id });
+          }, 'The outline from the selected closed curve'),
+          d.outline ? btn('Grips', 'pencil-simple', edit('grips'), 'Drag the corners in the view') : null,
+        ],
+      },
+    };
+    const toggleKind = (k) => {
+      this.surfOpen = open === k ? null : { id, kind: k };
+      if (open === k) this.peek();
+      redraw();
+    };
+    const redraw = () => box.replaceWith(this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }));
+    const LIMIT = 200; // a group of thousands of points lists its first ones
+    const row = (it) =>
+      h(
+        'div.surf-item',
+        { role: 'button', tabindex: 0, title: 'Show it in the view', onclick: () => this.peek(it.ids || [], it.path, it.closed), onkeydown: (ev) => ev.key === 'Enter' && this.peek(it.ids || [], it.path, it.closed) },
+        h('span.grow', {}, it.label),
+        it.remove ? x(it.remove[0], (ev) => (ev.stopPropagation(), it.remove[1]())) : null,
+        it.bring ? h('button.btn', { onclick: (ev) => (ev.stopPropagation(), it.bring()) }, 'Bring back') : null,
+      );
+    const k = open && kinds[open];
+    const box = h(
+      'div.surf-members',
+      {},
+      h(
+        'div.surf-counts',
+        { role: 'group', 'aria-label': 'What the surface is made of' },
+        ...Object.entries(kinds).map(([key, v]) => h('button.surf-count', { 'aria-expanded': String(open === key), onclick: () => toggleKind(key) }, h('span', {}, v.label), h('b', {}, v.count === null ? (key === 'boundary' && d.outline ? '✓' : '–') : String(v.count)), icon(open === key ? 'caret-up' : 'caret-down'))),
+      ),
+      k
+        ? h(
+            'div.surf-pop',
+            { role: 'region', 'aria-label': k.label },
+            ...(k.groups.length
+              ? k.groups.map((g, _, all, listed = this.surfOpen.groups?.has(g.group) || (all.length === 1 && g.items.length <= 12)) =>
+                  h(
+                    'div.surf-group',
+                    {},
+                    h(
+                      'div.surf-group-head',
+                      {},
+                      h('button.icon-btn', { 'aria-expanded': String(listed), 'aria-label': `List ${g.group}`, title: 'List them', onclick: () => (((this.surfOpen.groups ||= new Set()).has(g.group) ? this.surfOpen.groups.delete(g.group) : this.surfOpen.groups.add(g.group)), redraw()) }, icon(listed ? 'caret-down' : 'caret-right')),
+                      h('span.grow', { role: 'button', tabindex: 0, title: 'Show the whole group in the view', onclick: () => this.peek(g.items.flatMap((it) => it.ids || []), g.items.length === 1 ? g.items[0].path : null, g.items[0]?.closed) }, g.group),
+                      h('span.muted', {}, String(g.items.length)),
+                    ),
+                    ...(listed ? [...g.items.slice(0, LIMIT).map(row), g.items.length > LIMIT ? h('div.small.muted', {}, `and ${g.items.length - LIMIT} more`) : null] : []),
+                  ),
+                )
+              : [h('div.small.muted', {}, `No ${k.label.toLowerCase()} yet.`)]),
+            h('div.row.wrap', {}, ...k.actions),
+          )
+        : null,
+    );
+    return box;
+  }
+
+  /** A TIN's definition (#240): what it is made of, each part with its own remove / show button, and its options. */
+  surfaceDefinitionCard(e, run) {
+    const app = this.app;
+    const doc = app.store.doc;
+    const d = SW.surfaceDefinition(doc, e);
+    const st = TR.surfaceStats(D.worldMesh(doc, e));
+    const base = S.geo(doc).base?.[2] || 0;
+    const id = e.id;
+    const btn = (label, ic, onclick, title = label) => h('button.btn', { onclick, title, 'aria-label': title }, icon(ic), label);
+    const x = (title, onclick) => h('button.icon-btn', { onclick, title, 'aria-label': title }, icon('x'));
+    const edit = (mode) => () => (app.tools.set('surfedit'), app.tools.tool.setMode?.(mode));
+    const item = (label, ...actions) => h('div.row.small', {}, h('span.grow', {}, label), ...actions);
+    const head = (label) => h('div.small.muted', { style: { marginTop: '6px' } }, label);
+    // show / hide what the surface is made from (the points, the breakline entities)
+    const pointIds = SW.surfaceSources(doc, e.derived.params).points.map((p) => p.id);
+    const lineIds = d.breaklines.map((l) => l.id);
+    const shown = (ids) => ids.some((i) => app.entity(i)?.visible !== false);
+    const toggle = (ids) => () => run('set_properties', { ids, visible: !shown(ids) });
+    return h(
+      'div.surface-def',
+      {},
+      h('div.small', {}, `Area ${fmt(st.area_2d)} m² (3D ${fmt(st.area_3d)}) · elevation ${fmt(st.min_y + base)} to ${fmt(st.max_y + base)}`),
+      this.surfaceMembers(e, d, run, { btn, x, edit, shown, toggle, pointIds, lineIds }),
+      head('Triangles'),
+      h('div.row.wrap', {}, btn(e.show_triangles ? 'Hide triangles' : 'Show triangles', 'triangle', () => run('show_triangles', { ids: [id], show: !e.show_triangles }), 'Draw the triangle edges over the surface'), btn('Offset…', 'stack', () => this.commandDialog('offset_surfaces', { surface: e.name, distance: -0.3, count: 1 }), 'Offset surfaces or layers to another surface')),
+      h('label.row.small', {}, h('span.grow', {}, 'Longest side (m, 0: any)'), h('input', { type: 'number', min: 0, step: 1, value: d.max_edge, style: { width: '72px' }, 'aria-label': 'Longest triangle side', onchange: (ev) => run('set_surface_sources', { id, max_edge: +ev.target.value }) })),
+      d.swaps.length || d.deleted_triangles ? item(`${d.swaps.length} swapped, ${d.deleted_triangles} deleted by hand`, h('button.btn', { onclick: () => run('edit_triangles', { id, action: 'restore' }) }, icon('arrow-counter-clockwise'), 'Restore')) : null,
+      h('div.row.wrap', {}, btn('Swap an edge', 'triangle', edit('swap'))),
+      head('Contours and analysis'),
+      h('label.row.small', {}, h('span.grow', {}, 'Contours every (m)'), h('input', { type: 'number', min: 0.1, step: 0.5, value: 1, style: { width: '72px' }, 'aria-label': 'Contour interval', onchange: (ev) => run('surface_contours', { id, interval: +ev.target.value }) })),
+      h(
+        'label.row.small',
+        {},
+        h('span.grow', {}, 'Colour by'),
+        h('select', { 'aria-label': 'Analysis colours', onchange: (ev) => run('analyze_surface', { id, kind: ev.target.value }) }, ...['none', 'elevation', 'slope', 'aspect'].map((k) => h('option', { value: k, selected: (e.analysis?.kind || 'none') === k }, k))),
+      ),
+    );
+  }
+
   legend(e) {
     const a = e.analysis;
     if (!a?.legend) return null;
@@ -1677,7 +1977,7 @@ export class UI {
   /** Cross-sections (#122): one at a time, Previous / Next. */
   /** What read_drawing found, with Apply. */
   async readDrawingDialog(id, r) {
-    const rows = [['Scale', r.scale ? `1:${r.scale.ratio}` : '—'], ['Title', r.title || '—'], ['Date', r.date || '—'], ['North', r.north_angle !== undefined ? `${r.north_angle}°` : r.north ? 'a north mark' : '—'], ['Grid crossings', r.control.length ? r.control.map((c) => `E ${c.e} N ${c.n}`).join(' · ') : '—'], ['Read by', r.ai ? 'the text and the copilot' : r.ai_error ? `the text (copilot: ${r.ai_error})` : 'the text']];
+    const rows = [['Scale', r.scale ? `1:${r.scale.ratio}` : '—'], ['Title', r.title || '—'], ['Date', r.date || '—'], ['North', r.north_angle !== undefined ? `${r.north_angle}°` : r.north ? 'a north mark' : '—'], ['Grid crossings', r.control.length ? r.control.map((c) => `E ${c.e} N ${c.n}`).join(' · ') : '—'], ['Read by', r.ai ? 'the text and Plumb' : r.ai_error ? `the text (Plumb: ${r.ai_error})` : 'the text']];
     const body = h('div', {}, ...rows.map(([k, v]) => h('div.legend-row', {}, h('strong', {}, `${k}: `), h('span', {}, v))));
     if ((await this.modal('What the drawing says', body, [['Apply', 'ok'], ['Close', null]])) === 'ok') this.app.reg.run('read_drawing', { id, use_ai: false, apply: true }).then((x) => this.toast(x.applied.join(', ') || 'Nothing to apply.')).catch((e) => this.toast(e.message, 'danger'));
   }
@@ -1691,7 +1991,7 @@ export class UI {
       list.replaceChildren(h('p.small.muted', {}, 'Searching…'));
       app.reg.run('search_assets', { query: q.value, type: type.value }).then((r) => list.replaceChildren(...(r.length ? r.map((x) => h('div.legend-row', {}, h('span.grow', {}, `${x.name} `, h('span.small.muted', {}, x.categories.slice(0, 3).join(', '))), h('button.btn.sm', { onclick: () => (this.closeModal(), app.reg.run('import_asset', { id: x.id, type: type.value }).then(() => this.toast(`${x.name} imported (CC0)`)).catch((e) => this.toast(e.message, 'danger'))) }, 'Import'))) : [h('p.small.muted', {}, 'Nothing found.')]))).catch((e) => list.replaceChildren(h('p.small', {}, e.message)));
     };
-    q.onkeydown = (e) => e.key === 'Enter' && go();
+    q.onkeydown = (e) => void (e.key === 'Enter' && go());
     this.modal('Free assets', h('div', {}, h('div.row', {}, q, type, h('button.btn.primary.sm', { onclick: go }, 'Search')), list));
   }
   /** Versions saved in the file: save, restore, compare. */
@@ -1878,6 +2178,7 @@ export class UI {
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
+        ...Object.entries(p.attrs || {}).map(([k, v]) => h('label.row.small.param-row', {}, h('span', { title: 'Attribute' }, k), h('input.grow', { value: String(v), 'aria-label': `Attribute ${k}`, onchange: (ev) => run('edit_points', { points: [e.id], attrs: { [k]: typeof v === 'number' && Number.isFinite(+ev.target.value) ? +ev.target.value : ev.target.value } }) }))),
       );
     }
     if (e.alignment) {
@@ -1972,6 +2273,7 @@ export class UI {
         h('div.overline', {}, `Surface · ${tri} triangles · ${e.derived.report.points} points`),
         this.legend(e),
         e.derived.error ? h('div.small.param-error', { role: 'alert' }, e.derived.error) : null,
+        e.derived.generator === 'surface' ? this.surfaceDefinitionCard(e, run) : null,
         h('div.row.wrap', {}, h('button.btn', { onclick: () => this.checkSurfaceDialog(e.id) }, icon('list-checks'), 'Check'), h('button.btn', { onclick: () => this.commandDialog('cut_fill', { existing: e.id }) }, icon('chart-bar'), 'Cut / fill…')),
       );
     }
@@ -2323,7 +2625,7 @@ export class UI {
               h('button.btn.sm.primary', { onclick: () => organize(picked, { ...(gIn.value.trim() ? { group: gIn.value.trim() } : {}), ...(tIn.value.trim() ? { add_tags: tIn.value.split(',').map((s) => s.trim()).filter(Boolean) } : {}) }).then(() => lib.picked.clear()) }, icon('check'), 'Apply'),
               h('button.btn.sm', { onclick: () => (lib.picked.clear(), this.renderDock()) }, 'Clear'),
             )
-          : null,
+          : '', // replaceChildren would print null
         ...byGroup.map(([g, items]) => section(g, items)),
         ...(list.length ? [] : [h('p.muted.small', {}, 'Add models, or drop model files here.')]),
       );
@@ -2344,7 +2646,7 @@ export class UI {
           h('button.profile', { title: p.description, disabled: !path, onclick: () => run('sweep', { path: path.id, profile: p.name }) }, thumb(p), h('span', {}, p.name.replace(/_/g, ' '))),
         ),
       ),
-      h('div.row', {}, h('button.btn', { onclick: () => this.commandDialog('define_profile', app.selection[0] ? { from_face: app.selection[0] } : {}) }, icon('plus'), 'Profile from a face…')),
+      h('div.row', {}, h('button.btn', { onclick: () => this.commandDialog('define_profile', app.selection[0] ? { from_face: app.selection[0] } : {}) }, icon('plus'), 'Profile from a face…'), h('button.btn', { onclick: this.actions.sketchProfile.run }, icon('scribble'), 'Sketch a profile…')),
       h('h3', {}, 'Recipes'),
       h('p.muted.small', {}, 'A recipe is how a model was built, replayable with other values ("3 storeys instead of 2"). Record a macro to capture what you do next.'),
       h(
@@ -2368,6 +2670,9 @@ export class UI {
           ),
         ),
       ),
+      h('h3', {}, 'My tools and skills'),
+      h('p.muted.small', {}, 'Ask Plumb to save what it just did as a tool, or how you work as a skill.'),
+      h('div.row', {}, h('button.btn', { onclick: this.actions.myTools.run }, icon('toolbox'), 'My tools and skills')),
       h('h3', {}, 'Plugins'),
       h('p.muted.small', {}, 'A plugin is one JavaScript file that adds commands. Every command it adds is instantly available to the toolbar, the AI, the HTTP API and MCP. Ask the AI to "create a plugin that…" and it writes one for you.'),
       h('div.row', {}, h('button.btn', { onclick: this.actions.plugins.run }, icon('folder-open'), 'Open plugins folder'), h('button.btn', { onclick: () => app.reloadPlugins() }, icon('arrows-clockwise'), 'Reload')),
@@ -2394,7 +2699,7 @@ export class UI {
                   {},
                   h('span', { style: { minWidth: '120px' } }, s.name),
                   s.models.length ? pick : h('span.muted.grow', {}, 'running, no model loaded'),
-                  s.models.length ? h('button.btn.sm.primary', { onclick: () => app.reg.run('use_ai_model', { provider: s.provider, base_url: s.baseUrl, model: pick.value }).then(() => (this.toast(`The copilot now uses ${pick.value} on ${s.name}.`), app.ai.renderHead(), this.renderDock())).catch((e) => this.toast(e.message, 'danger')) }, using(s, pick.value) ? 'In use' : 'Use') : null,
+                  s.models.length ? h('button.btn.sm.primary', { onclick: () => app.reg.run('use_ai_model', { provider: s.provider, base_url: s.baseUrl, model: pick.value }).then(() => (this.toast(`Plumb now uses ${pick.value} on ${s.name}.`), app.ai.renderHead(), this.renderDock())).catch((e) => this.toast(e.message, 'danger')) }, using(s, pick.value) ? 'In use' : 'Use') : null,
                 );
               }),
               ...(r.huggingface.length ? [h('p.small.muted', {}, `Downloaded from Hugging Face: ${r.huggingface.map((m) => m.id + (m.gguf ? ' (GGUF)' : '')).join(', ')}. Load one in Ollama or LM Studio to use it here.`)] : []),
@@ -2419,51 +2724,52 @@ export class UI {
       app.ai.renderHead();
       this.renderDock();
     };
-    const field = (label, value, onchange, attrs = {}) => h('label.field', {}, h('span', {}, label), h('input', { value: value ?? '', onchange, ...attrs }));
+    const field = (label, value, onchange, attrs = {}, tip = null) => h('label.field', {}, h('span', {}, label, tip ? infoTip(tip) : null), h('input', { value: value ?? '', onchange, ...attrs }));
     const prov = ai.provider;
     const cfg =
       prov === 'anthropic'
         ? [field('Model', ai.anthropic.model, (e) => save({ ai: { anthropic: { model: e.target.value } } })), field(`API key ${ai.anthropic.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { anthropic: { apiKey: e.target.value } } }), { type: 'password', placeholder: 'sk-ant-…' })]
         : prov === 'openai'
           ? [field('Base URL', ai.openai.baseUrl, (e) => save({ ai: { openai: { baseUrl: e.target.value } } })), field('Model', ai.openai.model, (e) => save({ ai: { openai: { model: e.target.value } } })), field(`API key ${ai.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { openai: { apiKey: e.target.value } } }), { type: 'password' })]
-          : [field('Ollama address (on this PC it is http://127.0.0.1:11434: leave it unless Ollama runs elsewhere)', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } })), field('Model (needs tool calling: mistral, mistral-small, qwen2.5, llama3.1)', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }))];
+          : prov === 'builtin'
+            ? [] // the model list is in the card above (#255)
+            : [field('Ollama address', ai.ollama.baseUrl, (e) => save({ ai: { ollama: { baseUrl: e.target.value } } }), {}, 'On this PC it is http://127.0.0.1:11434. Change it only when Ollama runs on another computer.'), field('Model', ai.ollama.model, (e) => save({ ai: { ollama: { model: e.target.value } } }), {}, 'An Ollama model that can call tools: mistral, mistral-small, qwen2.5, llama3.1…')];
     return h(
       'div.panel',
       {},
       ...this.accountCard(),
       h('h3', {}, 'AI'),
-      ai.provider === 'ollama' ? app.ai.setupCard() : null,
-      this.aiFinder(),
+      ai.provider === 'ollama' || ai.provider === 'builtin' ? app.ai.setupCard() : null,
+      prov === 'builtin' ? null : this.aiFinder(), // finding other models matters once you leave the built-in one
       // copilot feedback (#232): kept on this PC; shared only when ticked
       h('label.row.small', { title: 'Rated answers (the request, what the copilot did and the model) upload to the MyStudioReel suite under your account, to train a better modelling copilot. Off: they stay on this PC.' }, h('input', { type: 'checkbox', checked: !!ai.shareFeedback, onchange: (e) => app.reg.run('share_ai_feedback', { on: e.target.checked }).then(() => this.toast(e.target.checked ? 'Feedback will be shared' : 'Feedback stays on this PC')).catch((err) => this.toast(err.message, 'danger')) }), 'Share my copilot feedback to improve it'),
       h(
         'label.field',
         {},
-        h('span', {}, 'Provider'),
+        h('span', {}, 'Provider', infoTip(['Where Plumb’s model runs', 'Built-in: the app runs it on this PC, offline. Ollama or LM Studio: another app on this PC. Claude or an API: online, with your key.', 'Keys stay on this PC and are only used by the app itself; the page never sees them.'])),
         h(
           'select',
           { onchange: (e) => save({ ai: { provider: e.target.value } }) },
-          [['ollama', 'Local model (Ollama: Mistral…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
+          [['builtin', 'Built-in model (offline)'], ['ollama', 'Ollama (Mistral, Qwen…)'], ['anthropic', 'Claude (Anthropic API)'], ['openai', 'OpenAI-compatible (Mistral API, LM Studio, vLLM…)']].map(([v, l]) => h('option', { value: v, selected: v === prov }, l)),
         ),
       ),
       ...cfg,
-      prov === 'ollama' &&
+      (prov === 'ollama' || prov === 'builtin') &&
         h(
           'label.field',
           {},
-          h('span', {}, 'Tools for local models (small models do better with fewer)'),
+          h('span', {}, 'Tools', infoTip('Local models do better with fewer tools. Auto gives each request the best matches.')),
           h(
             'select',
             { onchange: (e) => save({ ai: { toolset: e.target.value } }) },
             [['auto', 'Auto: the best matches for each request'], ['all', 'All commands'], ['modelling', 'Modelling'], ['animation', 'Animation'], ['query', 'Scene queries'], ['files', 'Files']].map(([v, l]) => h('option', { value: v, selected: v === (ai.toolset || 'auto') }, l)),
           ),
         ),
-      h('p.small.muted', {}, 'Keys are stored on this PC and only used by the app itself; the page never sees them.'),
       h('h3', {}, 'Image model (AI render, AI textures)'),
       h('label.field', {}, h('span', {}, 'Provider'), h('select', { onchange: (e) => save({ ai: { image: { provider: e.target.value } } }) }, [['comfyui', 'ComfyUI on this PC (Stable Diffusion, Flux…)'], ['openai', 'OpenAI-compatible images API']].map(([v, l]) => h('option', { value: v, selected: v === ai.image.provider }, l)))),
       ...(ai.image.provider === 'openai'
         ? [field('Base URL', ai.image.openai.baseUrl, (e) => save({ ai: { image: { openai: { baseUrl: e.target.value } } } })), field('Model', ai.image.openai.model, (e) => save({ ai: { image: { openai: { model: e.target.value } } } })), field(`API key ${ai.image.openai.hasKey ? '(saved; type to replace)' : ''}`, '', (e) => save({ ai: { image: { openai: { apiKey: e.target.value } } } }), { type: 'password' })]
-        : [field('ComfyUI URL', ai.image.comfyui.baseUrl, (e) => save({ ai: { image: { comfyui: { baseUrl: e.target.value } } } })), field('Checkpoint (a model file in ComfyUI/models/checkpoints)', ai.image.comfyui.checkpoint, (e) => save({ ai: { image: { comfyui: { checkpoint: e.target.value } } } }), { placeholder: 'sd_xl_base_1.0.safetensors' })]),
+        : [field('ComfyUI URL', ai.image.comfyui.baseUrl, (e) => save({ ai: { image: { comfyui: { baseUrl: e.target.value } } } })), field('Checkpoint', ai.image.comfyui.checkpoint, (e) => save({ ai: { image: { comfyui: { checkpoint: e.target.value } } } }), { placeholder: 'sd_xl_base_1.0.safetensors' }, 'A model file in ComfyUI/models/checkpoints.')]),
       h('h3', {}, 'API and MCP'),
       h('p.small', {}, `Local HTTP API on 127.0.0.1:${app.info.apiPort}. Claude Desktop (or any MCP client) connects through the MCP server and can use every command.`),
       h('div.row', {}, h('button.btn.primary', { onclick: () => this.mcpDialog() }, icon('plugs-connected'), 'Connect Claude Desktop…'), h('button.btn', { onclick: () => window.native.invoke('shell:open-path', 'data') }, icon('folder-open'), 'Data folder')),
@@ -2542,8 +2848,10 @@ export class UI {
       dlg.replaceChildren(
         h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => ((this.modalClosing = true), dlg.close(), resolve(value)) }, label)))),
       );
-      // the close event comes later: one we caused (a button, picking in the view) is not a Cancel
-      dlg.onclose = () => (this.modalClosing ? (this.modalClosing = false) : resolve(null));
+      // the close event comes later: one we caused (a button, picking in the view) is not a Cancel, and one that
+      // arrives while the dialog is open again belongs to the dialog this one replaced (Coordinate system → Pick on a map)
+      this.modalClosing = false;
+      dlg.onclose = () => dlg.open || (this.modalClosing ? (this.modalClosing = false) : resolve(null));
       dlg.showModal();
     });
   }
@@ -2571,10 +2879,57 @@ export class UI {
     if ((await done) === 'fix' && (r.issues.length || r.critique)) app.ai.ask(`Fix these review findings where they are real mistakes, leave design choices alone:\n${r.issues.map((i) => `- ${i.message}`).join('\n')}${r.critique ? `\n${r.critique}` : ''}`);
   }
 
-  /** Import points: a file, its column order and units. */
-  async importPointsDialog() {
-    const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd'] }] });
-    if (path) this.commandDialog('import_points', { path, format: 'PNEZD' });
+  /** Import points: JobXML / LandXML through the import registry; a text file through a live preview of how it splits. */
+  async importPointsDialog(path) {
+    const app = this.app;
+    path ||= await window.native.invoke('file:open-dialog', { filters: [{ name: 'Points', extensions: ['csv', 'txt', 'xyz', 'pnezd', 'jxl', 'xml'] }] });
+    if (!path) return;
+    const fail = (e) => this.toast(e.message, 'danger');
+    if (/\.(jxl|xml)$/i.test(path)) return app.reg.run('import', { path }).then((r) => this.importReport(r)).catch(fail);
+    const ROLES = { name: 'Point name', e: 'Easting (X)', n: 'Northing (Y)', z: 'Elevation (Z)', code: 'Code', desc: 'Description', attr: 'Attribute', ignore: 'Ignore' };
+    const o = { path, delimiter: 'auto', header: undefined, columns: undefined, units: S.geo(app.store.doc).units || 'm' };
+    const sel = (label, value, opts, onchange) => h('label.field', {}, h('span', {}, label), h('select', { 'aria-label': label, onchange: (ev) => onchange(ev.target.value) }, Object.entries(opts).map(([v, l]) => h('option', { value: v, selected: v === value }, l))));
+    const custom = h('input', { 'aria-label': 'Custom delimiter', placeholder: '|', size: 3, style: { display: 'none' }, oninput: (ev) => ev.target.value && ((o.delimiter = ev.target.value), (o.columns = undefined), draw()) });
+    const opts = h('div.points-wizard-opts');
+    const status = h('p.small', { role: 'status' });
+    const table = h('div.qty.points-wizard');
+    const draw = async () => {
+      let r;
+      try {
+        r = await app.reg.run('preview_points', { ...o, rows: 30 });
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+      o.columns = r.columns;
+      const dKey = ['auto', 'comma', 'tab', 'semicolon', 'space'].includes(o.delimiter) ? o.delimiter : 'custom';
+      custom.style.display = dKey === 'custom' ? '' : 'none';
+      opts.replaceChildren(
+        sel('Delimiter', dKey, { auto: `Detect (${r.delimiter.length > 1 ? r.delimiter : `"${r.delimiter}"`})`, comma: 'Comma', tab: 'Tab', semicolon: 'Semicolon', space: 'Space', custom: 'Other…' }, (v) => (v === 'custom' ? ((custom.style.display = ''), custom.focus()) : ((o.delimiter = v), (o.columns = undefined), draw()))),
+        custom,
+        sel('First line', o.header === undefined ? 'auto' : String(o.header), { auto: `Detect (${r.header ? 'header' : 'data'})`, true: 'Column names', false: 'Data' }, (v) => ((o.header = v === 'auto' ? undefined : v === 'true'), (o.columns = undefined), draw())),
+        sel('Units', o.units, { m: 'Metres', ft: 'Feet', usft: 'US survey feet' }, (v) => ((o.units = v), draw())),
+      );
+      const setCol = (i, c) => ((o.columns = o.columns.map((x, k) => (k === i ? c : x))), draw());
+      const headCell = (c, i) =>
+        h(
+          'th',
+          {},
+          h('select', { 'aria-label': `Column ${i + 1}`, onchange: (ev) => setCol(i, ev.target.value === 'attr' ? { role: 'attr', name: r.labels[i] || `col${i + 1}` } : { role: ev.target.value }) }, Object.entries(ROLES).map(([v, l]) => h('option', { value: v, selected: v === c.role }, l))),
+          c.role === 'attr' ? h('input', { 'aria-label': `Attribute name of column ${i + 1}`, value: c.name, onchange: (ev) => setCol(i, { role: 'attr', name: ev.target.value.trim() || `col${i + 1}` }) }) : null,
+        );
+      const rows = r.sample.map((cells, k) => h(`tr${r.header && k === 0 ? '.is-header' : ''}`, {}, r.columns.map((c, i) => h(`td${c.role === 'ignore' ? '.muted' : ''}`, {}, cells[i] ?? ''))));
+      table.replaceChildren(h('table', {}, h('thead', {}, h('tr', {}, r.columns.map(headCell))), h('tbody', {}, rows)));
+      status.textContent = `${r.points} of ${r.lines - (r.header ? 1 : 0)} lines read as points${r.skipped_lines.length ? `; lines ${r.skipped_lines.slice(0, 8).join(', ')}${r.skipped_lines.length > 8 ? '…' : ''} are skipped (no numbers where northing and easting are)` : ''}.`;
+    };
+    await draw();
+    const body = h('div.panel.form.points-wizard-body', { style: { padding: 0 } }, h('p.small.muted', {}, path), opts, h('p.small.muted', {}, 'Pick what each column holds. Attribute columns are kept on every point under the name you give.'), table, status);
+    if ((await this.modal('Import points', body, [['Import', 'go'], ['Cancel', null]])) !== 'go') return;
+    const { path: p, delimiter, header, columns, units } = o;
+    return app.reg
+      .run('import_points', { path: p, delimiter, ...(header === undefined ? {} : { header }), columns, units })
+      .then((r) => this.toast(`${r.imported} points imported${r.renamed_duplicates.length ? `, ${r.renamed_duplicates.length} renamed (names in use)` : ''}.`))
+      .catch(fail);
   }
 
   /** Surface checks (#130) with one-click fixes. */
@@ -2623,10 +2978,11 @@ export class UI {
     return h(
       'div.panel',
       {},
+      surveyViews(this, 'survey'),
       h('h3', {}, 'Coordinates'),
       h('div.small', {}, g.base ? `Base point E ${g.base[0]} · N ${g.base[1]} · Z ${g.base[2]}` : 'No base point yet: the first point sets it.'),
       h('div.small.muted', {}, `${g.crs?.name || 'No coordinate system'}${g.crs?.epsg ? ` (EPSG:${g.crs.epsg})` : ''} · units ${g.units || 'm'} · angles ${g.angles || 'deg'}`),
-      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
+      h('div.row.wrap', {}, h('button.btn', { onclick: this.actions.coordSys.run }, icon('globe-hemisphere-west'), 'System…'), h('button.btn', { onclick: this.actions.basePoint.run }, icon('crosshair'), 'Base…'), h('button.btn', { onclick: this.actions.mapPick.run }, icon('map-trifold'), 'Map…'), h('button.btn', { onclick: this.actions.units.run }, icon('ruler'), 'Units…')),
       h('div.row', {}, h('h3.grow', {}, `Points · ${pts.length}`), h('button.btn', { onclick: this.actions.importPoints.run }, icon('tray-arrow-down'), 'Import…'), h('button.icon-btn.sm', { title: 'Export points', 'aria-label': 'Export points', onclick: this.actions.exportPoints.run }, icon('export'))),
       filter,
       h(
@@ -2667,10 +3023,104 @@ export class UI {
             ),
           )
         : h('p.small.muted', {}, 'Import points, then Surface… makes a live TIN.'),
-      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Load library', 'aria-label': 'Load feature library', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Feature code libraries', 'aria-label': 'Feature code libraries', onclick: this.actions.loadLibrary.run }, icon('books'))),
+      doc.featureLibrary ? h('p.small.muted', {}, icon('books'), ` Library: ${doc.featureLibrary.name}`) : null,
       h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.type}` : ''))),
       h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
     );
+  }
+
+  /** Feature code libraries: the ones kept on this computer (import FXL / JSON), the model's, their codes to search and edit. */
+  async featureLibrariesDialog(open = null) {
+    const app = this.app;
+    const run = (name, args) => app.reg.run(name, args);
+    const fail = (e) => this.toast(e.message, 'danger');
+    const body = h('div.panel.libs', { style: { padding: 0 } }, h('p.muted', {}, 'Reading the libraries…'));
+    let sel = open;
+    let mode = null; // 'rename' | 'duplicate' | 'delete': the selected library's pending action
+    const again = (fn) => async () => {
+      try {
+        await fn();
+      } catch (e) {
+        fail(e);
+      }
+      draw();
+    };
+    // a code edit is a form of its own; the manager comes back after it
+    const editCode = (code, d = {}) => async () => {
+      this.modalClosing = true; // its close event comes later: not the form's Cancel
+      this.closeModal();
+      await this.commandDialog('edit_library_code', { library: sel, ...(code ? { code } : {}), ...Object.fromEntries(Object.entries({ description: d.description, type: d.type, category: d.category, layer: d.layer, color: d.color, line_style: d.lineStyle, breakline: d.breakline, object: d.object, attrs: d.attrs }).filter(([, v]) => v !== undefined)) }, { form: true });
+      this.featureLibrariesDialog(sel);
+    };
+    const draw = async () => {
+      const { libraries, in_use } = await run('feature_libraries', {});
+      if (!libraries.some((l) => l.name === sel)) sel = libraries.find((l) => l.name === in_use)?.name || libraries[0]?.name || null;
+      const lib = sel ? await run('feature_library', { name: sel, limit: 1e6 }) : null;
+      const codes = lib ? Object.fromEntries(lib.codes.map(({ code, ...d }) => [code, d])) : {};
+      const doc = app.store.doc;
+      const nameBox = (verb) => {
+        const inp = h('input', { value: verb === 'rename' ? sel : `${sel} copy`, 'aria-label': 'New name' });
+        const ok = again(() => run('manage_feature_library', { name: sel, action: verb, to: inp.value.trim() }).then((r) => ((sel = r.name), (mode = null))));
+        inp.onkeydown = (e) => (e.stopPropagation(), e.key === 'Enter' ? ok() : e.key === 'Escape' && ((mode = null), draw()));
+        setTimeout(() => (inp.focus(), inp.select()));
+        return h('div.row', {}, inp, h('button.btn.primary', { onclick: ok }, verb === 'rename' ? 'Rename' : 'Duplicate'), h('button.btn', { onclick: () => ((mode = null), draw()) }, 'Cancel'));
+      };
+      body.replaceChildren(
+        h(
+          'div.row.wrap',
+          {},
+          h('button.btn.primary', { onclick: again(async () => {
+            const path = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Feature library (FXL, JSON)', extensions: ['fxl', 'json'] }] });
+            if (!path) return;
+            const r = await run('import_feature_library', { path });
+            sel = r.name;
+            this.toast(`${r.name}: ${r.codes} codes (${Object.entries(r.types).map(([k, n]) => `${n} ${k}`).join(', ')})`);
+          }) }, icon('download-simple'), 'Import FXL or JSON…'),
+          Object.keys(doc.featureCodes || {}).length && !libraries.some((l) => l.name === in_use)
+            ? h('button.btn', { title: 'Keep the codes of this model as a library on this computer', onclick: again(async () => (sel = (await run('import_feature_library', { name: in_use || app.file?.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'From the model' })).name)) }, icon('floppy-disk'), "Keep this model's codes")
+            : null,
+        ),
+        libraries.length
+          ? h('div.lib-list', { role: 'listbox', 'aria-label': 'Libraries' }, libraries.map((l) => h('button.lib-item', { role: 'option', 'aria-selected': String(l.name === sel), onclick: () => ((sel = l.name), (mode = null), draw()) }, icon('books'), h('b.grow', {}, l.name), l.name === in_use ? h('span.lib-badge', {}, 'In use') : null, h('span.small.muted', {}, `${l.codes} codes`))))
+          : h('p.muted', {}, 'No libraries yet. Import a Trimble FXL (Feature Definition Manager) or a JSON library.'),
+        lib
+          ? h(
+              'div.lib-detail',
+              {},
+              mode === 'rename' || mode === 'duplicate'
+                ? nameBox(mode)
+                : h(
+                    'div.row.wrap',
+                    {},
+                    h('button.btn.primary', { disabled: lib.name === in_use, onclick: again(async () => {
+                      const r = await run('use_feature_library', { name: lib.name });
+                      this.toast(`This model uses ${r.in_use}: ${r.codes} codes, ${r.processed.lines} lines`);
+                    }) }, icon('check-circle'), lib.name === in_use ? 'In use' : 'Use in this model'),
+                    h('button.btn', { onclick: () => ((mode = 'rename'), draw()) }, icon('pencil-simple'), 'Rename'),
+                    h('button.btn', { onclick: () => ((mode = 'duplicate'), draw()) }, icon('copy'), 'Duplicate'),
+                    h('button.btn', { onclick: again(async () => {
+                      const path = await window.native.invoke('file:save-dialog', { defaultPath: `${lib.name}.fxl`, filters: [{ name: 'Trimble FXL', extensions: ['fxl'] }, { name: 'JSON', extensions: ['json'] }, { name: 'CSV', extensions: ['csv'] }] });
+                      if (path) this.toast(`Exported ${(await run('export_feature_library', { library: lib.name, path })).codes} codes`);
+                    }) }, icon('export'), 'Export…'),
+                    mode === 'delete'
+                      ? h('button.btn.danger', { onclick: again(() => run('manage_feature_library', { name: lib.name, action: 'delete' }).then(() => (mode = null))) }, icon('trash'), `Delete ${lib.name}?`)
+                      : h('button.btn', { onclick: () => ((mode = 'delete'), draw()) }, icon('trash'), 'Delete'),
+                  ),
+              h('div.row', {}, h('span.small.muted.grow', {}, `${lib.total} codes${lib.source && !/^(fxl|json|model)$/.test(lib.source) ? ` · from ${lib.source.split(/[\\/]/).pop()}` : ''}`), h('button.btn.sm', { onclick: editCode(null) }, icon('plus'), 'Code…')),
+              codeGrid(codes, (c) => editCode(c, codes[c])(), {
+                extra: (r) => [
+                  h('button.icon-btn.sm', { title: `Edit ${r.code}`, 'aria-label': `Edit ${r.code}`, onclick: (e) => (e.stopPropagation(), editCode(r.code, codes[r.code])()) }, icon('pencil-simple')),
+                  h('button.icon-btn.sm', { title: `Remove ${r.code}`, 'aria-label': `Remove ${r.code}`, onclick: (e) => (e.stopPropagation(), again(() => run('edit_library_code', { library: lib.name, code: r.code, remove: true }))()) }, icon('trash')),
+                ],
+              }).el,
+            )
+          : null,
+      );
+    };
+    const shown = this.modal('Feature code libraries', body);
+    draw().catch(fail);
+    return shown;
   }
 
   /** Quantities report (#53): pick the grouping, read the table, export CSV. */
@@ -2737,7 +3187,7 @@ export class UI {
         label: c.name,
         desc: c.description,
         icon: (c.params.required || []).length ? 'textbox' : 'terminal',
-        run: () => ((c.params.required || []).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+        run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
       }));
       items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
       if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });

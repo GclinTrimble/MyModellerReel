@@ -1,4 +1,4 @@
-// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in the copilot and readable
+// Domain skills (#96): system-prompt add-ons and example scripts per domain, selectable in Plumb and readable
 // by any client (list_skills). Workflows (#97) are the step-by-step prompts the MCP server offers as MCP prompts.
 // Plain data, no dependencies: the MCP server imports this file directly.
 
@@ -53,6 +53,25 @@ define_surface_material before reporting. show_surface_materials hides or isolat
       { title: 'Turf everywhere, asphalt in the car park, takeoff', code: "await api.paint_surface({ id: 'Site', material: 'Turf', all: true });\nawait api.paint_surface({ id: 'Site', material: 'Asphalt', inside: 'Car park boundary' });\nreturn await api.material_takeoff({ format: 'csv' });" },
     ],
   },
+  survey: {
+    label: 'Survey and COGO',
+    description: 'Field book calculations: inverses, traverses, intersections, stations and offsets, curves, parcel areas, deed mapchecks',
+    prompt: `Domain: land survey and COGO. Survey points have names and Northing / Easting / Elevation in project units; use
+their names, not model coordinates. Directions may be azimuths (45.5, 45°30'00"), quadrant bearings (N45°30'E) or
+turns from the last leg (R90 / L45 deflections, AR270 angle right from the backsight). cogo_inverse answers "what is
+the bearing and distance", cogo_traverse turns field book or deed calls into points (sideshots with side: true, a
+backsight for turned angles, close_to for the misclosure, precision 1:N and area, adjust: compass to spread it),
+cogo_intersect finds a corner from two bearings, a bearing and a distance, two distances or two lines (two answers:
+report both, store the one the user means), cogo_station_offset and cogo_offset_point work along a line, alignment
+or linework (offset + right, − left), cogo_curve solves a curve from any two parts, cogo_area gives a parcel's area.
+A legal description ("thence N 45°30' E 120.00 feet…") is a traverse that should close on the point of beginning:
+run it with close_to, quote the misclosure and precision, and say if it does not close (worse than 1:10000 is poor).
+Every COGO result has a report line: give it to the user as it is.`,
+    examples: [
+      { title: 'Deed mapcheck', code: "await api.cogo_traverse({ from: 'POB', legs: [{ direction: 'N 45 30 E', distance: 120 }, { direction: 'S 44 30 E', distance: 80 }, { direction: 'S 45 30 W', distance: 120 }, { direction: 'N 44 30 W', distance: 80 }], close_to: 'POB', store: false });" },
+      { title: 'Corner from two distances', code: "await api.cogo_intersect({ point1: 'CP1', distance1: 60, point2: 'CP2', distance2: 80, solution: '1', name: 'C1' });" },
+    ],
+  },
   furniture: {
     label: 'Furniture and interiors',
     description: 'Tables, chairs, shelves, kitchens, room layouts',
@@ -64,11 +83,19 @@ find_free_space for a new piece. Materials: Oak, Walnut, Steel, Glass, Plaster.`
   },
 };
 
-/** The text added to the copilot's system prompt for a skill (or '' for none). */
+/**
+ * The user's own skills (#242), saved with save_skill and loaded from the user library at startup. Same shape as a
+ * SKILLS entry plus `toolset` (command names it uses): { name, label, description, prompt, toolset, examples }.
+ * See usertools.js for the file format.
+ */
+export const USER_SKILLS = {};
+
+/** The text added to Plumb's system prompt for a skill (or '' for none). */
 export function skillPrompt(name) {
-  const s = SKILLS[name];
+  const s = SKILLS[name] || USER_SKILLS[name];
   if (!s) return '';
-  return `${s.prompt}\nExamples (run_script):\n${s.examples.map((x) => `// ${x.title}\n${x.code}`).join('\n')}`;
+  const ex = s.examples?.length ? `\nExamples (run_script):\n${s.examples.map((x) => `// ${x.title}\n${x.code}`).join('\n')}` : '';
+  return `${s.prompt}${s.toolset?.length ? `\nCommands for this work: ${s.toolset.join(', ')}.` : ''}${ex}`;
 }
 
 /** Common workflows, offered to MCP clients as prompts. {{arg}} placeholders are filled from the prompt's arguments. */

@@ -6,7 +6,7 @@ You have surveyed points (a CSV or text file with number, northing, easting, ele
 
 ## In the app
 
-1. **Site › Import points** [Import points](action:importPoints): pick the file and its column order (PNEZD…). The first point sets the base point, so big coordinates stay exact.
+1. **Site › Import points** [Import points](action:importPoints): pick the file, then what each column holds ([Import a points file](howto:import-survey-points)). The first point sets the base point, so big coordinates stay exact.
    ![Site › Import points Import points: pick the file and its column order (PNEZD…).](media/survey-points-to-surface/01.jpg)
 2. **Site › Feature code…** tells the app what codes mean: KERB joins into a breakline, TREE places a tree. **Site › Process codes** applies them.
    ![Site › Feature code… tells the app what codes mean: KERB joins into a breakline,](media/survey-points-to-surface/02.jpg)
@@ -15,11 +15,11 @@ You have surveyed points (a CSV or text file with number, northing, easting, ele
 4. **Site › Check surface** [Check surface](action:checkSurface) flags spikes, pits, duplicates and thin triangles, with the points to fix.
    ![Site › Check surface Check surface flags spikes, pits, duplicates and thin trian](media/survey-points-to-surface/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\survey\site.csv (PNEZD), make KERB a breakline and TREE a tree, then build the existing ground surface and check it.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

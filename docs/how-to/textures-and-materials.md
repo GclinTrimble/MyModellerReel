@@ -14,11 +14,11 @@ You want real materials on the model: bricks at the right size, a glass balustra
    ![Tools › Glass, coat and maps… Glass: transmission 1 for glass, clear coat for pa](media/textures-and-materials/03.jpg)
 4. **Tools › AI texture from a prompt…** [AI texture](action:aiTexture): the image model in AI settings paints a seamless material and puts it on the selection.
 
-## Ask the copilot
+## Ask Plumb
 
 > Put 0.9 × 0.45 m red brick on the walls, make the balustrade clear glass, and give the roof a dark slate texture from the image model.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

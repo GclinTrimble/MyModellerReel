@@ -45,7 +45,8 @@ test('surface by hand: leave a point out, a minimum side, an outline and a hole'
   await reg.run('edit_triangles', { id: 'EG', action: 'restore' });
   assert.equal(faces(), n0);
   await reg.run('set_surface_sources', { id: 'EG', voids: [[[6, -6], [14, -6], [14, -14], [6, -14]]] });
-  assert.ok(faces() < n0, 'a hole');
+  const area = async () => (await reg.run('surface_definition', { id: 'EG' })).surface.area_2d;
+  assert.equal(await area(), 400 - 64, 'a hole cut exactly along its edges');
   await reg.run('set_surface_sources', { id: 'EG', voids: [], outline: [[0, 0], [10, 0], [10, -10], [0, -10]] });
   assert.ok(faces() <= 8, `inside the outline: ${faces()}`);
   // on a 5 m grid every triangle has a 5 m side: a 6 m minimum leaves nothing, which is refused (one undo step back)
