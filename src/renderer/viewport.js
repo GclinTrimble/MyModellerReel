@@ -127,7 +127,11 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     cache.used.add(c);
     return c;
   };
-  for (const e of doc.entities) {
+  // a symbol tinted by an attribute (S.symbolTransform): its parts take the colour, the shared definition does not
+  const tints = new Map();
+  for (const t of doc.entities) if (t.tint) for (const d of D.descendants(doc, t.id)) tints.set(d.id, t.tint);
+  for (let e of doc.entities) {
+    if (tints.has(e.id)) e = { ...e, material: { ...e.material, color: tints.get(e.id) }, byLayer: false };
     let o;
     if (e.mesh) {
       const g = geo(e.mesh);

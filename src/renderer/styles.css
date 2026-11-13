@@ -578,6 +578,28 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .surf-item .btn { padding: 0 var(--my-space-2); min-height: 0; }
 .surf-item:hover, .surf-group-head > span[role='button']:hover, .surf-item:focus-visible { background: var(--my-accent-tint); }
 .code-card.wide { width: 34rem; }
+/* a feature code's attributes: the table in the code form, the card when a point is placed */
+.attr-table { display: flex; flex-direction: column; gap: var(--my-space-2); }
+.attr-row { display: flex; flex-direction: column; gap: var(--my-space-1); padding: var(--my-space-2); border: 1px solid var(--my-border); border-radius: var(--my-radius-sm); }
+.attr-main { display: flex; align-items: center; gap: var(--my-space-2); }
+.attr-main .attr-name { flex: 1; min-width: 0; font-family: var(--my-font-mono); }
+.attr-main select { flex: 0 0 9.5rem; }
+.attr-opts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--my-space-1) var(--my-space-3); }
+.attr-opt { white-space: nowrap; display: inline-flex; align-items: center; gap: var(--my-space-1); font-size: var(--my-text-xs); color: var(--my-text-muted); }
+.attr-opt > input { width: 9rem; }
+.attr-opt > input.form-num { width: 4.5rem; }
+.attr-opt[hidden], .attr-opts[hidden] { display: none; }
+.attr-card { width: 17rem; }
+.attr-fields { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.attr-field { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); align-items: center; gap: 2px var(--my-space-2); font-size: var(--my-text-sm); }
+.attr-field > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--my-text-muted); font-family: var(--my-font-mono); font-size: var(--my-text-xs); }
+.attr-field input:not([type='checkbox']):not([type='color']), .attr-field select { width: 100%; min-width: 0; }
+.attr-field input[type='checkbox'] { justify-self: start; }
+.attr-input { display: flex; align-items: center; gap: var(--my-space-1); min-width: 0; }
+.attr-input > input[type='color'] { flex: 0 0 1.75rem; height: 1.6rem; padding: 0; }
+.attr-input > input:not([type='color']) { flex: 1; min-width: 0; }
+.attr-err { grid-column: 2; font-size: var(--my-text-xs); color: #b5492b; }
+.attr-err:empty { display: none; }
 .code-title .grow { flex: 1; }
 /* feature codes as a searchable grid: in the code card, code fields and the library manager */
 .code-browser { display: flex; flex-direction: column; gap: var(--my-space-2); min-width: 0; }

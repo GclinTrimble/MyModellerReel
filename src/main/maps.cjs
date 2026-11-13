@@ -156,6 +156,7 @@ function registerMaps({ ipcMain, userDir, settings: S, saveSettings, account }) 
   };
   ipcMain.handle('gpkg:write', (_, file, payload) => {
     gpkgPath(file);
+    if (payload?.fresh) fs.rmSync(file, { force: true }); // a project database is rewritten whole: no tables left from an older save
     const { DatabaseSync } = require('node:sqlite');
     return import('../core/gpkg.js').then((G) => G.writeGpkg(DatabaseSync, file, payload));
   });

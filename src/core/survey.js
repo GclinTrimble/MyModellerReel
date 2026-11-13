@@ -282,6 +282,7 @@ export function planCodes(doc) {
   const objects = [];
   const warnings = [];
   const open = new Map(); // code/string → current line
+  const memo = new Map(); // link choices per code, once per pass
   for (const p of points(doc)) {
     if (!p.point.code) continue;
     const { code, string, controls } = parseCode(p.point.code);
@@ -290,7 +291,10 @@ export function planCodes(doc) {
       warnings.push({ point: p.id, name: p.name, message: `Point ${p.name}: no feature code "${code}" in the library.` });
       continue;
     }
-    for (const a of def.attrs || []) if (a.required && (p.point.attrs?.[a.name] === undefined || p.point.attrs[a.name] === '')) warnings.push({ point: p.id, name: p.name, message: `Point ${p.name} (${code}) has no ${a.name}.` });
+    for (const a of def.attrs || []) {
+      const r = checkAttr(a, p.point.attrs?.[a.name], a.type === 'link' ? linksOf(doc, a.link, memo) : null);
+      if (r.error) warnings.push({ point: p.id, name: p.name, message: `Point ${p.name} (${code}): ${r.error}` });
+    }
     if (def.object) objects.push({ point: p, def, code });
     if (!def.line) continue;
     const key = `${code}/${string}`;
@@ -308,6 +312,86 @@ export function planCodes(doc) {
   return { lines: lines.filter((l) => l.points.length >= 2), objects, warnings };
 }
 
+// ---------------------------------------------------------------- typed attributes and symbols
+
+/** Attribute types: text (kind date / time / file), number (kind integer; decimals, min, max), list (options), boolean, color, image (a path), link (a point of another code). */
+export const ATTR_TYPES = ['text', 'number', 'list', 'boolean', 'color', 'image', 'link'];
+
+/** Names of the points coded with code (the choices of a link attribute). */
+export const linkNames = (doc, code) => points(doc).filter((p) => parseCode(p.point.code).code === String(code || '').toUpperCase()).map((p) => p.name);
+
+/** linkNames once per code in a pass over many points (per point it is quadratic). */
+const linksOf = (doc, code, memo) => memo.get(code) || memo.set(code, linkNames(doc, code)).get(code);
+
+/** Where a point came from, for folders and queries: its field book (a survey entity), the file it was imported from, or here. */
+export const sourceOf = (p, nameOf = () => null) => (p.point?.survey ? `Field book: ${nameOf(p.point.survey) || p.point.survey}` : p.point?.source ? `File: ${p.point.source}` : 'Entered here');
+
+/** One value against its attribute definition: { value } cleaned (number rounded to its decimals, list option as written), or { error }. links: the names a link may take. */
+export function checkAttr(a, raw, links = null) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return a.required ? { error: `${a.name} is needed.` } : { value: undefined };
+  const t = a.type || 'text';
+  const s = String(raw).trim();
+  if (t === 'number') {
+    let v = typeof raw === 'number' ? raw : Number(s.replace(',', '.'));
+    if (!Number.isFinite(v)) return { error: `${a.name} is a number.` };
+    if (a.kind === 'integer' && !Number.isInteger(v)) return { error: `${a.name} is a whole number.` };
+    if (a.decimals !== undefined) v = +v.toFixed(a.decimals);
+    if (a.min !== undefined && v < a.min) return { error: `${a.name} is at least ${a.min}.` };
+    if (a.max !== undefined && v > a.max) return { error: `${a.name} is at most ${a.max}.` };
+    return { value: v };
+  }
+  if (t === 'boolean') {
+    if (typeof raw === 'boolean') return { value: raw };
+    if (/^(true|yes|y|1|oui)$/i.test(s)) return { value: true };
+    if (/^(false|no|n|0|non)$/i.test(s)) return { value: false };
+    return { error: `${a.name} is yes or no.` };
+  }
+  if (t === 'list' && a.options?.length) {
+    const o = a.options.find((x) => String(x).toLowerCase() === s.toLowerCase());
+    return o === undefined ? { error: `${a.name} is one of ${a.options.join(', ')}.` } : { value: o };
+  }
+  if (t === 'color') return /^#[0-9a-f]{6}$/i.test(s) ? { value: s.toLowerCase() } : { error: `${a.name} is a colour, # and six hex digits.` };
+  if (t === 'link' && links && !links.includes(s)) return { error: `${a.name}: no ${a.link || ''} point named ${s}.`.replace('  ', ' ') };
+  if (a.kind === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(s)) return { error: `${a.name} is a date, YYYY-MM-DD.` };
+  if (a.kind === 'time' && !/^\d{1,2}:\d{2}(:\d{2})?$/.test(s)) return { error: `${a.name} is a time, HH:MM.` };
+  return { value: s };
+}
+
+/**
+ * A point's attributes checked against its code's definitions: { attrs, errors }. Missing values take their default;
+ * attributes the code does not list pass through as they are. A missing required value is not an error here: planCodes
+ * warns about it, so a point can be stored first and completed later.
+ */
+export function cleanAttrs(doc, code, attrs = {}, memo = new Map()) {
+  const defs = doc.featureCodes?.[parseCode(code).code]?.attrs || [];
+  const out = { ...attrs };
+  const errors = [];
+  for (const a of defs) {
+    const r = checkAttr({ ...a, required: false }, attrs[a.name] ?? a.default, a.type === 'link' ? linksOf(doc, a.link, memo) : null);
+    if (r.error) errors.push(r.error);
+    else if (r.value === undefined) delete out[a.name];
+    else out[a.name] = r.value;
+  }
+  return { attrs: out, errors };
+}
+
+/**
+ * A symbol's placement from its point's attributes (a parametric symbol): scale (scale_attr × scale, uniform),
+ * rotation (rotation_attr: degrees clockwise from north, about the vertical), tint (color_attr, a #rrggbb), and which
+ * components (variant_attr: the point's value picks variants[value].component / .plan, else the code's own).
+ */
+export function symbolTransform(ob = {}, attrs = {}) {
+  const pos = (v) => (Number.isFinite(+v) && +v > 0 ? +v : null);
+  const k = (ob.scale_attr && pos(attrs[ob.scale_attr])) || 1;
+  const s = k * (pos(ob.scale) || 1);
+  const az = ob.rotation_attr && Number.isFinite(+attrs[ob.rotation_attr]) ? +attrs[ob.rotation_attr] : 0;
+  const tint = ob.color_attr && /^#[0-9a-f]{6}$/i.test(attrs[ob.color_attr] || '') ? attrs[ob.color_attr] : null;
+  const pick = String(attrs[ob.variant_attr] ?? '').toLowerCase();
+  const v = (ob.variant_attr && Object.entries(ob.variants || {}).find(([k]) => k.toLowerCase() === pick)?.[1]) || {};
+  // north is −z: clockwise from above is a negative turn about +y
+  return { scale: [s, s, s], rotation: [0, az ? -az : 0, 0], tint, component: v.component || ob.component, plan: v.plan || ob.plan };
+}
+
 // ---------------------------------------------------------------- the code card (#217)
 
 /** Recent codes, most recent first: code moves to the top, no duplicates (case-insensitive), at most max. */
@@ -321,7 +405,7 @@ export function rememberCode(recent, code, max = 12) {
 export function codeAction(def) {
   if (!def) return 'not in the library';
   const o = def.object;
-  const what = o ? `places ${o.type === 'component' ? o.component || 'a component' : `a ${o.type || 'tree'}`}` : def.breakline ? 'joins into a breakline' : def.closed ? 'closes into a polygon' : def.line ? 'joins into a line' : 'a point';
+  const what = o ? `places ${o.type === 'component' || o.component || o.plan ? o.component || o.plan || 'a component' : `a ${o.type || 'tree'}`}` : def.breakline ? 'joins into a breakline' : def.closed ? 'closes into a polygon' : def.line ? 'joins into a line' : 'a point';
   return def.description ? `${def.description} · ${what}` : what;
 }
 
@@ -357,6 +441,7 @@ export function editCode(old = {}, a = {}) {
   if (a.type) Object.assign(def, { type: a.type, line: a.type !== 'point', closed: a.type === 'polygon' });
   else if (a.line !== undefined && def.type) def.type = a.line ? (def.closed ? 'polygon' : 'line') : 'point';
   for (const k of ['line', 'closed']) if (def[k] === false) delete def[k];
+  if (def.object && !Object.keys(def.object).length) delete def.object; // the symbol taken off
   return def;
 }
 

@@ -43,6 +43,7 @@ import * as DR from './drafting.js';
 import * as DW from './drawings.js';
 import * as PDF from './pdf.js';
 import * as Assets from './assets.js';
+import * as PJ from './project.js';
 import * as F from './formats.js';
 import * as Units from './units.js';
 import * as Clip from './clipboard.js';
@@ -108,7 +109,18 @@ export const GUIDE = `MyModellerReel conventions:
 - Survey and terrain: add_point / import_points (N, E, Z, code; real-world coordinates stay exact around a base
   point), add_breakline / add_boundary, create_surface (a live TIN), check_surface, cut_fill / volume_report,
   create_alignment + create_corridor, design_line_slope / design_plane / design_trench / design_road, a feature library
-  (define_feature_code) that turns coded points into lines and objects.
+  (define_feature_code) that turns coded points into lines and objects. A code's symbol is a component placed as a
+  linked instance at each point: object.plan (2D, a flat CAD-like block) and object.component (3D), sized, turned and
+  tinted by attributes (scale_attr, rotation_attr, color_attr), and one attribute can pick a variant (variant_attr +
+  variants { value: { component, plan } }, e.g. TYPE single / double arm); set_component_origin puts a component's
+  insertion point where it must sit on the point (the pole's foot). set_style symbols points | 2d | 3d | both picks what
+  shows, point_labels attrs shows each point's attributes. Attributes are typed (number with decimals / min / max,
+  list, boolean, color, image, date, link to a point of another code) and checked when points are added or edited.
+  Imported points keep their file or field book (query_points source) and are typed and coded on the way in.
+- Projects: save_project writes a job as a folder: project.gpkg (OGC GeoPackage: settings, CRS, feature codes,
+  survey points with source and attributes, linework, the file list), scene.usda (OpenUSD), models/ (the editable
+  .glb), survey/, surfaces/ (LandXML), codes/ (FXL), drawings/, assets/. open_project reads it back; the database's
+  settings and codes win. Once a project is open, save saves the project.
 - Survey field books: importing a Trimble JobXML keeps its station setups, backsights, rod / instrument / antenna heights,
   prism constants and every shot (a survey entity, OGC InfraGML Part 6 model). review_survey finds field busts (a run
   of shots at another rod height, backsight residuals, weak GNSS); edit_survey_observations fixes them by names, setup,
@@ -1059,6 +1071,23 @@ function registerCore(reg, ctx) {
     return { ...summary(doc, g), component: a.name, parts: D.descendants(doc, g.id).length };
   }, true);
 
+  def('edit', 'set_component_origin', "Move a component's origin, its insertion point: where a feature code puts it on each point, the pivot it turns and scales about. at: the new origin as a model point (picked on one of its instances); or preset base_center (middle of its base), center, top_center. Instances stay where they are; symbols move onto their points.", obj({ name: str('the component, or one of its instances'), at: v3('the new origin, a model point on an instance'), preset: str('instead of at', ['base_center', 'center', 'top_center']) }, ['name']), (a) => {
+    const doc = ctx.doc;
+    const inst = doc.components?.[a.name] ? Comp.instancesOf(doc, a.name)[0] : D.resolve(doc, a.name)[0];
+    if (!inst?.component) throw new Error(doc.components?.[a.name] ? `No instance of ${a.name} in the model to measure it on: place one first.` : `${a.name} is not a component or one of its instances.`);
+    let at = a.at;
+    if (!at) {
+      const b = D.worldBox(doc, inst);
+      if (!Number.isFinite(b.min[0])) throw new Error(`${inst.component} has nothing to measure.`);
+      const y = a.preset === 'center' ? (b.min[1] + b.max[1]) / 2 : a.preset === 'top_center' ? b.max[1] : b.min[1];
+      at = [(b.min[0] + b.max[0]) / 2, y, (b.min[2] + b.max[2]) / 2];
+    }
+    const local = D.round3(new Vector3(...at).applyMatrix4(D.worldMatrix(doc, inst).invert()).toArray());
+    Comp.setOrigin(doc, inst.component, local);
+    const symbols = Object.values(doc.featureCodes || {}).some((c) => c.object && JSON.stringify(c.object).includes(JSON.stringify(inst.component)));
+    return { component: inst.component, moved_by: local, ...(symbols ? { processed: processCodes() } : {}) };
+  }, true);
+
   def('create', 'place_component', 'Place a new instance of a component.', obj({ name: str('component name'), position: common.position, rotation: common.rotation, parent: common.parent }, ['name']), (a) => {
     const g = Comp.instantiate(ctx.doc, a.name, { position: a.position || [0, 0, 0], rotation: a.rotation || [0, 0, 0], parent: a.parent ? D.resolve(ctx.doc, a.parent)[0].id : null });
     ctx.selection.set([g.id]);
@@ -1122,6 +1151,19 @@ function registerCore(reg, ctx) {
     });
   };
   const fmtPt = (p) => ({ id: p.id, name: p.name, n: r4(p.point.n), e: r4(p.point.e), z: r4(p.point.z), code: p.point.code, ...(p.point.desc ? { desc: p.point.desc } : {}), ...(Object.keys(p.point.attrs || {}).length ? { attrs: p.point.attrs } : {}) });
+  /**
+   * Points a file brought in: they keep which file (the outliner folds them by it, query_points finds them by it) and
+   * their attributes are typed by their code (defaults filled; a value that does not fit stays, as a warning).
+   */
+  const adoptPoints = (before, source) => {
+    const fresh = S.points(ctx.doc).filter((p) => !before.has(p.id));
+    const memo = new Map();
+    for (const p of fresh) {
+      if (source && !p.point.survey) p.point.source ||= source;
+      if (p.point.code) p.point.attrs = S.cleanAttrs(ctx.doc, p.point.code, p.point.attrs || {}, memo).attrs;
+    }
+    return fresh.length;
+  };
   const afterPoints = () => {
     if (Object.keys(ctx.doc.featureCodes || {}).length) return processCodes();
     return null;
@@ -1486,7 +1528,9 @@ function registerCore(reg, ctx) {
       c = { n: a.n * k, e: a.e * k, z: (a.z ?? 0) * k };
       if (a.grid) c = S.gridToProject(doc, c);
     }
-    const p = S.addPoint(doc, { ...c, name: a.name, code: a.code || '', desc: a.desc || '', attrs: a.attrs || {} });
+    const { attrs, errors } = S.cleanAttrs(doc, a.code || '', a.attrs || {});
+    if (errors.length) throw new Error(errors.join(' '));
+    const p = S.addPoint(doc, { ...c, name: a.name, code: a.code || '', desc: a.desc || '', attrs });
     afterPoints();
     ctx.selection.set([p.id]);
     return fmtPt(p);
@@ -1550,7 +1594,11 @@ function registerCore(reg, ctx) {
     for (const p of pts) {
       if (a.code !== undefined) p.point.code = a.code;
       if (a.desc !== undefined) p.point.desc = a.desc;
-      if (a.attrs) p.point.attrs = { ...(p.point.attrs || {}), ...a.attrs };
+      if (a.attrs || a.code !== undefined) {
+        const { attrs, errors } = S.cleanAttrs(doc, p.point.code, { ...(p.point.attrs || {}), ...(a.attrs || {}) });
+        if (errors.length) throw new Error(`Point ${p.name}: ${errors.join(' ')}`);
+        p.point.attrs = attrs;
+      }
       for (const c of ['n', 'e', 'z']) if (a[c] !== undefined) p.point[c] = a[c] * k;
       if (a.raise) p.point.z += a.raise * k;
       p.position = D.round3(S.toLocal(doc, p.point));
@@ -1679,13 +1727,15 @@ function registerCore(reg, ctx) {
     return { delimiter: r.delimiter, header: r.header, columns: r.columns, labels: [...r.labels], lines: lines.length, sample: lines.slice(0, n + (r.header ? 1 : 0)).map((c) => [...c]), points: r.rows.length, first_points: r.rows.slice(0, 5), skipped_lines: r.skipped.slice(0, 50) };
   });
 
-  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text). delimiter and header say how lines split; columns says what each column holds (name, e, n, z, code, desc, attr with a name, ignore): attribute columns are kept on every point. Without columns, header labels are matched, else format gives the order (default PNEZD). Units convert to metres. Coded points are processed through the feature library. On an unknown file, call preview_points first.', obj({ ...tableArgs, grid: bool('coordinates are in the site grid') }), async (a) => {
+  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text); they remember the file (source). delimiter and header say how lines split; columns says what each column holds (name, e, n, z, code, desc, attr with a name, ignore): attribute columns are kept on every point. Without columns, header labels are matched, else format gives the order (default PNEZD). Units convert to metres. Coded points are processed through the feature library. On an unknown file, call preview_points first.', obj({ ...tableArgs, grid: bool('coordinates are in the site grid'), source: str('where they came from (default: the file name)') }), async (a) => {
     const doc = ctx.doc;
     const { rows, skipped } = parseText(await pointText(a), a, doc);
+    if (a.path) PJ.noteImport(doc, a.path, { role: 'survey' });
     if (!rows.length) throw new Error('No points found: check the delimiter and which columns hold northing and easting.');
     const made = [];
     const renamed = [];
     const taken = new Set(S.points(doc).map((p) => p.name));
+    const before = new Set(doc.entities.map((e) => e.id));
     for (const r of rows) {
       const c = a.grid ? S.gridToProject(doc, r) : r;
       let name = r.name;
@@ -1694,6 +1744,7 @@ function registerCore(reg, ctx) {
       taken.add(p.name);
       made.push(p);
     }
+    adoptPoints(before, a.source || (a.path ? String(a.path).split(/[\\/]/).pop() : undefined));
     const codes = afterPoints();
     return { imported: made.length, skipped_lines: skipped, renamed_duplicates: renamed, base: S.geo(doc).base, ...(codes ? { lines: codes.lines, objects: codes.objects, warnings: codes.warnings.slice(0, 20) } : {}) };
   }, true);
@@ -1709,7 +1760,7 @@ function registerCore(reg, ctx) {
     return { points: pts.length, ...(a.path ? { written: a.path } : { text }) };
   });
 
-  def('terrain', 'query_points', 'Find survey points by code, name pattern, elevation range or distance from a point. Returns names and coordinates (project units).', obj({ code: str('feature code'), name: str('glob, e.g. "MH*"'), near: { description: 'a point name, or [x, z] / [x, y, z] in the model' }, radius: num('m'), min_z: num('elevation at least'), max_z: num('elevation at most'), limit: num('default 200') }), (a) => {
+  def('terrain', 'query_points', 'Find survey points by code, name pattern, source (the file or field book they came from), elevation range or distance from a point. Returns names and coordinates (project units).', obj({ code: str('feature code'), name: str('glob, e.g. "MH*"'), source: str('part of the file or field book name they came from'), near: { description: 'a point name, or [x, z] / [x, y, z] in the model' }, radius: num('m'), min_z: num('elevation at least'), max_z: num('elevation at most'), limit: num('default 200') }), (a) => {
     const doc = ctx.doc;
     let pts = S.points(doc);
     if (a.code) pts = pts.filter((p) => S.parseCode(p.point.code).code === a.code.toUpperCase());
@@ -1719,6 +1770,15 @@ function registerCore(reg, ctx) {
     }
     if (a.min_z !== undefined) pts = pts.filter((p) => p.point.z >= a.min_z);
     if (a.max_z !== undefined) pts = pts.filter((p) => p.point.z <= a.max_z);
+    if (a.source) {
+      const want = a.source.toLowerCase();
+      const nameOf = (id) => D.getEntity(doc, id)?.name;
+      const names = new Map();
+      pts = pts.filter((p) => {
+        const s = p.point.survey ? names.get(p.point.survey) ?? names.set(p.point.survey, S.sourceOf(p, nameOf)).get(p.point.survey) : S.sourceOf(p);
+        return s.toLowerCase().includes(want);
+      });
+    }
     let c = null;
     if (a.near !== undefined) {
       c = Array.isArray(a.near) ? (a.near.length === 2 ? [a.near[0], 0, a.near[1]] : a.near) : pointsByRefs([a.near])[0].position;
@@ -1958,27 +2018,34 @@ function registerCore(reg, ctx) {
   // feature library
   const processCodes = () => {
     const doc = ctx.doc;
-    for (const e of doc.entities.filter((x) => x.fromCodes)) if (D.getEntity(doc, e.id)) D.removeEntity(doc, e);
+    D.removeEntities(doc, doc.entities.filter((x) => x.fromCodes));
     const plan = S.planCodes(doc);
     for (const l of plan.lines)
       D.addEntity(doc, { type: 'linework', name: `${l.code}${l.string !== '1' ? ` ${l.string}` : ''}`, fromCodes: true, line: { points: l.points, kind: l.def.breakline ? 'breakline' : 'line', mode: 'hard', closed: l.closed, smooth: l.smooth }, tag: l.def.layer || 'Untagged', material: { color: l.def.color || S.codeColor(doc, l.code) } });
+    // symbols: settings.symbols shows the 2D one (ob.plan), the 3D one (ob.component or a built-in object), both or none
+    const show = doc.settings.symbols || 'both';
     for (const o of plan.objects) {
-      const type = o.def.object.type || 'tree';
-      if (type === 'component') {
-        // a model from the component library at the point (#217); a missing one is a warning, not a failed edit
-        if (!doc.components?.[o.def.object.component]) {
-          plan.warnings.push({ message: `Point ${o.point.name} (${o.code}): no component "${o.def.object.component}" in the model.` });
-          continue;
-        }
-        const g =Comp.instantiate(doc, o.def.object.component, { position: [...o.point.position] });
-        Object.assign(g, { name: `${o.code} ${o.point.name}`, fromCodes: true, tag: o.def.layer || 'Untagged' });
+      const ob = o.def.object;
+      const t = S.symbolTransform(ob, o.point.point.attrs);
+      // a linked instance of a component (#217): editing the component updates every symbol; a missing one is a warning
+      const place = (name, kind) => {
+        if (!doc.components?.[name]) return void plan.warnings.push({ message: `Point ${o.point.name} (${o.code}): no component "${name}" in the model.` });
+        const g = Comp.instantiate(doc, name, { position: [...o.point.position], rotation: t.rotation, scale: t.scale, label: `${o.code} ${o.point.name}` });
+        Object.assign(g, { fromCodes: true, symbol: kind, tag: o.def.layer || 'Untagged' }, t.tint ? { tint: t.tint } : {});
+      };
+      if (t.plan && (show === '2d' || show === 'both')) place(t.plan, '2d');
+      if (show !== '3d' && show !== 'both') continue;
+      const type = ob.type || (t.component ? 'component' : ob.plan || ob.variants ? null : 'tree'); // a value with no variant places nothing, not a tree
+      if (!type) continue;
+      if (type === 'component' || t.component !== ob.component) {
+        place(t.component, '3d');
         continue;
       }
-      const h = +o.point.point.attrs?.[o.def.object.height_attr] || o.def.object.height || 4;
+      const h = +o.point.point.attrs?.[ob.height_attr] || ob.height || 4;
       const mesh = type === 'tree' ? G.translate(G.cone(h * 0.3, h * 0.7, 12), [0, h * 0.3, 0]) : type === 'post' ? G.cylinder(0.05, h, 8) : G.cylinder(0.5, 0.15, 24);
       const extra = type === 'tree' ? G.cylinder(h * 0.05, h * 0.3, 8) : null;
       const m = extra ? { v: [...mesh.v, ...extra.v], f: [...mesh.f, ...extra.f.map((f) => f.map((i) => i + mesh.v.length))] } : mesh;
-      D.addEntity(doc, { name: `${o.code} ${o.point.name}`, fromCodes: true, mesh: m, position: [...o.point.position], tag: o.def.layer || 'Untagged', material: { color: o.def.color || (type === 'tree' ? '#4c7a5a' : '#9aa3ab') } });
+      D.addEntity(doc, { name: `${o.code} ${o.point.name}`, fromCodes: true, symbol: '3d', mesh: m, position: [...o.point.position], rotation: t.rotation, scale: t.scale, tag: o.def.layer || 'Untagged', material: { color: t.tint || o.def.color || (type === 'tree' ? '#4c7a5a' : '#9aa3ab') } });
     }
     for (const p of S.points(doc)) {
       p.material.color = S.codeColor(doc, p.point.code);
@@ -1990,8 +2057,8 @@ function registerCore(reg, ctx) {
     }
     return { lines: plan.lines.length, objects: plan.objects.length, warnings: plan.warnings.map((w) => w.message) };
   };
-  const CODE_FIELDS = { description: str('what it is'), type: str('point, line or polygon (line and polygon join their points)', TB.FEATURE_TYPES), category: str('group, e.g. Road'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line_style: str('line style name, e.g. Dashed'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), kind: str('Trimble type when it says more', ['integer', 'date', 'time', 'file', 'photo']), options: { type: 'array', items: { type: 'string' } }, default: { description: 'default value' }, required: bool('') }, ['name']), description: 'attribute fields' } };
-  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines) or polygons, place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), ...CODE_FIELDS }, ['code']), (a) => {
+  const CODE_FIELDS = { description: str('what it is'), type: str('point, line or polygon (line and polygon join their points)', TB.FEATURE_TYPES), category: str('group, e.g. Road'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line_style: str('line style name, e.g. Dashed'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: { ...obj({ type: str('3D symbol: a built-in object, or component', ['tree', 'post', 'manhole', 'component']), component: str('3D symbol: a component of the model (a linked instance at each point)'), plan: str('2D symbol: a component drawn flat (CAD linework), shown with set_style symbols 2d or both'), scale: num('symbol scale (default 1)'), scale_attr: str('attribute that scales the symbol (× scale)'), rotation_attr: str('attribute with its rotation, degrees clockwise from north'), color_attr: str('attribute (a colour) that tints it'), variant_attr: str('attribute whose value picks a variant (e.g. TYPE: single / double arm)'), variants: { type: 'object', additionalProperties: obj({ component: str('3D component for this value'), plan: str('2D component for this value') }, []), description: 'value → { component, plan }: the symbols a point gets when variant_attr has that value' }, height_attr: str('built-in objects: attribute with the height'), height: num('built-in objects: default height, m') }, []), description: 'the symbol at each point: 2D (plan), 3D (component or a built-in object), driven by attributes', ui: { kind: 'symbol' } }, attrs: { type: 'array', items: obj({ name: str(''), type: str('', S.ATTR_TYPES), kind: str('Trimble type when it says more', ['integer', 'date', 'time', 'file', 'photo']), description: str('help shown on the form'), options: { type: 'array', items: { type: 'string' } }, default: { description: 'default value' }, required: bool(''), decimals: num('number: decimal places'), min: num('number: smallest'), max: num('number: largest'), link: str('link: the code of the points it links to') }, ['name']), description: 'attribute fields: text, number (decimals, min, max), list, yes/no, colour, image, link to another point', ui: { kind: 'attrs' } } };
+  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines) or polygons, place a symbol (2D: a flat component; 3D: a component such as a lamp post, or a tree, post or manhole) scaled, turned and tinted by attributes, and carry typed attributes (number, list, yes / no, colour, image, date, link…) checked as they are entered.', obj({ code: str('e.g. KERB'), ...CODE_FIELDS }, ['code']), (a) => {
     const doc = ctx.doc;
     const code = a.code.toUpperCase();
     const def = S.editCode((doc.featureCodes ||= {})[code], a);
@@ -4598,10 +4665,11 @@ function registerCore(reg, ctx) {
     return ctx.view.detachPane(a.pane, a.detached !== false);
   });
   def('view', 'get_layout', 'The view panes: how many, how they sit, and for each its view, projection, style, camera and whether it is in its own window.', obj({}), () => ctx.view?.layoutInfo?.() ?? LY.normalize(ctx.doc.settings.layout));
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels', ['name', 'name_z', 'code', 'all', 'none']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels (attrs: the code and its attributes, one per line)', ['name', 'name_z', 'code', 'attrs', 'all', 'none']), symbols: str('feature code symbols: points only, 2d (plan symbols), 3d (models) or both', ['points', '2d', '3d', 'both']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
     for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by', 'snap_underlays']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
+    if (a.symbols !== undefined && a.symbols !== (s.symbols || 'both')) (s.symbols = a.symbols), processCodes();
     return s;
   }, true);
   // section planes (#187): several kept by name, one cutting at a time (settings.section is the active one)
@@ -4980,7 +5048,125 @@ function registerCore(reg, ctx) {
     if (!ctx.io) throw new Error('File commands need the desktop app.');
     return ctx.io;
   };
-  def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
+  // ---- projects (#277): one folder per job, laid out by kind, with an OGC GeoPackage as its database (project.js)
+  const isAbs = (p) => /^([a-z]:)?[\\/]/i.test(String(p));
+  const saveProject = async (a = {}) => {
+    const doc = ctx.doc;
+    const io = needIO();
+    const proj = PJ.projectOf(doc);
+    let dir = a.path || proj.folder || (await io.pickFolder?.('Save the project in a folder'));
+    if (!dir) return { cancelled: true };
+    dir = String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
+    if (/\.gpkg$/i.test(dir)) dir = dir.replace(/\/[^/]+$/, '');
+    const name = PJ.safeName(a.name || (proj.folder === dir && proj.name) || PJ.baseName(dir));
+    const at = (rel) => `${dir}/${rel}`;
+    const written = [];
+    const warnings = [];
+    // the source files it was built from, copied in (from where they were imported, or from the project's old folder)
+    for (const f of proj.files) {
+      if (!isAbs(f.path) && proj.folder === dir) continue;
+      const src = isAbs(f.path) ? f.path : `${proj.folder}/${f.path}`;
+      const r = await io.copyInto(src, at(f.role));
+      if (r.missing) {
+        f.missing = true;
+        warnings.push(`${PJ.baseName(src)} is no longer at ${src}: listed, not copied.`);
+        continue;
+      }
+      delete f.missing;
+      f.path = PJ.join(f.role, PJ.baseName(r.path));
+      if (r.copied) written.push(f.path);
+    }
+    // the files the model shows, as files in assets/ (written once: an asset's name carries its content's id)
+    const assetRows = [];
+    const outside = new Set();
+    for (const id of Assets.usedIds(doc)) {
+      const x = Assets.get(id);
+      const rel = x && PJ.assetFile(id, x);
+      if (!rel) continue; // no common file type (a point cloud's own format): it stays inside the model file
+      if (!(await io.exists(at(rel)))) await io.writeFile(at(rel), x.bytes), written.push(rel);
+      outside.add(id);
+      assetRows.push({ id, path: rel, mime: x.mime, name: x.name || null, bytes: x.bytes.length });
+    }
+    // surfaces as LandXML, the feature library as FXL, the scene as OpenUSD
+    const lx = F.getFormat('landxml');
+    const names = new Set();
+    const surfaces = [];
+    for (const s of doc.entities.filter(PJ.isSurface)) {
+      let stem = PJ.safeName(s.name);
+      if (names.has(stem.toLowerCase())) stem = `${stem}-${s.id}`;
+      names.add(stem.toLowerCase());
+      const rel = PJ.join('surfaces', `${stem}.xml`);
+      try {
+        await io.writeFile(at(rel), lx.write(doc, { ents: [s], opts: {} }));
+        surfaces.push(rel);
+      } catch (e) {
+        warnings.push(`Surface ${s.name}: ${e.message}`);
+      }
+    }
+    const codes = Object.keys(doc.featureCodes || {}).length ? PJ.join('codes', `${PJ.safeName(doc.featureLibrary?.name || 'feature-codes')}.fxl`) : null;
+    if (codes) await io.writeFile(at(codes), TB.fxlWrite({ codes: doc.featureCodes, layers: (doc.tags || []).filter((t) => t.name !== 'Untagged') }));
+    await io.writeFile(at(PJ.SCENE), USD.writeUsda(doc, { name }));
+    // the model, then the database (last: it lists everything above)
+    proj.folder = dir;
+    proj.name = name;
+    const config = PJ.configRows(doc, { name, version: ctx.version || '' });
+    const model = PJ.readConfig(config).model;
+    await io.writeModel(at(model), outside);
+    await io.writeFile(at('README.txt'), PJ.readme(name, { files: proj.files, surfaces, codes, assets: assetRows.length }));
+    const nameOf = (id) => D.getEntity(doc, id)?.name;
+    const crs = S.geo(doc).crs;
+    const lines = JSON.parse(writeGeoJson(doc, { ents: doc.entities.filter((e) => e.type !== 'point') })).features;
+    const db = await io.gpkgWrite(at(PJ.DB), {
+      fresh: true,
+      srs: crs?.epsg ? { epsg: crs.epsg, name: crs.name } : {},
+      description: name,
+      layers: [{ table: 'survey_points', features: PJ.pointFeatures(doc, (p) => S.sourceOf(p, nameOf)) }, { table: 'linework', features: lines }],
+      attributes: [
+        { table: 'mmr_project', rows: config, description: 'project settings: key, value (JSON)' },
+        { table: 'mmr_files', rows: PJ.fileRows(proj.files), description: 'source files, as imported' },
+        { table: 'mmr_field_books', rows: PJ.fieldBookRows(doc), description: 'survey field books' },
+        { table: 'mmr_assets', rows: assetRows, description: 'files the model shows' },
+      ],
+    });
+    return { project: dir, name, database: PJ.DB, model, scene: PJ.SCENE, tables: db.tables, points: S.points(doc).length, files: proj.files.length, surfaces, codes, assets: assetRows.length, written, ...(warnings.length ? { warnings } : {}) };
+  };
+  def('file', 'save_project', `Save the model as a project folder: ${PJ.DB} (OGC GeoPackage: settings, coordinate system, feature codes, survey points with attributes, linework, file list), ${PJ.SCENE} (OpenUSD scene), models/ (the editable .glb), survey/ (field books and point files as imported), surfaces/ (LandXML), codes/ (FXL), drawings/, assets/. Without path: the open project, else it asks for a folder.`, obj({ path: str('the project folder (absolute)'), name: str('project name (default: the folder name)') }), (a) => saveProject(a));
+  def('file', 'open_project', `Open a project folder (or its ${PJ.DB}): the model from models/, the files it shows from assets/, and the coordinate system, feature codes and settings from the database (they win when edited there).`, obj({ path: str('the project folder or its project.gpkg (absolute)') }), async (a) => {
+    const io = needIO();
+    const p = a.path || (await io.pickFolder?.('Open a project folder'));
+    if (!p) return { cancelled: true };
+    const dir = String(p).replace(/\\/g, '/').replace(/\/+$/, '').replace(/\/project\.gpkg$/i, '');
+    if (!(await io.exists(`${dir}/${PJ.DB}`))) throw new Error(`${dir} has no ${PJ.DB}: not a project folder (save_project makes one).`);
+    const db = await io.gpkgRead(`${dir}/${PJ.DB}`);
+    const table = (n) => db.attributes?.find((t) => t.table === n)?.rows || [];
+    const cfg = PJ.readConfig(table('mmr_project'));
+    if (!cfg.model) throw new Error(`${PJ.DB} names no model: was it saved by MyModellerReel?`);
+    const missing = [];
+    for (const r of table('mmr_assets'))
+      try {
+        Assets.put(await io.readBinary(`${dir}/${r.path}`), { mime: r.mime, name: r.name || '' });
+      } catch {
+        missing.push(r.path);
+      }
+    await io.open(`${dir}/${cfg.model}`);
+    const doc = ctx.doc;
+    const took = PJ.applyConfig(doc, cfg);
+    const proj = PJ.projectOf(doc);
+    Object.assign(proj, { folder: dir, name: cfg.name, files: table('mmr_files').map((r) => ({ path: r.path, role: r.role, original: r.original, imported: r.imported, ...(r.missing ? { missing: true } : {}) })) });
+    if (took.includes('feature_codes')) processCodes();
+    if (took.length) io.refresh?.();
+    return { project: dir, name: cfg.name, entities: doc.entities.length, points: S.points(doc).length, files: proj.files.length, from_database: took, ...(missing.length ? { missing_assets: missing } : {}) };
+  });
+  def('file', 'project_info', 'The open project: its folder, name, the source files it holds (survey, codes, drawings) and where each came from, and the layout of the folder.', obj({}), () => {
+    const p = PJ.projectOf(ctx.doc);
+    return { project: p.folder, name: p.name, saved: !!p.folder, files: p.files, layout: { database: PJ.DB, scene: PJ.SCENE, folders: ['models', 'survey', 'surfaces', 'codes', 'drawings', 'assets'] }, standards: PJ.STANDARDS };
+  });
+  def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks. When a project is open, saves the project (save_project).', obj({ path: str('absolute .glb path') }), (a) => {
+    const folder = PJ.projectOf(ctx.doc).folder;
+    // in a project, Ctrl+S (or saving to its own model file) saves the whole project
+    if (folder && (!a.path || PJ.inside(a.path, folder))) return saveProject({});
+    return needIO().save(a.path);
+  });
   const LIBMETA = { group: str('library group, e.g. "Trees" or "Street furniture"'), tags: { type: 'array', items: { type: 'string' }, description: 'labels to find it by' } };
   def('file', 'add_to_library', 'Copy 3D models (glb, gltf, obj, stl, fbx; others become GLB) into the component library, in a group and with tags, to place them again in any model (insert_asset).', obj({ path: str('absolute path'), paths: { type: 'array', items: { type: 'string' }, description: 'several files' }, ...LIBMETA }), (a) => needIO().addToLibrary(a.paths || a.path, a.group || a.tags ? { group: a.group, tags: a.tags } : null));
   def('file', 'organize_library', 'Put library models in a group and / or give them tags (tags replace theirs; add_tags adds). list_assets shows groups and tags.', obj({ names: { type: 'array', items: { type: 'string' }, description: 'library file names (list_assets)' }, ...LIBMETA, add_tags: { type: 'array', items: { type: 'string' }, description: 'tags to add to theirs' } }, ['names']), async (a) => {
@@ -5007,6 +5193,7 @@ function registerCore(reg, ctx) {
     }
     let fmt = a.format ? F.getFormat(a.format) : a.path ? F.formatFor(a.path) : null;
     if (a.format && !fmt) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
+    if (a.path) PJ.noteImport(doc, a.path);
     if (!fmt && a.path) return needIO().importModel(a.path, a.position);
     if (!fmt) throw new Error('Give path, or text with format.');
     if (!fmt.read) throw new Error(`${fmt.label}: export only.`);
@@ -5017,6 +5204,7 @@ function registerCore(reg, ctx) {
     const report = F.newReport();
     const before = new Set(doc.entities.map((e) => e.id));
     const extra = await fmt.read(data, { doc, cmd: (n, x) => reg.commands.get(n).run(x), report, opts: a, io: ctx.io });
+    if (adoptPoints(before, a.path ? String(a.path).split(/[\\/]/).pop() : fmt.id.toUpperCase())) afterPoints();
     const made = doc.entities.filter((e) => !before.has(e.id) && (!e.parent || before.has(e.parent)));
     if (!made.length && !Object.keys(report.done().created).length) throw new Error(`Nothing to import in that ${fmt.id.toUpperCase()} file${report.done().skipped.length ? `: ${report.done().skipped.map((x) => x.what).join('; ')}` : ''}.`);
     ctx.selection.set(made.filter((e) => !S.isPoint(e)).map((e) => e.id).slice(0, 2000));

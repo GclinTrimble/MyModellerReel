@@ -120,8 +120,11 @@ export class IO {
       : native().invoke('file:open-dialog', { filters: FILTERS[kind], multi });
   }
 
-  /** Export scene + baked animation clip. withDoc keeps the editable document inside (our save format). */
-  async toGLTF(binary, withDoc) {
+  /**
+   * Export scene + baked animation clip. withDoc keeps the editable document inside (our save format), with the files
+   * it uses (assets) packed in, except those in outside (a project keeps them as files in assets/).
+   */
+  async toGLTF(binary, withDoc, outside = null) {
     const doc = this.app.store.doc;
     // shared parts (component instances) share one geometry, which the GLB then stores once
     const { root, objs } = buildModel(doc, { edges: false, cache: { map: new WeakMap(), used: new Set() } });
@@ -129,7 +132,13 @@ export class IO {
     scene.name = 'MyModellerReel';
     scene.add(root);
     if (withDoc) scene.userData.mymodellerreel = JSON.stringify(doc, stripForSave);
-    if (withDoc && doc.entities.some((e) => e.underlay)) scene.userData.mymodellerreel_assets = Assets.pack(doc); // the PDFs and images of underlays
+    if (withDoc) {
+      // every asset the model uses: underlays, point clouds, audio, textures, field-book photos (only underlays were
+      // packed before, so a model without a drawing lost its point clouds and photos on save)
+      const packed = Assets.pack(doc);
+      for (const id of outside || []) delete packed[id];
+      if (Object.keys(packed).length) scene.userData.mymodellerreel_assets = packed;
+    }
     if (doc.geo?.base) scene.userData.georef = { base_point_enz: doc.geo.base, crs: doc.geo.crs, axes: 'x = Easting − base, y = Elevation − base, z = −(Northing − base)' };
     const animations = this.clips(doc, objs, scene);
     return new GLTFExporter().parseAsync(scene, { binary, animations, onlyVisible: false });
@@ -188,6 +197,29 @@ export class IO {
     this.app.setFile(path, false);
     this.app.ui.toast(`Saved ${base(path)}`);
     return { saved: path };
+  }
+
+  // ---- projects (#277): the folder, files copied in, the model written without the assets kept beside it
+  pickFolder(title) {
+    return native().invoke('file:folder-dialog', { title });
+  }
+  copyInto(src, destDir) {
+    return native().invoke('project:copy', src, destDir);
+  }
+  exists(path) {
+    return native().invoke('file:exists', path);
+  }
+  writeFile(path, data) {
+    return native().invoke('file:write', path, data);
+  }
+  async writeModel(path, outside) {
+    await native().invoke('file:write', path, await this.toGLTF(true, true, outside));
+    this.app.setFile(path, false);
+    return path;
+  }
+  /** After a command changed the document outside the undo steps (a project's settings applied on open). */
+  refresh() {
+    this.app.store.changed();
   }
 
   async load(path) {
