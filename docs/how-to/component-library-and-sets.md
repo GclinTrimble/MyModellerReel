@@ -13,11 +13,11 @@ You want to dress the model with ready-made things, find groups of parts again q
 3. Give layers a folder (`set_layer` folder) to group them; **Colour by layer** shows every shape in its layer colour.
    ![Give layers a folder (set_layer folder) to group them; Colour by layer shows eve](media/component-library-and-sets/03.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Put two trees, a bench and a person on the plaza, save the paving and the benches as the selection set "Hardscape", and colour the model by layer.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

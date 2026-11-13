@@ -14,11 +14,11 @@ A crane picks a beam and sets it down, a camera dolly or a person keeps facing t
 4. Select loose shapes, **Animate › Physics: drop and settle** [Physics](action:physics): they fall, bounce and come to rest on the ground and on the rest of the model, baked to keyframes.
    ![Select loose shapes, Animate › Physics: drop and settle Physics: they fall, boun](media/carry-follow-and-fall/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make the hook lift the beam from the ground at 2 s, swing it onto the wall top by 6 s and release it; then drop the three crates onto the slab.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

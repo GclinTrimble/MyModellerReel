@@ -15,11 +15,11 @@ You have data from the field (a controller job, its feature library), from GIS (
 4. **Site › Import terrain (GeoTIFF, ASCII grid)…** [Import terrain](action:importTerrain): a real elevation model as a surface; big grids are thinned.
    ![Site › Import terrain (GeoTIFF, ASCII grid)… Import terrain: a real elevation mo](media/bring-in-field-and-gis-data/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Import C:\field\topo.jxl with its feature library library.fxl, then the parcels from parcels.geojson, and list the lots with their owners.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

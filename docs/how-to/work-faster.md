@@ -1,6 +1,6 @@
 # Find your tools fast: the toolbar, the view bar, right-click, snaps and export
 
-You want the tool you need without scrolling or digging through menus: draw, move around the model, choose what you snap to, act on what you clicked, cut sections, export, and connect the copilot to a model on this PC.
+You want the tool you need without scrolling or digging through menus: draw, move around the model, choose what you snap to, act on what you clicked, cut sections, export, and connect Plumb to a model on this PC.
 
 ![Find your tools fast](media/work-faster/work-faster.gif)
 
@@ -27,7 +27,7 @@ You want the tool you need without scrolling or digging through menus: draw, mov
 
 Selecting with a box: drag left to right to take what is fully inside (solid box), right to left to take what the box touches (dashed box). The [Scale](tool:scale) tool shows handles on the shape you click; the [Eraser](tool:eraser) also removes lines, dimensions and labels. With the [Survey point](tool:point) tool, type `E, N, Z` in the value box to place a point exactly, or `#name` to rename the last one.
 
-## Ask the copilot
+## Ask Plumb
 
 > Turn off grid and midpoint snapping, then find the AI models on this PC and use the Mistral one.
 
@@ -48,7 +48,7 @@ await api.create_surface({ points: ['101', '102', '103', '104'], name: 'Ground' 
 
 - Snapping to the nearest point along an edge is not there yet; endpoints and midpoints are.
 - Only one section plane cuts at a time; the others wait in the list.
-- A model downloaded from Hugging Face needs a server (Ollama, LM Studio…) to run it before the copilot can use it.
+- A model downloaded from Hugging Face needs a server (Ollama, LM Studio…) to run it before Plumb can use it.
 
 ## Related
 

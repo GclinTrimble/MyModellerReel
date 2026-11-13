@@ -67,7 +67,7 @@ test('review: floating, collisions, below ground, units, broken parametric shape
 test('skills and workflows', async () => {
   const { ctx, reg } = makeCtx();
   const list = await reg.run('list_skills', {});
-  assert.deepEqual(list.map((s) => s.name), ['architecture', 'product', 'jobsite', 'takeoff', 'furniture']);
+  assert.deepEqual(list.map((s) => s.name), ['architecture', 'product', 'jobsite', 'takeoff', 'survey', 'furniture']);
   const arch = (await reg.run('list_skills', { name: 'architecture' }))[0];
   assert.ok(arch.prompt.includes('storeys') && arch.examples.length);
   const u = await reg.run('use_skill', { name: 'jobsite' });

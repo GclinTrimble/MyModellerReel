@@ -4,7 +4,7 @@
 
 **Model it. Reel it. Ship it.** An AI-first desktop 3D modeller with SketchUp-style push/pull modelling,
 a keyframe animation timeline for sequencing, and GLB as its native file. Every tool is also a command that
-Claude, a local Mistral model, scripts and plugins can call (in-app copilot, MCP server, local HTTP API).
+Claude, a local Mistral model, scripts and plugins can call (Plumb, the in-app assistant; the MCP server; the local HTTP API).
 
 Part of the My…Reel family (MySnipReel, MyVoiceReel, MyMotionReel); it uses the family's Darkroom design system.
 
@@ -55,7 +55,7 @@ Electron's binary download is an install script; if your npm blocks install scri
 - **Scans, sharing and your way of working**: point clouds (PLY, LAS, XYZ) with a ground surface from them, scanned
   drawings vectorised, drawings read for their scale and title, snapping to PDFs, versions and autosaves inside the
   file, document tabs, a one-file web viewer, USDZ for phone AR, 3MF for printing, GLB compression, free CC0 assets
-  from Poly Haven, text to 3D, drag handles, a walk mode, your own shortcuts, voice to the copilot, and French menus.
+  from Poly Haven, text to 3D, drag handles, a walk mode, your own shortcuts, voice to Plumb, and French menus.
 - **Multiple views**: split the view into 2, 3 or 4 panes (3D, plan, elevations), each with its own camera, view,
   projection and wireframe; draw in any of them, resize them with the bars, maximise one, or move one to its own window
   on a second screen.
@@ -82,7 +82,7 @@ Electron's binary download is an install script; if your npm blocks install scri
   physical materials (glass, clear coat, maps), the real sun from a geolocation, date and time with sun studies on
   the timeline, path-traced photoreal stills, and AI render / AI textures through a local ComfyUI or an images API.
 - **Help by intent**: Help › How do I… (F1): a page per goal ("Put a PDF site plan in place", "Work out cut and fill
-  for a pad"…) with step pictures, GIFs and videos, "Do it" buttons, a copilot prompt and the commands. Also in
+  for a pad"…) with step pictures, GIFs and videos, "Do it" buttons, a prompt for Plumb and the commands. Also in
   [docs/how-to](docs/how-to/README.md) and as MCP resources.
 - **Getting started**: a start screen with templates (a house, a product turntable, a jobsite, a construction
   sequence), a 2-minute tour, automatic updates from GitHub releases.
@@ -99,11 +99,11 @@ Electron's binary download is an install script; if your npm blocks install scri
   markers to aim at ("at the roof marker"), captions and titles, procedural motion (spin, oscillate, wiggle, orbit,
   pulse), exploded views, animation along a path (trucks, cranes, fly-throughs), stagger; **frame-accurate video
   render** to MP4 (H.264), WebM (transparent), GIF or PNG frames at any size; animation is saved into the GLB.
-- **AI-first**: copilot panel (Claude, Ollama/Mistral, any OpenAI-compatible API), one undo step per AI turn or a
+- **AI-first**: Plumb, the assistant panel (plumb: true and exact, a builder's word; Claude, Ollama/Mistral, any OpenAI-compatible API), one undo step per AI turn or a
   proposal to accept or reject, tool routing for small local models, relational placement (place on, against, stack,
   align, distribute), scene queries (raycast, free space, what is at a point), smart selection and metadata,
   screenshots for vision models, `run_script` for parametric work, AI-written plugins, and `npm run eval` to compare
-  models on the same tasks. Domain skills (architecture, product, jobsite, furniture) for the copilot, a design review
+  models on the same tasks. Domain skills (architecture, product, jobsite, furniture) for Plumb, a design review
   (AI → Review my model), a quantities report (File → Quantities), and MCP resources and prompts.
 - **Open**: GLB/glTF/OBJ/STL/FBX in, GLB/glTF/OBJ/STL/PNG/MP4/WebM out. MyModellerReel `.glb` files reopen fully
   editable and still open in Blender, Unreal, Unity or any glTF viewer.
@@ -119,14 +119,14 @@ plugin format: [docs/AI_API.md](docs/AI_API.md).
 
 ## Use your local Mistral
 
-Install Ollama, `ollama pull mistral`, keep Ollama running. The copilot uses it by default (Settings → AI to switch).
+Install Ollama, `ollama pull mistral`, keep Ollama running. Plumb uses it by default (Settings → AI to switch).
 
 ## Docs
 
 | | |
 | --- | --- |
 | [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) | SketchUp 2026 teardown (its 187 commands) mapped to what is built, AI-reachable or planned |
-| [docs/AI_API.md](docs/AI_API.md) | copilot, MCP, HTTP API, `run_script`, plugins |
+| [docs/AI_API.md](docs/AI_API.md) | Plumb (the in-app assistant), MCP, HTTP API, `run_script`, plugins |
 | [docs/BRAND.md](docs/BRAND.md) | name, logo, colours |
 
 ## Project layout
@@ -134,7 +134,7 @@ Install Ollama, `ollama pull mistral`, keep Ollama running. The copilot uses it 
 ```
 src/core/       pure, tested: mesh kernel, document + undo, animation, the command registry (the API)
 src/main/       Electron main: window, settings, file access, AI provider proxy, local HTTP API
-src/renderer/   viewport (three.js), tools, UI panels, timeline, copilot, file I/O, bootstrap (app.js)
+src/renderer/   viewport (three.js), tools, UI panels, timeline, Plumb (the assistant), file I/O, bootstrap (app.js)
 src/mcp/        zero-dependency MCP server (stdio) bridging to the HTTP API
 plugins/        built-in plugins (stairs, walls with openings)
 tests/          node --test suites for the core

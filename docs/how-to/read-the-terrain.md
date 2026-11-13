@@ -15,11 +15,11 @@ You have a ground surface and want to read it: contour lines with their heights,
    ![Select a line, Site › Profile along the selected line Profile: every surface it ](media/read-the-terrain/04.jpg)
 5. **Site › Cross-sections along the selected line** [Sections](action:sections): sections square to it at an interval; step through them.
 
-## Ask the copilot
+## Ask Plumb
 
 > Draw 0.5 m contours of the existing ground with a major line every 2 m, colour it by slope (5, 10 and 20 %), and show me the long section along the access road.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

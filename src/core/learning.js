@@ -28,9 +28,9 @@ export const MODULES = [
       ] },
       { id: 'multiple-views', commands: ['set_layout', 'set_pane'], guide: [
         { text: 'Open the Views drop-down in the view bar and choose Four views.', target: '#viewbar', done: { command: 'set_layout' } },
-        { text: 'In a pane title, choose another view (for example Left).', target: '.pane-head', done: { command: 'set_pane' } },
+        { text: 'On the floating bar of a pane, choose another view (for example Left).', target: '.pane-head', done: { command: 'set_pane' } },
       ] },
-      { id: 'first-steps-with-the-copilot', commands: ['pull_ai_model', 'start_local_ai'] },
+      { id: 'first-steps-with-the-copilot', commands: ['download_ai_model', 'pull_ai_model', 'start_local_ai'] },
       { id: 'ask-the-copilot', commands: [] },
       { id: 'tabs-handles-walk-and-language', commands: ['set_gizmo', 'new_document', 'walk_to'] },
     ],

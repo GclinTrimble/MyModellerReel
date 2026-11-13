@@ -275,6 +275,44 @@ export function smoothMesh(mesh, { levels = 1, iterations = 10, strength = 0.5, 
   return m;
 }
 
+/**
+ * An offset copy of a surface: every vertex `distance` m up (vertical), or along its vertex normal (normal: a layer of
+ * even thickness on slopes). to (a sampler z(x, z) of another surface) with fraction: each vertex that far of the way
+ * to the other surface (0.5: half way), the vertices with nothing under them dropped with their triangles.
+ */
+export function offsetMesh(mesh, { distance = 0, normal = false, to = null, fraction = 0.5 } = {}) {
+  const f = tri(mesh);
+  if (to) {
+    const v = mesh.v.map((p) => {
+      const o = to(p[0], p[2]);
+      return o === null ? null : [p[0], p[1] + (o - p[1]) * fraction, p[2]];
+    });
+    // shortcut: keeps this surface's triangles (detail only in the other surface is not added); merge both point sets if that matters
+    const keep = f.filter((t) => t.every((i) => v[i]));
+    if (!keep.length) throw new Error('The two surfaces do not overlap in plan.');
+    const used = [...new Set(keep.flat())];
+    const re = new Map(used.map((o, i) => [o, i]));
+    return { v: used.map((i) => v[i]), f: keep.map((t) => t.map((i) => re.get(i))) };
+  }
+  if (!normal) return { v: mesh.v.map((p) => [p[0], p[1] + distance, p[2]]), f };
+  const n = mesh.v.map(() => [0, 0, 0]);
+  for (const [a, b, c] of f) {
+    const [p, q, r] = [mesh.v[a], mesh.v[b], mesh.v[c]];
+    const u = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    const w = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+    const fn = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]; // area-weighted
+    for (const i of [a, b, c]) for (let k = 0; k < 3; k++) n[i][k] += fn[k];
+  }
+  return {
+    v: mesh.v.map((p, i) => {
+      const L = Math.hypot(...n[i]) || 1;
+      const s = n[i][1] < 0 ? -1 : 1; // always away from the ground side, whatever the winding
+      return p.map((x, k) => x + (s * distance * n[i][k]) / L);
+    }),
+    f,
+  };
+}
+
 /** A TIN from contour lines (their points resampled), with flat triangles between two points of one contour lifted. */
 export function contourSurface(lines, { spacing = 2, weed = 0.05 } = {}) {
   const v = [];

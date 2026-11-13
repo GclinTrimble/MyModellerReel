@@ -65,7 +65,7 @@ class Pane {
       (v) => ((this.view2d = { ...this.view2d, ...v }), (vp.dirty = true)),
       (x) => this.mgr.pick2d(this, x),
     );
-    this.board.addEventListener('pointerdown', () => this.mgr.focus(this.i));
+    for (const t of ['pointerdown', 'pointerenter']) this.board.addEventListener(t, () => this.mgr.focus(this.i));
     this.observer.observe(this.board);
   }
 
@@ -276,7 +276,28 @@ export class Panes {
     if (this.focusI === i) return;
     this.focusI = i;
     this.heads.forEach((el, k) => el?.classList.toggle('focused', k === i));
+    this.placeBar();
     this.app.ui.renderViewbar?.(); // its projection and wireframe buttons show this pane
+  }
+
+  /**
+   * One floating bar (the view bar plus the pane's own controls) on the pane last hovered or clicked. It moves only
+   * when the pointer enters another pane's canvas, so leaving the view or moving onto the bar keeps it where it is.
+   */
+  placeBar() {
+    const L = this.layout;
+    const vb = this.app.ui.$('viewbar');
+    const p = this.all()[this.focusI];
+    const r = p && !p.win && this.rects?.get(p);
+    if (L.count < 2 || !r) {
+      this.toolbar?.remove();
+      if (vb && vb.parentElement !== this.wrap) this.wrap.append(vb);
+      return;
+    }
+    this.toolbar ||= h('div.pane-toolbar', { role: 'toolbar', 'aria-label': 'View' });
+    this.toolbar.replaceChildren(this.head(p, L), vb);
+    Object.assign(this.toolbar.style, { right: `calc(${pct(1 - r.x - r.w)} + 8px)`, top: `calc(${pct(r.y)} + 8px)`, maxWidth: `calc(${pct(r.w)} - 16px)` });
+    if (!this.toolbar.isConnected) this.wrap.append(this.toolbar);
   }
 
   markCustom(cfg, camera, controls) {
@@ -286,7 +307,7 @@ export class Panes {
     if (now.angleTo(new THREE.Vector3(...dir).normalize()) > 0.02) cfg.view = 'custom';
   }
 
-  /** Place the docked canvases, their title chips and the bars between them. split: a live drag's split. */
+  /** Place the docked canvases, their frames, the floating bar and the bars between them. split: a live drag's split. */
   layoutDom(split = null, dragBar = null) {
     const L = this.layout;
     if (split) L.split = split;
@@ -314,22 +335,22 @@ export class Panes {
         p.canvas.style.display = is2D(p.cfg) ? 'none' : 'block';
         p.board.style.display = is2D(p.cfg) ? 'block' : 'none';
       }
-    // title chips
+    // a thin frame round each pane (a canvas paints over its own inset shadow), the active one highlighted
     for (const el of this.heads) el?.remove();
     this.heads = [];
-    // the view bar stays top right in every layout (#205): a chip of a pane reaching under it steps down
-    const vb = document.getElementById('viewbar');
-    const barLeft = 1 - ((vb?.offsetWidth || 0) + 12) / (this.wrap.clientWidth || 1);
+    this.rects = new Map();
     if (L.count > 1)
       docked.forEach((p, k) => {
         const r = rects[k];
         if (!r) return;
-        const el = this.head(p, L);
-        const under = r.y < 1e-6 && r.x + r.w > barLeft;
-        Object.assign(el.style, { left: `calc(${pct(r.x)} + 8px)`, top: `calc(${pct(r.y)} + ${under ? 56 : 8}px)` });
+        this.rects.set(p, r);
+        const el = h('div.pane-frame', { 'aria-hidden': 'true' }, h('span.pane-num', {}, String(p.i + 1)));
+        Object.assign(el.style, { left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) });
+        el.classList.toggle('focused', this.focusI === p.i);
         this.wrap.append(el);
         this.heads[p.i] = el;
       });
+    this.placeBar();
     // bars; while one is dragged it stays (it holds the pointer), only moved
     if (dragBar) {
       const bar = LY.splitters(view).find((b) => b.axis === dragBar.bar.axis);
@@ -355,19 +376,32 @@ export class Panes {
     const run = (name, args) => this.app.reg.run(name, args).catch((e) => this.app.ui.toast(e.message, 'danger'));
     const n = p.i + 1;
     const cfg = L.panes[p.i];
+    const shown = this.vp.store.doc.settings.layout?.camera_mark === true;
+    const scenes = this.vp.store.doc.scenes || [];
+    const roads = !p.main && this.vp.store.doc.entities.some((e) => e.derived?.generator === 'corridor');
     const flat = is2D(cfg);
-    const name = cfg.view === 'scene' ? cfg.scene : LABEL[cfg.view] || cfg.view;
-    const btn = (ic, label, onclick) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick }, icon(ic));
-    // just the pane's number (#205): its view, projection, wireframe, maximise and window are in the view bar's
-    // Views menu, which acts on the pane last worked in; a road drawing keeps its own stepping buttons
+    const select = h(
+      'select.pane-view',
+      { 'aria-label': `View ${n}`, onchange: (e) => (e.target.value.startsWith('scene:') ? run('set_pane', { pane: n, scene: e.target.value.slice(6) }) : run('set_pane', { pane: n, view: e.target.value })) },
+      ...LY.VIEWS.filter((v) => roads || !LY.ROAD_VIEWS.includes(v) || v === cfg.view).map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
+      ...(['custom', 'scene'].includes(cfg.view) ? [h('option', { value: cfg.view, selected: true, disabled: true }, cfg.view === 'scene' ? cfg.scene : LABEL.custom)] : []),
+      ...scenes.map((s) => h('option', { value: `scene:${s.name}` }, `Scene: ${s.name}`)),
+    );
+    const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
     const el = h(
       'div.pane-head',
-      { onclick: () => this.focus(p.i), ondblclick: (e) => !e.target.closest('button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: `View ${n}: ${name}. Click to work in it, double-click to maximise or restore` },
-      h('span.pane-num', { 'aria-label': `View ${n}: ${name}` }, String(n)),
-      ...(cfg.view === 'section' ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))] : []),
+      { ondblclick: (e) => !e.target.closest('select, button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: 'Double-click to maximise or restore' },
+      h('span.pane-num', {}, String(n)),
+      select,
+      ...(cfg.view === 'section'
+        ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))]
+        : []),
       ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
+      btn(L.max === p.i ? 'corners-in' : 'corners-out', L.max === p.i ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: L.max === p.i ? 0 : n })),
+      ...(p.main ? [] : [btn('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane: n }))]),
+      btn('video-camera', 'Show the main camera in the other views', () => run('set_layout', { show_camera: !shown }), shown),
+      h('span.sep'),
     );
-    el.classList.toggle('focused', this.focusI === p.i);
     return el;
   }
 
@@ -439,7 +473,7 @@ export class Panes {
 
   /** The main camera drawn in the other panes: eye, view cone to the target, the picture's frame there. */
   updateGlyph() {
-    const show = this.layout.count > 1 && this.vp.store.doc.settings.layout?.show_camera !== false;
+    const show = this.layout.count > 1 && this.vp.store.doc.settings.layout?.camera_mark === true;
     this.glyph.visible = show;
     if (!show) return;
     // the main pane's own camera, whichever pane is being drawn
@@ -474,7 +508,7 @@ export class Panes {
       arrangement: L.arrangement,
       split: L.split,
       maximised: L.max === null ? null : L.max + 1,
-      show_camera: this.vp.store.doc.settings.layout?.show_camera !== false,
+      show_camera: this.vp.store.doc.settings.layout?.camera_mark === true,
       panes: L.panes.map((cfg, i) => ({
         pane: i + 1,
         view: cfg.view,

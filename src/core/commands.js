@@ -27,11 +27,16 @@ import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
 import * as SC from './shortcuts.js';
 import * as I18N from './i18n.js';
-import { SKILLS, skillPrompt } from './skills.js';
+import { SKILLS, USER_SKILLS, skillPrompt } from './skills.js';
+import * as UT from './usertools.js';
+import * as HA from './helpask.js';
 import * as Topo from './topology.js';
 import { stripUi } from './fields.js';
 import * as Comp from './components.js';
+import * as USD from './usd.js';
 import * as S from './survey.js';
+import * as CG from './cogo.js';
+import * as SK from './sketch.js';
 import * as L from './layers.js';
 import * as U from './underlay.js';
 import * as DR from './drafting.js';
@@ -41,12 +46,13 @@ import * as Assets from './assets.js';
 import * as F from './formats.js';
 import * as Units from './units.js';
 import * as Clip from './clipboard.js';
+import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
 import './landxml.js';
 import './dxf.js';
 import './ifc.js';
-import './trimble.js';
+import * as TB from './trimble.js';
 import './gis.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
@@ -61,6 +67,7 @@ import * as RD from './roads.js';
 import * as PL from './planar.js';
 import * as TX from './textures.js';
 import * as CRS from './crs.js';
+import * as GM from './geomap.js';
 import * as LEARN from './learning.js';
 import * as ACH from './achievements.js';
 import * as FB from './feedback.js';
@@ -90,6 +97,9 @@ export const GUIDE = `MyModellerReel conventions:
 - create_curve makes paths (polyline, smooth spline, bezier) for sweeps and motion.
 - Recipes: save_recipe keeps how the model was built (with {{param}} placeholders); replay_recipe rebuilds it with
   other values. record_macro / stop_macro turn what was just done into a recipe or a plugin command.
+- My tools (#242): "save what we just did as a tool called X" → save_tool (the last turn's steps, numbers become
+  parameters); it becomes a command anyone can call. "Remember this as a skill" → save_skill (instructions + toolset).
+  list_my_tools shows them; delete_my_tool removes one. ask_help answers "how do I" from the help pages.
 - Modelling depth: imprint an outline on a face (or offset_face to inset it), then push_pull it into a recess,
   a boss or a hole; move_elements moves a face, edge ("top front") or corner; repair_mesh cleans imports; create_arc.
   make_component links copies: edit any instance's parts (edit_component) and every instance follows.
@@ -117,6 +127,7 @@ export const GUIDE = `MyModellerReel conventions:
   CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
+- Agents: list_agents, ask_agent hands a task to another agent profile (it works alongside you), save_agent.
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
@@ -128,6 +139,7 @@ const bool = (d) => ({ type: 'boolean', description: d });
 const ids = { type: 'array', items: { type: 'string' }, description: 'Entity ids or names. Default: current selection.' };
 const id = str('Entity id or name');
 const obj = (properties, required = []) => ({ type: 'object', properties, required });
+const TIES = { type: 'array', items: obj({ vertex: num('vertex index'), point: str('survey point name or id') }, ['vertex', 'point']), description: 'vertices that stay on survey points: [{ vertex, point }]' };
 const common = {
   name: str('Display name'),
   position: v3('Where the base centre goes, world metres [x,y,z]. Default [0,0,0]'),
@@ -177,7 +189,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), TK.syncPaint(ctx.doc), AN.syncAnnotations(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), TI.syncTies(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), TK.syncPaint(ctx.doc), AN.syncAnnotations(ctx.doc), USD.syncReferences(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -186,7 +198,7 @@ export function createRegistry(ctx) {
         if (c.compound) ctx.batchDepth--, ctx.scriptDepth--;
       }
       if (record) {
-        journal(ctx.doc, name, recArgs);
+        journal(ctx.doc, name, recArgs, result, ctx.agent);
         ctx.macro?.steps.push({ command: name, args: structuredClone(recArgs) });
         ctx.journalSel = JSON.stringify(ctx.selection.get());
       }
@@ -200,32 +212,14 @@ export function createRegistry(ctx) {
 }
 
 const JOURNAL_MAX = 2000;
-function journal(doc, command, args) {
-  (doc.journal ||= []).push({ command, args: structuredClone(args) });
+function journal(doc, command, args, result, agent) {
+  // made: the id the step created, so a user tool replayed later can point later steps at the new one (#242); agent: who ran it (#243)
+  (doc.journal ||= []).push({ command, args: structuredClone(args), ...(typeof result?.id === 'string' ? { made: result.id } : {}), ...(agent ? { agent } : {}) });
   if (doc.journal.length > JOURNAL_MAX) doc.journal.splice(0, doc.journal.length - JOURNAL_MAX);
 }
 
-/** Fill "{{expr}}" placeholders in recipe arguments from params (a whole-string placeholder keeps its type). */
-function fillParams(v, params) {
-  const keys = Object.keys(params);
-  const calc = (expr) => {
-    try {
-      return new Function(...keys, `return (${expr});`)(...keys.map((k) => params[k]));
-    } catch (e) {
-      throw new Error(`Recipe placeholder {{${expr}}}: ${e.message}`);
-    }
-  };
-  if (typeof v === 'string') {
-    const whole = v.match(/^\{\{(.+?)\}\}$/s);
-    if (whole) return calc(whole[1]);
-    return v.replace(/\{\{(.+?)\}\}/gs, (_, x) => String(calc(x)));
-  }
-  if (Array.isArray(v)) return v.map((x) => fillParams(x, params));
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fillParams(x, params)]));
-  return v;
-}
-
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
+const r3 = (x) => Math.round(x * 1e3) / 1e3;
 /** A time parameter: seconds, or a marker name with an optional offset ("roof", "roof + 1.5"). */
 const T = (d) => ({ description: `${d}: seconds, or a marker name ("roof", "roof + 1.5")` });
 
@@ -287,6 +281,7 @@ function place(ctx, mesh, args, defaults = {}, derived = null) {
 
 /** Bring an animated entity's base pose to what is on screen before editing it, then key it if Auto-key is on. */
 function editTransforms(ctx, ents, fn) {
+  for (const e of ents) if (SW.fixedInPlace(e)) throw new Error(SW.fixedInPlace(e));
   if (!ctx.timeline?.active) return fn(); // modelling mode: the static model is what you see
   const t = ctx.timeline.time;
   const pose = A.evaluate(ctx.doc, t);
@@ -599,6 +594,7 @@ function registerCore(reg, ctx) {
     const out = [];
     const ents = targets(ctx, a);
     for (const e of ents) if (!e.mesh) throw new Error(`${e.name} is not a shape; mirror the shapes themselves.`);
+    if (a.copy === false) for (const e of ents) if (SW.fixedInPlace(e)) throw new Error(SW.fixedInPlace(e));
     for (const e of ents) {
       const b = D.worldBox(doc, e);
       const at = a.at ?? (b.min[k] + b.max[k]) / 2;
@@ -1136,11 +1132,20 @@ function registerCore(reg, ctx) {
     return g;
   }, true);
 
-  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points'), at: v3('a point of the model (local x, y, z) that has these coordinates: the model stays where it is and is georeferenced around it (#190)'), north_angle: num('grid north: degrees clockwise from the model\'s −z') }), (a) => {
+  def('terrain', 'set_base_point', 'The project base point the model is drawn around, so real-world coordinates (N 5 400 000) stay precise. The model does not move in the world: everything is re-placed around the new base. auto: the centre of the points.', obj({ e: num('Easting'), n: num('Northing'), z: num('Elevation'), auto: bool('centre of the survey points'), at: v3('a point of the model (local x, y, z) that has these coordinates: the model stays where it is and is georeferenced around it (#190)'), north_angle: num('grid north: degrees clockwise from the model\'s −z'), latitude: num('a place picked on a map instead of e and n: converted to the coordinate system (its UTM zone when none is set); the model origin (or at) is that place, nothing moves'), longitude: num('with latitude') }), (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const old = g.base || [0, 0, 0];
     if (a.north_angle !== undefined) ctx.doc.settings.geolocation = { ...(ctx.doc.settings.geolocation || {}), north_angle: a.north_angle };
+    if (a.latitude !== undefined || a.longitude !== undefined) {
+      if (a.latitude === undefined || a.longitude === undefined) throw new Error('Give both latitude and longitude.');
+      if (!g.crs?.epsg) g.crs = (({ epsg, name }) => ({ epsg, name }))(CRS.utmZone(a.longitude, a.latitude));
+      const p = GM.projection(g.crs.epsg);
+      if (!p) throw new Error(`Cannot convert latitude / longitude to EPSG:${g.crs.epsg} ${g.crs.name || ''} here: give e and n instead (or use a UTM zone).`);
+      const [e, n] = p.forward(a.longitude, a.latitude);
+      a = { ...a, e: r4(e), n: r4(n), at: a.at || [0, 0, 0] };
+      ctx.doc.settings.geolocation = { ...(ctx.doc.settings.geolocation || {}), latitude: a.latitude, longitude: a.longitude };
+    }
     if (a.at) {
       // this model point is (E, N, Z): nothing moves; survey points keep their place and take new coordinates
       if ([a.e, a.n].some((x) => x === undefined)) throw new Error('With at, give the point\'s e and n (and z).');
@@ -1152,7 +1157,7 @@ function registerCore(reg, ctx) {
       }
       g.base = nb.map(r4);
       S.placePoints(doc);
-      return { base: g.base, at: a.at, ...(a.north_angle !== undefined ? { north_angle: a.north_angle } : {}) };
+      return { base: g.base, at: a.at, ...(a.latitude !== undefined ? { crs: g.crs, latitude: a.latitude, longitude: a.longitude } : {}), ...(a.north_angle !== undefined ? { north_angle: a.north_angle } : {}) };
     }
     let nb;
     if (a.auto) {
@@ -1167,6 +1172,27 @@ function registerCore(reg, ctx) {
     S.placePoints(doc);
     return { base: nb };
   }, true);
+  def('terrain', 'convert_coordinates', 'Latitude / longitude ↔ project grid (Easting, Northing) in the coordinate system (or the EPSG code given): UTM zones, Lambert-93, NZTM, MGA, Irish TM, SWEREF99, web Mercator and a few more. Give latitude and longitude, or e and n.', obj({ latitude: num('degrees'), longitude: num('degrees'), e: num('Easting'), n: num('Northing'), epsg: num('default the project\'s') }), (a) => {
+    const epsg = a.epsg ?? S.geo(ctx.doc).crs?.epsg;
+    const p = GM.projection(epsg);
+    if (!p) throw new Error(epsg ? `Cannot convert EPSG:${epsg} here (UTM zones, Lambert-93, NZTM, MGA… only).` : 'No coordinate system: set_coordinate_system first, or give epsg.');
+    if (a.latitude !== undefined && a.longitude !== undefined) {
+      const [e, n] = p.forward(a.longitude, a.latitude);
+      return { epsg, latitude: a.latitude, longitude: a.longitude, e: r4(e), n: r4(n) };
+    }
+    if (a.e === undefined || a.n === undefined) throw new Error('Give latitude and longitude, or e and n.');
+    const [longitude, latitude] = p.inverse(a.e, a.n);
+    return { epsg, e: a.e, n: a.n, latitude: Math.round(latitude * 1e8) / 1e8, longitude: Math.round(longitude * 1e8) / 1e8 };
+  });
+  def('view', 'set_view_overlay', 'Over the ground of the 3D view, once the model is placed (set_base_point with latitude / longitude, or set_geolocation): a background map (map: OpenStreetMap, imagery: aerial photos, topo, none), a grid with Easting / Northing labels (grid), how far the map reaches (radius, metres) and its opacity. Kept with the model.', obj({ map: str('background map', ['none', ...Object.keys(GM.LAYERS)]), grid: bool('grid with coordinate labels'), radius: num('metres around the model origin (default 300)'), opacity: num('0–1') }), (a) => {
+    const s = ctx.doc.settings;
+    const v = (s.view_overlay = { map: 'none', grid: false, radius: 300, opacity: 1, ...s.view_overlay });
+    for (const k of ['map', 'grid', 'radius', 'opacity']) if (a[k] !== undefined) v[k] = a[k];
+    v.radius = Math.max(20, Math.min(5000, v.radius));
+    v.opacity = Math.max(0, Math.min(1, v.opacity));
+    const placed = GM.placer({ base: S.geo(ctx.doc).base, epsg: S.geo(ctx.doc).crs?.epsg, geolocation: s.geolocation });
+    return { ...v, ...(v.map !== 'none' ? { attribution: GM.LAYERS[v.map].attribution } : {}), ...(placed ? {} : { note: 'The model is not placed on Earth yet: set_base_point with latitude and longitude (or set_geolocation) to see the map.' }) };
+  }, true);
 
   def('terrain', 'set_units', 'Units: display (how lengths are shown: auto, mm, cm, m, in, ft, ft-in) and precision (decimals; for ft-in the inch fraction, e.g. 16), and the survey units for coordinates in and out (length m, ft, usft; angles deg, dms, gon). Commands always take and return metres.', obj({ display: str('length display', Units.DISPLAY), precision: num('decimals (ft-in: inch fraction 2–64)'), length: str('survey length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {
     if (a.display !== undefined) ctx.doc.settings.display_units = a.display;
@@ -1177,7 +1203,7 @@ function registerCore(reg, ctx) {
     return { display: ctx.doc.settings.display_units || 'auto', precision: ctx.doc.settings.precision ?? null, units: g.units, angles: g.angles };
   }, true);
 
-  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', { ...obj({ name:str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: { ...str('or: COGO from this point'), ui: { kind: 'point', names: true } }, bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: str('feature code (+ string and controls: "KERB 2 B")'), desc: str('description'), attrs: obj({}, []) }), ui: { modes: [{ label: 'Coordinates', fields: ['n', 'e', 'z', 'grid'], required: ['n', 'e'] }, { label: 'A model point', fields: ['at'] }, { label: 'From another point', fields: ['from', 'bearing', 'distance', 'dz'], required: ['from', 'bearing', 'distance'] }] } }, (a) => {
+  def('terrain', 'add_point', 'Add a survey point: by Northing/Easting/Elevation (project units), at a model point, or by COGO from another point (bearing from north, horizontal distance, height difference). code drives the feature library (KERB, TREE…).', { ...obj({ name:str('point name / number (default: next number)'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), at: v3('or: a model point [x, y, z]'), from: { ...str('or: COGO from this point'), ui: { kind: 'point', names: true } }, bearing: { description: 'degrees from north, or DMS "45°30\'00\\""' }, distance: num('horizontal, project units'), dz: num('height difference'), grid: bool('n/e are site-grid coordinates'), code: { ...str('feature code (+ string and controls: "KERB 2 B"); none is fine'), ui: { kind: 'code' } }, desc: str('description'), attrs: obj({}, []) }), ui: { modes: [{ label: 'Coordinates', fields: ['n', 'e', 'z', 'grid'], required: ['n', 'e'] }, { label: 'A model point', fields: ['at'] }, { label: 'From another point', fields: ['from', 'bearing', 'distance', 'dz'], required: ['from', 'bearing', 'distance'] }] } }, (a) => {
     const doc = ctx.doc;
     const g = S.geo(doc);
     const k = S.UNITS[g.units] || 1;
@@ -1199,6 +1225,43 @@ function registerCore(reg, ctx) {
     return fmtPt(p);
   }, true);
 
+  // ---------------------------------------------------------------- COGO (#227): the maths is in cogo.js, shared with the COGO panel's preview
+  const DIR = 'azimuth (45.5, DMS 45°30\'00"), quadrant bearing (N45°30\'E), or a turn from the last leg: R90 / L45 (deflection), AR270 (angle right)';
+  const PT = (d) => ({ description: `${d}: a point name, or [Northing, Easting, Elevation]`, ui: { kind: 'point', names: true } });
+  const storeCogo = (sol, a, { first = a.name } = {}) => {
+    const made = sol.points.map((p, i) => S.addPoint(ctx.doc, { n: p.n, e: p.e, z: p.z ?? 0, name: i === 0 && first ? first : undefined, code: a.code || '', desc: a.desc || '' }));
+    if (made.length) afterPoints(), ctx.selection.set(made.map((p) => p.id));
+    return made.map(fmtPt);
+  };
+  def('terrain', 'cogo_inverse', 'COGO inverse: azimuth, quadrant bearing, horizontal and slope distance, height difference and grade between two survey points, or along a chain of points (with the total).', { ...obj({ from: PT('from'), to: PT('to'), points: { type: 'array', description: 'or: a chain of point names', ui: { kind: 'points', names: true } } }), ui: { modes: [{ label: 'Two points', fields: ['from', 'to'], required: ['from', 'to'] }, { label: 'Along a chain', fields: ['points'] }] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'inverse', a);
+    return { ...(Array.isArray(r.result) ? { legs: r.result } : r.result), report: r.report };
+  });
+  def('terrain', 'cogo_traverse', 'COGO traverse and sideshots: from a point, legs of direction + horizontal distance (+ height difference) store new survey points. Directions may be turns from the last leg (needs backsight for the first). close_to checks the closure (misclosure, precision 1:N, area); adjust: compass spreads the error (Bowditch).', { ...obj({ from: PT('start at'), backsight: { description: 'a point name or a direction you arrive with, for turned angles on the first leg' }, legs: { type: 'array', description: 'legs in order', items: obj({ direction: { description: DIR }, distance: num('horizontal, project units'), dz: num('height difference'), side: bool('a sideshot: measure from the current station but do not move on') }, ['direction', 'distance']) }, close_to: str('the point the traverse should end on (e.g. the start point)'), adjust: str('compass: spread the misclosure', ['none', 'compass']), store: bool('store the points, default true'), code: str('feature code for the new points'), name: str('first new point name (default: next number)') }, ['from', 'legs']) }, (a) => {
+    const r = CG.solve(ctx.doc, 'traverse', a);
+    return { ...r.result, ...(a.store === false ? {} : { stored: storeCogo(r, a) }), report: r.report };
+  }, true);
+  def('terrain', 'cogo_intersect', 'COGO intersection: a new point where two bearings meet, a bearing meets a distance, two distances meet, or two lines (two points each) cross. Two answers: both are returned, solution picks the one stored (1 or 2).', { ...obj({ point1: PT('first point'), direction1: { description: `from the first point: ${DIR}` }, distance1: num('from the first point, project units'), point2: PT('second point'), direction2: { description: `from the second point: ${DIR}` }, distance2: num('from the second point, project units'), line1: { type: 'array', description: 'two point names', ui: { kind: 'points', names: true, count: 2 } }, line2: { type: 'array', description: 'two point names', ui: { kind: 'points', names: true, count: 2 } }, solution: str('which answer to store when there are two (default 1)', ['1', '2']), store: bool('store the point, default true'), name: str('new point name (default: next number)'), code: str('feature code') }), ui: { modes: [{ label: 'Bearing, bearing', fields: ['point1', 'direction1', 'point2', 'direction2'], required: ['point1', 'direction1', 'point2', 'direction2'] }, { label: 'Bearing, distance', fields: ['point1', 'direction1', 'point2', 'distance2', 'solution'], required: ['point1', 'direction1', 'point2', 'distance2'] }, { label: 'Distance, distance', fields: ['point1', 'distance1', 'point2', 'distance2', 'solution'], required: ['point1', 'distance1', 'point2', 'distance2'] }, { label: 'Two lines', fields: ['line1', 'line2'], required: ['line1', 'line2'] }] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'intersect', { ...a, solution: a.solution === undefined ? undefined : +a.solution || a.solution });
+    return { ...r.result, ...(a.store === false ? {} : { stored: storeCogo(r, a) }), report: r.report };
+  }, true);
+  def('terrain', 'cogo_station_offset', 'COGO station and offset: where survey points are along a line (point names), curve, alignment or linework, and how far right (+) or left (−) of it.', { ...obj({ line: { description: 'a curve, alignment or linework name, or two or more point names', ui: { kind: 'points', names: true } }, point: PT('the point'), points: { type: 'array', description: 'or: several point names', ui: { kind: 'points', names: true } } }, ['line']), ui: { main: ['point'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'station_offset', a);
+    return { points: r.result, report: r.report };
+  });
+  def('terrain', 'cogo_offset_point', 'COGO point at a station and offset along a line (point names), curve, alignment or linework: + right, − left. Elevation from the line, or z / dz.', { ...obj({ line: { description: 'a curve, alignment or linework name, or two or more point names', ui: { kind: 'points', names: true } }, station: num('distance along, project units'), offset: num('right (+) or left (−), project units, default 0'), dz: num('height above the line'), z: num('or: the elevation'), name: str('new point name (default: next number)'), code: str('feature code') }, ['line', 'station']), ui: { main: ['offset'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'offset_point', a);
+    return { ...r.result, stored: storeCogo(r, a), report: r.report };
+  }, true);
+  def('terrain', 'cogo_curve', 'COGO curve solver: a circular curve from any two of radius, delta, arc length, tangent, chord, external and middle ordinate; returns all of them and the degree of curve.', { ...obj({ radius: num('project units'), delta: { description: 'deflection angle: degrees or DMS' }, length: num('arc length'), tangent: num('tangent length'), chord: num('long chord'), external: num('external distance'), middle: num('middle ordinate') }), ui: { main: ['radius', 'delta', 'length', 'tangent', 'chord', 'external', 'middle'] } }, (a) => {
+    const r = CG.solve(ctx.doc, 'curve', a);
+    return { ...r.result, report: r.report };
+  });
+  def('terrain', 'cogo_area', 'COGO area: the area (project units², hectares, acres) and perimeter of a parcel through survey points in order.', obj({ points: { type: 'array', description: 'three or more point names, in order around', ui: { kind: 'points', names: true } } }, ['points']), (a) => {
+    const r = CG.solve(ctx.doc, 'area', a);
+    return { ...r.result, report: r.report };
+  });
+
   def('terrain', 'edit_points', 'Change survey points: set code, description, attributes or coordinates, or raise / lower them (raise in project units). Pick them by names/ids or by code.', obj({ points: { type: 'array', items: { type: 'string' }, description: 'names or ids (default: selection)' }, where_code: str('or: every point with this code'), code: str('new code'), desc: str('new description'), attrs: obj({}, []), n: num('Northing'), e: num('Easting'), z: num('Elevation'), raise: num('add to the elevation') }), (a) => {
     const doc = ctx.doc;
     const k = S.UNITS[S.geo(doc).units] || 1;
@@ -1217,23 +1280,48 @@ function registerCore(reg, ctx) {
     return { edited: pts.length, points: pts.slice(0, 50).map(fmtPt) };
   }, true);
 
-  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text): format gives the column order (PNEZD, PENZD, NEZ…; P name, N northing, E easting, Z elevation, D code), header lines are skipped, units convert to metres. Coded points are processed through the feature library.', obj({ path: str('absolute path of a .csv / .txt file'), text: str('or: the file contents'), format: str('column order, default PNEZD'), delimiter: str('default: detected'), units: str('length unit of the file (default: the project\'s)', Object.keys(S.UNITS)), grid: bool('coordinates are in the site grid') }), async (a) => {
+  const pointText = async (a) => {
+    if (a.text) return a.text;
+    if (!a.path) throw new Error('Give path or text.');
+    if (!ctx.io?.readText) throw new Error('Reading files needs the desktop app; pass text instead.');
+    return ctx.io.readText(a.path);
+  };
+  const tableArgs = {
+    path: str('absolute path of a .csv / .txt file'),
+    text: str('or: the file contents'),
+    delimiter: str('comma, tab, semicolon, space, or the character itself (default: detected)'),
+    header: bool('the first line is column labels (default: detected)'),
+    columns: { type: 'array', description: `what each column holds, in order: a role (${S.COLUMN_ROLES.join(', ')}) or { "role": "attr", "name": "Diameter" } for an attribute kept on each point. Default: matched from the header labels, else P N E Z code`, items: { description: 'a role, or { role, name }' } },
+    format: str('or: the column order as letters, e.g. PNEZD, PENZD, NEZ'),
+    units: str('length unit of the file (default: the project\'s)', Object.keys(S.UNITS)),
+  };
+  const parseText = (text, a, doc) => {
+    const o = { delimiter: a.delimiter || 'auto', header: a.header, units: a.units || S.geo(doc).units };
+    return a.format && !a.columns ? S.parsePoints(text, { ...o, format: a.format }) : S.parseTable(text, { ...o, columns: a.columns });
+  };
+
+  def('terrain', 'preview_points', 'Look at a CSV / TXT points file before importing it: how its lines split into columns, whether the first line is a header, the column roles guessed (or given) and the first points as they would come in. Changes nothing; pass the same options to import_points.', obj({ ...tableArgs, rows: num('sample lines, default 20') }), async (a) => {
+    const text = await pointText(a);
+    const r = parseText(text, a, ctx.doc);
+    const lines = S.splitTable(text, r.delimiter).rows;
+    const n = a.rows || 20;
+    return { delimiter: r.delimiter, header: r.header, columns: r.columns, labels: [...r.labels], lines: lines.length, sample: lines.slice(0, n + (r.header ? 1 : 0)).map((c) => [...c]), points: r.rows.length, first_points: r.rows.slice(0, 5), skipped_lines: r.skipped.slice(0, 50) };
+  });
+
+  def('terrain', 'import_points', 'Import survey points from a CSV / TXT file (or text). delimiter and header say how lines split; columns says what each column holds (name, e, n, z, code, desc, attr with a name, ignore): attribute columns are kept on every point. Without columns, header labels are matched, else format gives the order (default PNEZD). Units convert to metres. Coded points are processed through the feature library. On an unknown file, call preview_points first.', obj({ ...tableArgs, grid: bool('coordinates are in the site grid') }), async (a) => {
     const doc = ctx.doc;
-    let text = a.text;
-    if (!text) {
-      if (!a.path) throw new Error('Give path or text.');
-      if (!ctx.io?.readText) throw new Error('Reading files needs the desktop app; pass text instead.');
-      text = await ctx.io.readText(a.path);
-    }
-    const { rows, skipped } = S.parsePoints(text, { format: a.format || 'PNEZD', delimiter: a.delimiter, units: a.units || S.geo(doc).units });
-    if (!rows.length) throw new Error('No points found: check the format (column order) and delimiter.');
+    const { rows, skipped } = parseText(await pointText(a), a, doc);
+    if (!rows.length) throw new Error('No points found: check the delimiter and which columns hold northing and easting.');
     const made = [];
     const renamed = [];
+    const taken = new Set(S.points(doc).map((p) => p.name));
     for (const r of rows) {
       const c = a.grid ? S.gridToProject(doc, r) : r;
       let name = r.name;
-      if (name !== undefined && doc.entities.some((x) => S.isPoint(x) && x.name === name)) (renamed.push(name), (name = undefined));
-      made.push(S.addPoint(doc, { ...c, name, code: r.code, desc: r.desc }));
+      if (name !== undefined && taken.has(name)) (renamed.push(name), (name = undefined));
+      const p = S.addPoint(doc, { ...c, name, code: r.code, desc: r.desc, attrs: r.attrs }, taken);
+      taken.add(p.name);
+      made.push(p);
     }
     const codes = afterPoints();
     return { imported: made.length, skipped_lines: skipped, renamed_duplicates: renamed, base: S.geo(doc).base, ...(codes ? { lines: codes.lines, objects: codes.objects, warnings: codes.warnings.slice(0, 20) } : {}) };
@@ -1325,7 +1413,7 @@ function registerCore(reg, ctx) {
   const SRC = { points: { description: '"all" (default), point names, or codes "GND,KERB"' }, codes: { type: 'array', items: { type: 'string' }, description: 'or: only points with these codes' }, breaklines: { description: '"all" (default), "none" or ids' }, boundaries: { description: '"all" (default), "none" or ids' }, exclude: { type: 'array', items: { type: 'string' }, description: 'points left out' }, max_edge: num('drop triangles with a longer side, m'), min_edge: num('drop triangles with a side shorter than this, m (slivers)'), outline: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan outline [[x, z], …] (model) the surface stays inside (#212)' }, voids: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, description: 'areas left out: [[[x, z], …], …] (model)' }, min_z: num('ignore points below this elevation'), max_z: num('ignore points above this elevation') };
   def('terrain', 'create_surface', 'A TIN surface (constrained Delaunay) from survey points, breaklines and boundaries. It stays live: move, add or delete a point or a line and it rebuilds. Several surfaces can live side by side (existing ground, design, as-built).', obj({ name: common.name, ...SRC, color: common.color, tag: common.tag }), (a) => {
     const doc = ctx.doc;
-    const params = surfaceParams(a);
+    const params = SW.migrateSurface(surfaceParams(a));
     R.getGenerator('surface').run({ params, inputs: [], doc }); // bad sources throw before anything changes
     const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, 'Surface'), tag: a.tag, material: { color: a.color || '#8fae7a', roughness: 0.95 } });
     R.derive(doc, e, 'surface', params, []);
@@ -1346,13 +1434,20 @@ function registerCore(reg, ctx) {
     return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
 
-  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'swap', 'add_point', 'remove_point', 'restore']), at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
+  def('terrain', 'edit_triangles', 'Edit a TIN by hand: delete the triangle at a plan point, swap the edge between two points, add a point on the surface (its elevation from the surface), or restore all.', obj({ id, action: str('what to do', ['delete', 'delete_inside', 'swap', 'add_point', 'remove_point', 'restore']), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'delete_inside: plan corners [[x, z], …] (model): every triangle whose middle is inside goes (ragged edge, no new edges: use surface_boundary add_void for a clean cut)' }, at: { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' }, a: str('swap: first point'), b: str('swap: second point'), name: str('add_point: its name'), code: str('add_point: its code') }, ['id', 'action']), (a) => {
     const doc = ctx.doc;
     const s = surfaceOf(a.id);
     if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
     const p = { ...s.derived.params };
     if (a.action === 'restore') delete p.deleted, delete p.swaps;
     else if (a.action === 'delete') p.deleted = [...(p.deleted || []), a.at];
+    else if (a.action === 'delete_inside') {
+      if (!(a.points?.length >= 3)) throw new Error('Give points: the corners [[x, z], …] around the triangles to delete.');
+      const w = D.worldMesh(doc, s);
+      const mids = w.f.map((f) => [0, 2].map((k) => f.reduce((t, i) => t + w.v[i][k], 0) / f.length)).filter((c) => Topo.insidePolygon(c, a.points));
+      if (!mids.length) throw new Error('No triangle has its middle inside those corners.');
+      p.deleted = [...(p.deleted || []), ...mids];
+    }
     else if (a.action === 'swap') p.swaps = [...(p.swaps || []), pointsByRefs([a.a, a.b]).map((x) => x.id)];
     else if (a.action === 'remove_point') {
       // left out of this surface (the survey point itself stays) (#212)
@@ -1366,11 +1461,115 @@ function registerCore(reg, ctx) {
       if (Array.isArray(p.points)) p.points = [...p.points, pt.id];
     }
     if (!a.at && ['delete', 'add_point'].includes(a.action)) throw new Error('Give at: [x, z].');
-    if (a.action === 'restore') delete p.exclude;
+    if (a.action === 'restore') p.exclude = [];
     s.derived.params = p;
     R.regenerate(doc, s);
     return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh) };
   }, true);
+
+  // ---------------------------------------------------------------- the editable surface definition (#239)
+  /** One edit of a TIN's definition: fn changes a copy of its params, then the surface rebuilds (or the command rolls back). */
+  const editTin = (ref, fn) => {
+    const doc = ctx.doc;
+    const s = surfaceOf(ref);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface (create_surface makes one).`);
+    const p = structuredClone(SW.migrateSurface(s.derived.params));
+    const note = fn(p, s);
+    s.derived.params = p;
+    R.regenerate(doc, s);
+    return { ...summary(doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(doc, s), ...(note ? { note } : {}) };
+  };
+  const plan = { type: 'array', items: { type: 'number' }, description: 'plan point [x, z] (model)' };
+  const ring = { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'plan corners [[x, z], …] (model)' };
+  const ringOf = (a) => {
+    if (a.points) return a.points.map((q) => [q[0], q.length === 3 ? q[2] : q[1]].map(r3));
+    if (!a.from) throw new Error('Give points [[x, z], …] or from: a closed curve.');
+    const pts = D.curvePoints(ctx.doc, D.resolve(ctx.doc, a.from)[0], 8).map((q) => [r3(q[0]), r3(q[2])]);
+    if (pts.length > 3 && Math.hypot(pts[0][0] - pts.at(-1)[0], pts[0][1] - pts.at(-1)[1]) < 1e-3) pts.pop();
+    return pts;
+  };
+
+  def('terrain', 'surface_definition', 'What a TIN surface is made of: its points (and those left out), breaklines (linework, curves and drawn ones), outline, voids, max / min edge, swapped edges and deleted triangles.', obj({ id }, ['id']), (a) => {
+    const s = surfaceOf(a.id);
+    if (s.derived?.generator !== 'surface') throw new Error(`${s.name} is not a TIN surface.`);
+    return { ...summary(ctx.doc, s), surface: TR.surfaceStats(s.mesh), definition: SW.surfaceDefinition(ctx.doc, s) };
+  });
+
+  def('terrain', 'surface_points', 'Edit a TIN surface\'s points; it rebuilds. add: a survey point at a plan point (elevation z, else the surface height there); move: a point to a plan point and / or elevation; delete: remove the survey points; exclude / include: leave points out of this surface or bring them back.', obj({ id, action: str('what to do', ['add', 'move', 'delete', 'exclude', 'include']), at: { ...plan, description: 'add / move: plan point [x, z] (model)' }, z: num('add / move: project elevation'), points: { type: 'array', items: { type: 'string' }, description: 'move / delete / exclude / include: point names or ids' }, name: str('add: its name'), code: str('add: its code') }, ['id', 'action']), (a) => {
+    const doc = ctx.doc;
+    return editTin(a.id, (p, s) => {
+      if (a.action === 'add') {
+        if (!a.at) throw new Error('Give at: [x, z].');
+        const y = a.z === undefined ? surfaceSampler(doc, s).z(a.at[0], a.at[1]) : null;
+        if (a.z === undefined && y === null) throw new Error('That point is outside the surface: give its elevation z.');
+        const pr = S.toProject(doc, [a.at[0], y ?? 0, a.at[1]]);
+        const pt = S.addPoint(doc, { ...pr, z: a.z ?? pr.z, name: a.name, code: a.code ?? p.points?.codes?.[0] ?? '' });
+        if (Array.isArray(p.points)) p.points.push(pt.id);
+        return `Added point ${pt.name}.`;
+      }
+      const pts = pointsByRefs(a.points);
+      const ids = new Set(pts.map((x) => x.id));
+      if (a.action === 'move') {
+        if (!a.at && a.z === undefined) throw new Error('Give at: [x, z] and / or z.');
+        for (const pt of pts) {
+          if (a.at) Object.assign(pt.point, (({ n, e }) => ({ n, e }))(S.toProject(doc, [a.at[0], 0, a.at[1]])));
+          if (a.z !== undefined) pt.point.z = a.z;
+          pt.position = D.round3(S.toLocal(doc, pt.point));
+        }
+      } else if (a.action === 'delete') {
+        for (const pt of pts) D.removeEntity(doc, pt);
+        if (Array.isArray(p.points)) p.points = p.points.filter((x) => !ids.has(x));
+        p.exclude = p.exclude.filter((x) => !ids.has(x));
+      } else if (a.action === 'exclude') p.exclude = [...new Set([...p.exclude, ...ids])];
+      else if (a.action === 'include') {
+        p.exclude = p.exclude.filter((x) => !ids.has(x));
+        if (Array.isArray(p.points)) p.points = [...new Set([...p.points, ...ids])]; // a chosen list: existing points join it
+      }
+      else throw new Error(`Unknown action "${a.action}".`);
+    });
+  }, true);
+
+  def('terrain', 'surface_breaklines', 'Add or remove a TIN surface\'s breaklines; it rebuilds. add: an existing line (linework or a curve, which stays live) or one drawn through points [[x, y, z], …] (model); remove: a line, or a drawn one by its index.', obj({ id, action: str('what to do', ['add', 'remove']), line: str('a linework or curve id / name'), points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'add: a drawn breakline [[x, y, z], …] (model)' }, index: num('remove: which drawn breakline (0 first)') }, ['id', 'action']), (a) =>
+    editTin(a.id, (p, s) => {
+      const listed = () => SW.surfaceSources(ctx.doc, p).breaklines.map((x) => x.id); // "all" as the explicit list it stands for
+      if (a.action === 'add' && a.points) {
+        if (a.points.length < 2) throw new Error('A breakline needs at least 2 points.');
+        p.lines.push(a.points.map((q) => q.map(r3)));
+      } else if (a.line) {
+        const [l] = D.resolve(ctx.doc, a.line);
+        if (!S.isLinework(l) && !l.curve) throw new Error(`${l.name} is not a line.`);
+        const now = listed();
+        if (a.action === 'add') p.breaklines = now.includes(l.id) ? now : [...now, l.id];
+        else if (!now.includes(l.id)) throw new Error(`${l.name} is not a breakline of ${s.name}.`);
+        else p.breaklines = now.filter((x) => x !== l.id);
+      } else if (a.action === 'remove' && a.index !== undefined) {
+        if (!p.lines[a.index]) throw new Error(`There is no drawn breakline ${a.index} (${p.lines.length} drawn).`);
+        p.lines.splice(a.index, 1);
+      } else throw new Error('Give line (a line to add or remove), points (to draw one) or index (a drawn one to remove).');
+    }),
+  true);
+
+  def('terrain', 'surface_boundary', 'Edit a TIN surface\'s outline (the boundary it stays inside) and voids (holes); it rebuilds. set / add_void: corners [[x, z], …] or from a closed curve; clear / remove_void; move_vertex, insert_vertex (splits the nearest edge unless index is given), remove_vertex. void picks the hole (0 first); without it the outline is edited.', obj({ id, action: str('what to do', ['set', 'clear', 'add_void', 'remove_void', 'move_vertex', 'insert_vertex', 'remove_vertex']), points: ring, from: str('set / add_void: a closed curve id / name'), void: num('which void (0 first); omit for the outline'), index: num('vertex index (0 first)'), to: plan }, ['id', 'action']), (a) =>
+    editTin(a.id, (p) => {
+      const v = a.void;
+      if (v !== undefined && !p.voids[v]) throw new Error(`There is no void ${v} (${p.voids.length}).`);
+      if (a.action === 'set') p.outline = ringOf(a);
+      else if (a.action === 'add_void') p.voids.push(ringOf(a));
+      else if (a.action === 'clear') delete p.outline;
+      else if (a.action === 'remove_void') {
+        if (v === undefined) throw new Error('Give void: which one (0 first).');
+        p.voids.splice(v, 1);
+      } else {
+        const r = v === undefined ? p.outline : p.voids[v];
+        if (!r) throw new Error('The surface has no outline yet: set one first.');
+        if (a.action !== 'remove_vertex' && !a.to) throw new Error('Give to: [x, z].');
+        const op = { action: a.action.replace('_vertex', ''), index: a.action === 'insert_vertex' ? (a.index ?? SW.ringInsertIndex(r, a.to)) : a.index, to: a.to?.map(r3) };
+        if (v === undefined) p.outline = SW.editRing(r, op);
+        else p.voids[v] = SW.editRing(r, op);
+      }
+      if ((p.outline && p.outline.length < 3) || p.voids.some((x) => x.length < 3)) throw new Error('An outline or void needs at least 3 corners.');
+    }),
+  true);
 
   def('terrain', 'check_surface', 'Quality checks on a surface: spikes and pits (points far off their neighbours), duplicate points, crossing breaklines, long thin triangles. Each issue names the points to fix (edit_points, delete, or set_surface_sources exclude).', obj({ id, spike: num('flag points more than this far off their neighbours, m (default: automatic)'), min_angle: num('thin-triangle limit, degrees (default 2)') }, ['id']), (a) => {
     const doc = ctx.doc;
@@ -1420,12 +1619,11 @@ function registerCore(reg, ctx) {
     }
     return { lines: plan.lines.length, objects: plan.objects.length, warnings: plan.warnings.map((w) => w.message) };
   };
-  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines), place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), description: str('what it is'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), options: { type: 'array', items: { type: 'string' } }, required: bool('') }, ['name']), description: 'attribute fields' } }, ['code']), (a) => {
+  const CODE_FIELDS = { description: str('what it is'), type: str('point, line or polygon (line and polygon join their points)', TB.FEATURE_TYPES), category: str('group, e.g. Road'), layer: str('tag for its points, lines and objects'), color: str('#rrggbb'), line_style: str('line style name, e.g. Dashed'), line: bool('points join into lines'), breakline: bool('those lines are breaklines'), object: obj({ type: str('object', ['tree', 'post', 'manhole', 'component']), component: str('component name, for type component'), height_attr: str('attribute with the height'), height: num('default height, m') }, []), attrs: { type: 'array', items: obj({ name: str(''), type: str('', ['number', 'text', 'list']), kind: str('Trimble type when it says more', ['integer', 'date', 'time', 'file', 'photo']), options: { type: 'array', items: { type: 'string' } }, default: { description: 'default value' }, required: bool('') }, ['name']), description: 'attribute fields' } };
+  def('terrain', 'define_feature_code', 'Add or change a feature code: points coded with it get a layer and colour, join into lines (and breaklines) or polygons, place an object (tree, post, manhole, or a component from the model such as a lamp post) sized by an attribute, and must carry the listed attributes.', obj({ code: str('e.g. KERB'), ...CODE_FIELDS }, ['code']), (a) => {
     const doc = ctx.doc;
     const code = a.code.toUpperCase();
-    const old = (doc.featureCodes ||= {})[code] || {};
-    const def = { ...old };
-    for (const k of ['description', 'layer', 'color', 'line', 'breakline', 'object', 'attrs']) if (a[k] !== undefined) def[k] = a[k];
+    const def = S.editCode((doc.featureCodes ||= {})[code], a);
     doc.featureCodes[code] = def;
     return { code, ...def, processed: processCodes() };
   }, true);
@@ -1440,12 +1638,78 @@ function registerCore(reg, ctx) {
     doc.featureCodes = a.replace ? up : { ...(doc.featureCodes || {}), ...up };
     return { codes: Object.keys(doc.featureCodes), processed: processCodes() };
   }, true);
-  def('terrain', 'export_feature_library', 'The feature library as JSON (and to a file with path).', obj({ path: str('absolute .json path') }), async (a) => {
-    const lib = ctx.doc.featureCodes || {};
-    if (a.path) await ctx.io.writeText(a.path, JSON.stringify(lib, null, 2));
-    return { codes: Object.keys(lib).length, library: lib };
+  def('terrain', 'export_feature_library', "A feature library (the model's, or a saved one by library) as JSON, Trimble FXL or CSV, to a file with path (the format follows its extension).", obj({ library: str("a saved library name (default: the model's codes)"), path: str('absolute .json, .fxl or .csv path'), format: str('default: from the path, else json', ['json', 'fxl', 'csv']) }), async (a) => {
+    const lib = a.library ? await codeLibs().call('get', a.library) : { codes: ctx.doc.featureCodes || {}, layers: [] };
+    const format = a.format || a.path?.match(/\.(fxl|csv)$/i)?.[1].toLowerCase() || 'json';
+    const text = format === 'fxl' ? TB.fxlWrite(lib) : format === 'csv' ? TB.featureCsv(lib.codes) : JSON.stringify(lib.codes, null, 2);
+    if (a.path) await ctx.io.writeText(a.path, text);
+    return { codes: Object.keys(lib.codes).length, format, ...(a.path ? { path: a.path } : format === 'json' ? { library: lib.codes } : { text }) };
   });
   def('terrain', 'process_codes', 'Run the feature library over the points again: lines, breaklines, objects, layers and colours (it also runs after importing or editing points). Returns warnings for unknown codes and missing attributes.', obj({}), () => processCodes(), true);
+  // feature code libraries: named libraries in this computer's store (SQLite in the data folder, through ctx.codelibs);
+  // the model keeps the name of the one it uses and a copy of its codes, so the file works on any machine
+  const codeLibs = () => {
+    if (!ctx.codelibs) throw new Error('Feature code libraries live in the desktop app.');
+    return ctx.codelibs;
+  };
+  const useLibrary = (lib) => {
+    ctx.doc.featureLibrary = { name: lib.name, source: lib.source || null, modified: lib.modified };
+    ctx.doc.featureCodes = lib.codes;
+    return processCodes();
+  };
+  const usedLibrary = () => ctx.doc.featureLibrary?.name || null;
+  const libName = str('library name (feature_libraries lists them)');
+  def('terrain', 'feature_libraries', 'The feature code libraries saved on this computer (name, number of codes, where they came from) and the one this model uses.', obj({}), async () => ({ libraries: await codeLibs().call('list'), in_use: usedLibrary() }));
+  def('terrain', 'import_feature_library', 'Keep a feature code library on this computer under a name: a Trimble FXL (Feature Definition Manager: codes, descriptions, point / line / polygon, layers, colours, line styles, attributes with their types and pick lists) or a JSON library { CODE: { … } }, from a path or text; with neither, the model\'s own codes. Then use_feature_library makes a model use it.', obj({ path: str('absolute .fxl or .json path'), text: str('or: the file contents'), format: str('when the extension does not say', ['fxl', 'json']), name: str('library name (default: the file name)'), replace: bool('replace a library of that name') }), async (a) => {
+    let text = a.text;
+    if (a.path && text === undefined) {
+      if (!ctx.io?.readText) throw new Error('Reading a path needs the desktop app: give text.');
+      text = await ctx.io.readText(a.path);
+    }
+    const base = a.path ? a.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') : null;
+    let lib;
+    if (text === undefined) {
+      if (!Object.keys(ctx.doc.featureCodes || {}).length) throw new Error('Give path or text: this model has no feature codes to keep.');
+      lib = { codes: ctx.doc.featureCodes, layers: [], source: 'model' };
+    } else if ((a.format || (/\.json$/i.test(a.path || '') || /^\s*\{/.test(text) ? 'json' : 'fxl')) === 'json') {
+      const j = JSON.parse(text);
+      lib = { codes: Object.fromEntries(Object.entries(j.codes || j).map(([k, v]) => [k.toUpperCase(), v])), layers: j.layers || [], source: a.path || 'json' };
+    } else lib = { ...TB.fxlLibrary(text), source: a.path || 'fxl' };
+    if (!Object.keys(lib.codes).length) throw new Error('No feature codes in that library.');
+    const name = a.name || base || usedLibrary() || 'Feature library';
+    const r = await codeLibs().call('save', { ...lib, name }, !!a.replace);
+    const types = Object.values(lib.codes).reduce((m, d) => ((m[TB.featureType(d)] = (m[TB.featureType(d)] || 0) + 1), m), {});
+    return { ...r, types, layers: lib.layers.length };
+  });
+  def('terrain', 'feature_library', 'The codes of a saved feature library (or of the model\'s, without name): code, description, type, layer, colour, attributes. search filters by code, description, layer or category.', obj({ name: libName, search: str('text to look for'), limit: num('most codes to return (default 100)') }), async (a) => {
+    const lib = a.name ? await codeLibs().call('get', a.name) : { name: usedLibrary(), codes: ctx.doc.featureCodes || {} };
+    const found = S.searchCodes(lib.codes, a.search);
+    return { name: lib.name, source: lib.source, total: Object.keys(lib.codes).length, found: found.length, codes: found.slice(0, a.limit || 100) };
+  });
+  def('terrain', 'manage_feature_library', 'Rename, duplicate or delete a saved feature library.', obj({ name: libName, action: str('what to do', ['rename', 'duplicate', 'delete']), to: str('rename / duplicate: the new name') }, ['name', 'action']), async (a) => {
+    const L = codeLibs();
+    const r = a.action === 'rename' ? await L.call('rename', a.name, a.to) : a.action === 'duplicate' ? await L.call('duplicate', a.name, a.to) : await L.call('remove', a.name);
+    if (a.action === 'rename' && usedLibrary()?.toLowerCase() === a.name.toLowerCase()) ctx.doc.featureLibrary.name = r.name;
+    return r;
+  }, true);
+  def('terrain', 'edit_library_code', 'Add, change or remove a code of a saved feature library (the model updates when it uses that library).', obj({ library: libName, code: str('e.g. KERB'), remove: bool('remove this code'), ...CODE_FIELDS }, ['library', 'code']), async (a) => {
+    const L = codeLibs();
+    const code = a.code.toUpperCase();
+    const lib = await L.call('get', a.library);
+    if (a.remove) await L.call('setCode', lib.name, code, null);
+    else await L.call('setCode', lib.name, code, S.editCode(lib.codes[code], a));
+    const r = { library: lib.name, code, ...(a.remove ? { removed: true } : { definition: S.editCode(lib.codes[code], a) }) };
+    if (usedLibrary()?.toLowerCase() === lib.name.toLowerCase()) r.processed = useLibrary(await L.call('get', lib.name));
+    return r;
+  }, true);
+  def('terrain', 'use_feature_library', 'Make this model use a saved feature library: its codes replace the model\'s (kept in the file, so it opens anywhere) and the points are processed again. name "" stops following a library (the codes stay).', obj({ name: str('library name; "" for none') }, ['name']), async (a) => {
+    if (!a.name) {
+      delete ctx.doc.featureLibrary;
+      return { in_use: null, codes: Object.keys(ctx.doc.featureCodes || {}).length };
+    }
+    const lib = await codeLibs().call('get', a.name);
+    return { in_use: lib.name, codes: Object.keys(lib.codes).length, processed: useLibrary(lib) };
+  }, true);
 
   // earthworks
   const designSampler = (a) => {
@@ -1718,6 +1982,29 @@ function registerCore(reg, ctx) {
     return makeDesign('design_trench', p, a.name || D.uniqueName(doc, 'Trench'), a.color || '#b58a57');
   }, true);
   def('terrain', 'design_offset_surface', 'A copy of a surface moved up or down (e.g. 0.3 m below existing ground for a topsoil strip); it follows the source.', obj({ surface: str('source surface'), offset: num('m, negative is below'), name: common.name, color: common.color }, ['surface', 'offset']), (a) => makeDesign('design_offset_surface', { surface: surfaceOf(a.surface).id, offset: a.offset }, a.name, a.color), true);
+  def('terrain', 'offset_surfaces', 'Offset surfaces from a surface, live (they follow it): count copies every distance m up (negative: down), or along its normals (an even thickness on slopes); or with to, count layers spaced evenly between it and another surface (e.g. the layers of a fill).', obj({ surface: str('source surface'), distance: num('m between copies (negative is below)'), count: num('how many (default 1)'), normal: bool('along the surface normals instead of straight up'), to: str('or: the other surface, for layers between the two'), name: common.name, color: common.color }, ['surface']), (a) => {
+    const doc = ctx.doc;
+    const src = surfaceOf(a.surface);
+    const to = a.to ? surfaceOf(a.to) : null;
+    const n = Math.round(a.count ?? 1);
+    if (!(n >= 1 && n <= 50)) throw new Error('count must be 1…50.');
+    if (!to && !a.distance) throw new Error('Give distance (m), or to: another surface.');
+    const made = [];
+    for (let k = 1; k <= n; k++) {
+      const params = to ? { surface: src.id, to: to.id, fraction: r3(k / (n + 1)) } : { surface: src.id, offset: r3(a.distance * k), ...(a.normal ? { normal: true } : {}) };
+      const label = to ? `layer ${k}` : `${a.distance * k > 0 ? '+' : ''}${r3(a.distance * k)} m`;
+      made.push(makeDesign('design_offset_surface', params, D.uniqueName(doc, `${a.name || src.name} ${label}`), a.color || src.material?.color));
+    }
+    ctx.selection.set(made.map((m) => m.id));
+    return { created: made.map((m) => ({ id: m.id, name: m.name, ...m.surface })) };
+  }, true);
+  def('terrain', 'show_triangles', 'Draw the triangle edges of surfaces (or any shape) over their shading, to review a TIN; show false hides them again. A display setting of each entity, saved with the model.', obj({ ids, show: bool('default true') }), (a) => {
+    const ents = targets(ctx, a).filter((e) => e.mesh);
+    if (!ents.length) throw new Error('Pick a surface (or shape) to show its triangles.');
+    for (const e of ents) if (a.show === false) delete e.show_triangles;
+    else e.show_triangles = true;
+    return { ids: ents.map((e) => e.id), show_triangles: a.show !== false };
+  }, true);
   def('terrain', 'design_road', 'A simple road surface: centreline points, width, crossfall falling both ways from the crown.', obj({ centre: { type: 'array', description: 'centreline point names or [x, y, z]' }, width: num('m, default 7'), crossfall: num('%, default −2.5'), name: common.name, color: common.color }, ['centre']), (a) => makeDesign('design_road', { centre: a.centre.map(designRef), width: a.width ?? 7, crossfall: a.crossfall ?? -2.5 }, a.name, a.color || '#3c3f44'), true);
 
   // ---------------------------------------------------------------- drawings: underlays, PDF, images, georeferencing (#140–#146)
@@ -2195,13 +2482,14 @@ function registerCore(reg, ctx) {
   reg.commands.get('sweep_linework').compound = true;
 
   // ---------------------------------------------------------------- curves, sweeps, profiles
-  def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag }, ['points']), (a) => {
+  def('create', 'create_curve', 'A path in 3D for sweeps, motion paths and camera moves: polyline (straight legs), spline (smooth through every point) or bezier (point, handle, handle, point, …).', obj({ points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline (default) | spline | bezier', C.KINDS), closed: bool('loop back to the start'), name: common.name, color: common.color, tag: common.tag, ties: TIES }, ['points']), (a) => {
     const doc = ctx.doc;
     const curve = { kind: a.kind || 'polyline', points: a.points, closed: !!a.closed };
     C.checkCurve(curve);
     const { mesh, origin } = G.recenter({ v: a.points, f: [] });
     const count = doc.entities.filter((e) => e.type === 'curve').length + 1;
     const e = D.addEntity(doc, { type: 'curve', name: a.name || `Curve ${count}`, curve: { ...curve, points: mesh.v }, position: D.round3(origin), tag: a.tag, material: { color: a.color || '#2f6f86' } });
+    TI.addTies(doc, e, a.ties);
     ctx.selection.set([e.id]);
     return summary(doc, e);
   }, true);
@@ -2225,7 +2513,7 @@ function registerCore(reg, ctx) {
     return summary(doc, e);
   }, true);
 
-  def('edit', 'set_curve', 'Change a curve: new world points, kind or closed. Sweeps and motion along it follow.', obj({ id, points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline | spline | bezier', C.KINDS), closed: bool('loop') }, ['id']), (a) => {
+  def('edit', 'set_curve', 'Change a curve: new world points, kind or closed. Sweeps and motion along it follow.', obj({ id, points: { type: 'array', items: v3('point'), description: '[[x,y,z], …] world points' }, kind: str('polyline | spline | bezier', C.KINDS), closed: bool('loop'), ties: TIES }, ['id']), (a) => {
     const doc = ctx.doc;
     const [e] = D.resolve(doc, a.id);
     if (!e.curve) throw new Error(`${e.name} is not a curve.`);
@@ -2234,8 +2522,21 @@ function registerCore(reg, ctx) {
     const next = { kind: a.kind ?? e.curve.kind, points, closed: a.closed ?? !!e.curve.closed };
     C.checkCurve(next);
     e.curve = next;
+    TI.addTies(doc, e, a.ties);
     return summary(doc, e);
   }, true);
+
+  // Point ties: a vertex placed on a survey point stays on it when the point moves (TI.syncTies after every change).
+  def('edit', 'tie_vertex', 'Tie a vertex of a curve (or shape) to a survey point: the vertex goes onto the point and follows it when the point moves or is re-imported; breaklines and surfaces built from the curve follow too. Moving the vertex by hand (or the whole curve without its points) unties it; deleting the point leaves the vertex where it is.', obj({ id, vertex: num('vertex index (0 first)'), point: str('survey point name or id') }, ['id', 'vertex', 'point']), (a) => {
+    const [e] = D.resolve(ctx.doc, a.id);
+    TI.addTies(ctx.doc, e, [{ vertex: a.vertex, point: a.point }]);
+    return { id: e.id, ties: TI.listTies(ctx.doc, e) };
+  }, true);
+  def('edit', 'untie_vertex', 'Untie a vertex from its survey point (without vertex: every tie of the curve). The vertex stays where it is.', obj({ id, vertex: num('vertex index; omit for all') }, ['id']), (a) => {
+    const [e] = D.resolve(ctx.doc, a.id);
+    return { id: e.id, untied: TI.untie(e, a.vertex) };
+  }, true);
+  def('edit', 'list_ties', 'Which curve vertices are tied to which survey points (the whole model, or one curve).', obj({ id: str('a curve id / name (default: all)') }), (a) => ({ ties: TI.listTies(ctx.doc, a.id ? D.resolve(ctx.doc, a.id)[0] : null) }));
 
   def('parametric', 'list_profiles', 'Profiles for sweep: built-in parametric ones (pipe, kerb, gutter, i_beam, retaining_wall…) with their parameters and defaults, plus this model\'s own.', obj({}), () => P.listProfiles(ctx.doc));
 
@@ -2258,6 +2559,13 @@ function registerCore(reg, ctx) {
     (doc.profiles ||= {})[a.name] = { points: pts, ...(a.anchor ? { anchor: a.anchor } : {}), ...(a.description ? { description: a.description } : {}) };
     return { name: a.name, points: pts.length };
   }, true);
+  def('parametric', 'sketch_profile', 'Save a profile for sweeps from a hand sketch (#230): freehand strokes (canvas pixels, y down) become straight lines with tidy angles, closed when the ends meet, scaled to a real width or height (m). Returns the clean [u, v] points.', obj({ name: str('profile name'), strokes: { type: 'array', description: 'strokes, each [[x, y], …] in canvas pixels', items: { type: 'array', items: { type: 'array', items: { type: 'number' } } } }, width: num('real width, m'), height: num('or: real height, m'), snap: num('angle step in degrees, default 15 (0: keep the angles as drawn)'), anchor: str('which point of the profile follows the path, default bottom-center', P.ANCHORS) }, ['name', 'strokes']), async (a) => {
+    const o = SK.scaleOutline(SK.cleanSketch(a.strokes, { snap: a.snap ?? 15 }), { width: a.width, height: a.height });
+    if (!o.closed) o.points.push(...[...o.points].reverse().map(([x, y]) => [x, Math.round((y - 0.05) * 1000) / 1000])); // an open line becomes a 5 cm thick strip
+    await reg.run('define_profile', { name: a.name, points: o.points, anchor: a.anchor || 'bottom-center', description: `sketched, ${o.width} × ${o.height} m` });
+    return { name: a.name, closed: o.closed, width: o.width, height: o.height, points: o.points };
+  }, true);
+  reg.commands.get('sketch_profile').compound = true;
 
   def('parametric', 'set_params', 'Change a parametric shape\'s parameters (width of a box, steps of a stair, profile of a sweep, count of a live array…); it rebuilds, and so does everything made from it. get_entity shows the current params.', obj({ id, params: obj({}, []) }, ['id', 'params']), (a) => {
     const doc = ctx.doc;
@@ -2319,7 +2627,7 @@ function registerCore(reg, ctx) {
   def('recipe', 'save_recipe', 'Save how this model was built as a named, replayable recipe. Without steps it takes the commands that built the current model (from step `from`). Steps may hold "{{expr}}" placeholders over params (e.g. "{{storeys * 3}}"); run_script steps also get `params`.', obj({ name: str('recipe name'), description: str('what it builds'), params: obj({}, []), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the journal)' }, from: num('first journal step (default 0)') }, ['name']), (a) => {
     const doc = ctx.doc;
     const old = doc.recipes?.[a.name];
-    const steps = (a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => structuredClone(s))).flatMap((s) =>
+    const steps = (a.steps ? structuredClone(a.steps) : (doc.journal || []).slice(a.from || 0).map((s) => ({ command: s.command, args: structuredClone(s.args) }))).flatMap((s) =>
       s.command === 'replay_recipe' && s.args?.name === a.name ? (old ? structuredClone(old.steps) : []) : [s],
     );
     if (!steps.length) throw new Error('Nothing to save: no steps given and the journal is empty.');
@@ -2352,7 +2660,7 @@ function registerCore(reg, ctx) {
     ctx.replaying.add(a.name);
     try {
       for (const [i, s] of r.steps.entries()) {
-        const args = fillParams(s.args || {}, params);
+        const args = UT.fillParams(s.args || {}, params);
         if (s.command === 'run_script') args.params = { ...(args.params || {}), ...params };
         try {
           await reg.run(s.command, args);
@@ -2393,6 +2701,80 @@ function registerCore(reg, ctx) {
     return { name, steps: steps.length, script, ...(plugin ? { plugin } : {}) };
   });
 
+
+  // ---------------------------------------------------------------- my tools and skills (#242), help that answers (#241)
+  const myTools = {};
+  /** Add a user tool or skill to the registry (and the skill list), without writing its file: startup and saves. */
+  reg.userItem = (item) => {
+    if (item.kind === 'skill') return (USER_SKILLS[item.name] = item);
+    const old = reg.commands.get(item.name);
+    if (old && !old.userTool) throw new Error(`"${item.name}" is already a command of the app: give the tool another name.`);
+    reg.define(UT.toolCommand(item, (n, x) => reg.run(n, x)));
+    return (myTools[item.name] = item);
+  };
+  const keep = async (item) => {
+    reg.userItem(item);
+    const file = ctx.userLibrary ? await ctx.userLibrary.save(item) : null;
+    ctx.onMyTools?.();
+    return file;
+  };
+  const has = (n) => reg.commands.has(n);
+
+  def('mytools', 'save_tool', 'Save steps as one of the user\'s own tools: a command (named from `name`, e.g. "Kerb return" → kerb_return) that anyone can call, in search, Tools › My tools, the API and MCP. Without steps it takes what the last Plumb turn did; numbers in the steps become parameters (or give params {name: default} and "{{name}}" placeholders in the steps). Saving under an existing tool name replaces it.', obj({ name: str('the tool\'s name, e.g. "Kerb return"'), description: str('what it makes or does'), steps: { type: 'array', items: obj({ command: str('command name'), args: obj({}, []) }, ['command']), description: '[{command, args}, …] (default: the last turn)' }, params: obj({}, []) }, ['name']), async (a) => {
+    const steps = a.steps ? structuredClone(a.steps) : UT.lastTurnSteps(ctx.doc.journal, ctx.turnStarts);
+    const tool = UT.makeTool({ name: a.name, title: a.name, description: a.description, steps, params: a.params }, has);
+    const file = await keep(tool);
+    return { tool: tool.name, title: tool.title, params: tool.params, steps: tool.steps.length, ...(file ? { file } : {}) };
+  });
+  def('mytools', 'save_skill', 'Save instructions and a toolset as one of the user\'s own skills (list_skills / use_skill, and the skill picker): how they like a kind of work done, and the commands it uses.', obj({ name: str('skill name'), label: str('display name'), description: str('one line: when to use it'), prompt: str('the instructions, written to the copilot'), toolset: { type: 'array', items: { type: 'string' }, description: 'commands this skill uses' }, examples: { type: 'array', items: obj({ title: str('title'), code: str('run_script code') }, ['code']), description: 'example scripts' } }, ['name', 'prompt']), async (a) => {
+    const skill = UT.makeSkill(a, has);
+    const file = await keep(skill);
+    return { skill: skill.name, label: skill.label, toolset: skill.toolset, ...(file ? { file } : {}) };
+  });
+  def('mytools', 'list_my_tools', 'The user\'s own tools (each is also a command) and skills. Give name for one in full (steps, prompt).', obj({ name: str('one tool or skill in full') }), (a) => {
+    if (a.name) {
+      const x = myTools[a.name] || USER_SKILLS[a.name] || myTools[UT.slug(a.name)] || USER_SKILLS[UT.slug(a.name)];
+      if (!x) throw new Error(`No tool or skill "${a.name}". Mine: ${[...Object.keys(myTools), ...Object.keys(USER_SKILLS)].join(', ') || 'none yet'}.`);
+      return structuredClone(x);
+    }
+    return {
+      tools: Object.values(myTools).map((t) => ({ name: t.name, title: t.title, description: t.description, params: t.params, steps: t.steps.length })),
+      skills: Object.values(USER_SKILLS).map((s) => ({ name: s.name, label: s.label, description: s.description, toolset: s.toolset })),
+    };
+  });
+  def('mytools', 'delete_my_tool', 'Delete one of the user\'s tools or skills (and its file).', obj({ name: str('tool or skill name') }, ['name']), async (a) => {
+    const n = myTools[a.name] || USER_SKILLS[a.name] ? a.name : UT.slug(a.name);
+    const item = myTools[n] || USER_SKILLS[n];
+    if (!item) throw new Error(`No tool or skill "${a.name}".`);
+    if (item.kind === 'tool') delete myTools[n], reg.commands.delete(n);
+    else {
+      delete USER_SKILLS[n];
+      if (ctx.skill === n) (ctx.skill = null), ctx.onSkill?.(null);
+    }
+    await ctx.userLibrary?.remove(item);
+    ctx.onMyTools?.();
+    return { deleted: n, kind: item.kind };
+  });
+
+  def('help', 'ask_help', 'Answer a "how do I…" question from the help pages and the commands: an answer citing the sections it used ([1], [2]), the sections, the matching commands, and what "Show me" would start. Without an AI model it returns the sections only.', obj({ question: str('the question'), tool: str('a tool id the question is about (F1 over a tool)') }, ['question']), async (a) => {
+    const ids = HA.pagesFor(a.question, { tool: a.tool });
+    const pages = [];
+    for (const id of ids) {
+      const md = await ctx.help?.read?.(id).catch(() => null);
+      if (md) pages.push({ id, md });
+    }
+    const src = HA.helpSources(a.question, pages, reg.list());
+    let answer = null;
+    let error;
+    if (ctx.ai?.text) {
+      try {
+        answer = (await ctx.ai.text({ system: HA.HELP_SYSTEM, text: HA.helpPrompt(a.question, src) })) || null;
+      } catch (e) {
+        error = e.message;
+      }
+    }
+    return { question: a.question, answer, cited: answer ? HA.cited(answer, src).map((s) => s.n) : [], sources: src.sections, commands: src.commands, show: HA.showMe(src, a.tool), ...(error ? { ai_error: error } : {}) };
+  });
 
   // ---------------------------------------------------------------- annotate and document (Phase 11)
   const REF = { description: 'a point [x, y, z], an entity id / name (its middle), { id, point: [x, y, z] } (a point stuck to it), { id, vertex: k } or { id, corner: "min" | "max" | [sx, sy, sz] } (0 min, 1 max of its box)' };
@@ -3279,7 +3661,7 @@ function registerCore(reg, ctx) {
     return { curves: made.length, traced_at: [w, h] };
   }, true);
 
-  def('drawings', 'read_drawing', 'The copilot\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
+  def('drawings', 'read_drawing', 'Plumb\'s first pass on a new drawing: finds its scale, title, date, north and labelled grid lines (control points) from its text, and with use_ai from a picture too. apply: sets the scale, names the drawing and georeferences it from the grid — one undo step.', obj({ id, use_ai: bool('also ask the vision model (default true when one is set)'), apply: bool('apply what was found') }, ['id']), async (a) => {
     const doc = ctx.doc;
     const e = underlayOf(a.id);
     let texts = [];
@@ -3390,7 +3772,7 @@ function registerCore(reg, ctx) {
     return LEARN.progress([...done], [...tut]);
   });
   // achievements and insights (#222): counted by the app on this PC (settings.stats), read here
-  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what the copilot did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
+  def('scene', 'my_insights', 'Your achievements and insights: days active, streaks, modelling minutes, commands run, favourite commands, what Plumb did for you (and the time it saved), and the achievement tracks (Draftsman, Builder, Surveyor, Road maker…) with their tier and progress to the next.', obj({}), () => {
     const p = LEARN.progress(lessonsDone(), tutorialsDone());
     return ACH.insights(ctx.io?.settings?.()?.stats || ctx.stats || {}, { lessons: p.lessons, tutorials: p.tutorials });
   });
@@ -3406,8 +3788,8 @@ function registerCore(reg, ctx) {
       : r.installed.length
         ? r.installed.map((x) => `${x.name} is installed${x.models.length ? ` with ${x.models.join(', ')}` : ''} but not running. ${x.start}`).join(' ')
         : r.huggingface.length
-        ? 'Models are downloaded from Hugging Face, but no server is running them: install Ollama (ollama.com) or LM Studio, load the model, then detect again.'
-        : 'No local AI found. Install Ollama (ollama.com) and run "ollama pull mistral", or use Claude or an OpenAI-compatible API key.';
+        ? 'Models are downloaded from Hugging Face, but no server is running them: load one in LM Studio or Ollama and detect again, or download_ai_model gets the built-in model.'
+        : 'No local AI server found. The built-in model needs none (Provider: Built-in model, one download); or use Claude or an OpenAI-compatible API key.';
     return r;
   });
   // local AI setup (#224): the steps the setup card shows, for the API and MCP too
@@ -3415,15 +3797,28 @@ function registerCore(reg, ctx) {
     if (!ctx.io?.aiSetup) throw new Error('Needs the desktop app.');
     return ctx.io.aiSetup;
   };
-  def('ai', 'ai_setup_status', 'Where the local copilot stands: Ollama running, stopped or not installed, its models, and whether the chosen model is downloaded; next says what to do.', obj({}), async () => {
+  def('ai', 'ai_setup_status', 'Where Plumb\'s local model stands: the built-in model (downloaded or not), or Ollama (running, stopped or not installed, its models); local says which one the setup uses and next what to do (download | start | pull | ready).', obj({}), async () => {
     const s = await setupIo()('status');
-    s.next = s.provider !== 'ollama' ? 'ready' : s.ollama === 'missing' ? 'install' : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'download' : 'ready';
+    // without Ollama installed, the built-in model (#238) is the way: one download, no second app
+    s.local = s.provider === 'builtin' || (s.provider === 'ollama' && s.ollama === 'missing' && s.builtin) ? 'builtin' : s.provider === 'ollama' ? 'ollama' : null;
+    s.next = !s.local ? 'ready' : s.local === 'builtin' ? (s.provider === 'builtin' && s.builtin.has_model ? 'ready' : 'download') : s.ollama === 'stopped' ? 'start' : !s.has_model ? 'pull' : 'ready';
     return s;
   });
+  def('ai', 'download_ai_model', 'Download the assistant model the app runs itself (default qwen3-4b, about 2.5 GB, once; a stopped download resumes; the file is checked against its SHA-256) and use it for Plumb: it then works offline, with no other app. Progress shows in the app.', obj({ model: str('built-in model id from list_ai_models: qwen3-4b (default), ministral3-3b, ministral3-8b, ministral3-14b') }), async (a) => {
+    const r = await setupIo()('download', a.model);
+    await ctx.io.setSettings?.({ ai: { provider: 'builtin', builtin: { model: r.model } } });
+    return r;
+  });
+  def('ai', 'list_ai_models', 'The models Plumb can run itself (all Apache 2.0): id, size, a short note, whether each is downloaded, whether this PC has the memory it wants, and which one is in use.', obj({}), async () => {
+    const s = await setupIo()('status');
+    return { in_use: s.provider === 'builtin' ? s.builtin.model : null, models: s.builtin.models };
+  });
+  def('ai', 'delete_ai_model', 'Delete a downloaded built-in model from this PC to free its disk space (download_ai_model gets it back).', obj({ model: str('built-in model id from list_ai_models') }, ['model']), (a) => setupIo()('delete', a.model));
+  def('ai', 'pause_ai_download', 'Stop the model download in progress (download_ai_model or pull_ai_model); the built-in model resumes where it stopped next time.', obj({}), () => setupIo()('cancel'));
   def('ai', 'start_local_ai', 'Start Ollama on this PC (installed but not running).', obj({}), () => setupIo()('start'));
   def('ai', 'install_local_ai', 'Install Ollama: opens a window running winget (Windows) where the user follows the install, or the download page.', obj({}), () => setupIo()('install'));
-  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: the copilot\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
-  def('ai', 'use_ai_model', 'Use a model for the copilot: provider ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('ollama | openai | anthropic', ['ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
+  def('ai', 'pull_ai_model', 'Download a model into Ollama (default: Plumb\'s model, e.g. mistral, about 4 GB); progress shows in the app.', obj({ model: str('model name, e.g. mistral, qwen2.5, llama3.1') }), async (a) => setupIo()('pull', a.model || ctx.io.settings?.()?.ai?.ollama?.model || 'mistral'));
+  def('ai', 'use_ai_model', 'Use a model for Plumb: provider builtin (the model the app runs itself, see download_ai_model), ollama (a local Ollama), openai (any OpenAI-compatible server: LM Studio, llama.cpp, vLLM, Jan, the Mistral API…) or anthropic (Claude, with its key in Settings), with its base URL and model name.', obj({ provider: str('builtin | ollama | openai | anthropic', ['builtin', 'ollama', 'openai', 'anthropic']), base_url: str('server URL (ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234/v1)'), model: str('model name, e.g. mistral') }, ['provider']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     const part = { ...(a.base_url ? { baseUrl: a.base_url } : {}), ...(a.model ? { model: a.model } : {}) };
     await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
@@ -3545,20 +3940,35 @@ function registerCore(reg, ctx) {
     return summary(ctx.doc, e);
   }, true);
 
-  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to the copilot.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
+  def('ai', 'transcribe_audio', 'Speech to text on this PC (MyVoiceReel\'s engine): a recording becomes text, for voice commands to Plumb.', obj({ path: str('absolute audio path (wav, mp3, m4a…)'), lang: str('language code, e.g. fr (default: detected)') }, ['path']), async (a) => {
     if (!ctx.io?.transcribe) throw new Error('Needs the desktop app.');
     return ctx.io.transcribe(a.path, a.lang);
   });
+
+  // agent profiles (#243): several copilots with their own model, skill, instructions and thread, working at once
+  const crew = () => {
+    if (!ctx.agents) throw new Error('Agents need the desktop app.');
+    return ctx.agents;
+  };
+  const agent = str('agent id or name (default: Plumb)');
+  def('ai', 'list_agents', 'The agent profiles (Plumb is the default) with what each is doing (idle, working, queued tasks), and the changes held because two agents touched the same thing.', obj({}), () => crew().list());
+  def('ai', 'save_agent', 'Create or change an agent profile. provider / model empty: the app\'s AI settings. skill: a skill id from list_skills. toolset: auto or a toolset name. instructions: what it always keeps in mind.', obj({ id: str('profile id to change (new when absent)'), name: str('display name'), provider: str('builtin | anthropic | openai | ollama (empty: AI settings)'), model: str('model name'), skill: str('skill id'), toolset: str('auto or a toolset'), instructions: str('standing instructions'), color: str('#rrggbb') }), (a) => crew().save(a));
+  def('ai', 'remove_agent', 'Delete an agent profile (not Plumb).', obj({ agent }, ['agent']), (a) => crew().remove(a.agent));
+  def('ai', 'ask_agent', 'Give an agent a task: it joins that agent\'s queue and runs when the agent is free, alongside other agents. Returns at once (the reply goes to its thread).', obj({ agent, text: str('the task'), ids: { ...ids, description: 'entities to point it at' }, point: v3('a point in the model, world metres') }, ['text']), (a) => crew().ask(a.agent, a.text, { ids: a.ids, point: a.point }));
+  def('ai', 'stop_agent', 'Stop an agent\'s running turn and clear its queue (what it did so far stays; undo removes it).', obj({ agent }), (a) => crew().stop(a.agent));
+  def('ai', 'ai_turns', 'Timings of an agent\'s last AI turns (default Plumb) and of the one running: total, model and tool time in ms, steps, tool calls, errors, tokens in / out and tokens per second, with a trace of each step (model time, tokens) and each tool call (time, error).', obj({ agent, last: num('how many finished turns (default 5)') }), (a) => crew().turns(a.agent, a.last ?? 5));
+  def('ai', 'retry_agent', 'Run an agent\'s last task again.', obj({ agent }), (a) => crew().retry(a.agent));
+  def('ai', 'held_change', 'A change held because two agents touched the same thing: apply it (one undo step) or drop it.', obj({ n: num('its number, from list_agents'), action: str('apply | drop', ['apply', 'drop']) }, ['n', 'action']), (a) => crew().held(a.n, a.action));
 
   def('view', 'walk_to', 'Stand somewhere at eye height (1.6 m above what is under it) and look towards a point: a walk-through view. The Walk tool moves on from there (arrow keys or WASD, drag to look).', obj({ position: v3('where to stand (x, z; y is found)'), look_at: v3('what to look at'), eye: num('eye height, m (default 1.6)') }, ['position']), (a) => {
     if (!ctx.view?.walkTo) throw new Error('Needs the desktop app.');
     return ctx.view.walkTo(a.position, a.look_at, a.eye ?? 1.6);
   });
 
-  def('view', 'set_snaps', 'Which snaps the drawing tools use (#180): endpoint, midpoint, face, axis (along x / y / z from the last point), grid, drawing (PDF lines, when snap_underlays is on), cloud (point cloud points). Each true or false; the rest stay as they are.', obj(Object.fromEntries(['endpoint', 'midpoint', 'face', 'axis', 'grid', 'drawing', 'cloud'].map((k) => [k, bool(`snap to ${k}`)]))), (a) => {
+  def('view', 'set_snaps', 'Which snaps the drawing tools use (#180): endpoint, midpoint, face, axis (along x / y / z from the last point), grid, drawing (PDF lines, when snap_underlays is on), cloud (point cloud points), survey (survey points), tie (a vertex snapped to a survey point stays tied to it; false: snap without tying). Each true or false; the rest stay as they are.', obj(Object.fromEntries(['endpoint', 'midpoint', 'face', 'axis', 'grid', 'drawing', 'cloud', 'survey', 'tie'].map((k) => [k, bool(`snap to ${k}`)]))), (a) => {
     const s = ctx.doc.settings;
     s.snaps = { ...(s.snaps || {}), ...a };
-    return { snaps: { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, ...s.snaps } };
+    return { snaps: { endpoint: true, midpoint: true, face: true, axis: true, grid: true, drawing: true, cloud: true, survey: true, tie: true, ...s.snaps } };
   }, true);
   def('view', 'set_gizmo', 'On-canvas handles on the selection: drag arrows (move), rings (rotate) or boxes (scale). off hides them.', obj({ mode: str('move | rotate | scale | off', ['move', 'rotate', 'scale', 'off']) }, ['mode']), (a) => {
     ctx.doc.settings.gizmo = a.mode === 'off' ? null : a.mode;
@@ -3687,12 +4097,15 @@ function registerCore(reg, ctx) {
     return out;
   });
 
-  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture. Read one before working in that domain; use_skill gives it to the in-app copilot.', obj({ name: str('one skill in full', Object.keys(SKILLS)) }), (a) => {
-    const pick = a.name ? [[a.name, SKILLS[a.name]]] : Object.entries(SKILLS);
-    return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(a.name ? { prompt: s.prompt, examples: s.examples } : {}), active: ctx.skill === name }));
+  def('ai', 'list_skills', 'Domain skills: know-how and example scripts for architecture, product design, jobsite / heavy equipment and furniture, and skills the user saved (save_skill). Read one before working in that domain; use_skill gives it to Plumb, the in-app assistant.', obj({ name: str('one skill in full') }), (a) => {
+    const all = { ...SKILLS, ...USER_SKILLS };
+    if (a.name && !all[a.name]) throw new Error(`No skill "${a.name}". Skills: ${Object.keys(all).join(', ')}.`);
+    const pick = a.name ? [[a.name, all[a.name]]] : Object.entries(all);
+    return pick.map(([name, s]) => ({ name, label: s.label, description: s.description, ...(USER_SKILLS[name] ? { mine: true } : {}), ...(a.name ? { prompt: s.prompt, examples: s.examples, ...(s.toolset ? { toolset: s.toolset } : {}) } : {}), active: ctx.skill === name }));
   });
 
-  def('ai', 'use_skill', 'Give the in-app copilot a domain skill (its know-how joins the system prompt), or none.', obj({ name: str('skill, or none', [...Object.keys(SKILLS), 'none']) }, ['name']), (a) => {
+  def('ai', 'use_skill', 'Give Plumb, the in-app assistant, a domain skill or a skill the user saved (its know-how joins the system prompt), or none.', obj({ name: str('skill name (list_skills), or none') }, ['name']), (a) => {
+    if (a.name !== 'none' && !SKILLS[a.name] && !USER_SKILLS[a.name]) throw new Error(`No skill "${a.name}". Skills: ${[...Object.keys(SKILLS), ...Object.keys(USER_SKILLS)].join(', ')}, none.`);
     ctx.skill = a.name === 'none' ? null : a.name;
     ctx.onSkill?.(ctx.skill);
     return { skill: ctx.skill, prompt: ctx.skill ? skillPrompt(ctx.skill) : '' };
@@ -3736,10 +4149,10 @@ function registerCore(reg, ctx) {
     const n = LY.normalize(ctx.doc.settings.layout).count;
     return Array.from({ length: n }, (_, i) => inPane(i + 1, fit));
   });
-  def('view', 'set_layout', 'Split the view into 1 to 4 panes, each with its own camera: columns (side by side), rows (stacked), grid (2 × 2), main_left / main_right / main_top / main_bottom (one big pane, the others beside it). split: [x, y] where the bars are (fractions 0.15–0.85). max: maximise a pane (1–4), 0 restores. New panes show top, front and right (parallel). show_camera: draw the main camera in the other panes.', obj({ count: num('panes, 1–4'), arrangement: str('how they sit', LY.ARRANGEMENTS), split: { type: 'array', items: { type: 'number' }, description: '[x, y] fractions' }, max: num('maximise pane 1–4; 0 restores'), show_camera: bool('the main camera drawn in the other panes (default true)') }), (a) => {
+  def('view', 'set_layout', 'Split the view into 1 to 4 panes, each with its own camera: columns (side by side), rows (stacked), grid (2 × 2), main_left / main_right / main_top / main_bottom (one big pane, the others beside it). split: [x, y] where the bars are (fractions 0.15–0.85). max: maximise a pane (1–4), 0 restores. New panes show top, front and right (parallel). show_camera: draw the main camera in the other panes (off by default).', obj({ count: num('panes, 1–4'), arrangement: str('how they sit', LY.ARRANGEMENTS), split: { type: 'array', items: { type: 'number' }, description: '[x, y] fractions' }, max: num('maximise pane 1–4; 0 restores'), show_camera: bool('the main camera drawn in the other panes (default false)') }), (a) => {
     const s = ctx.doc.settings;
     const cur = LY.normalize(s.layout);
-    const next = { ...cur, show_camera: s.layout?.show_camera };
+    const next = { ...cur, show_camera: s.layout?.camera_mark };
     if (a.count !== undefined) {
       if (a.count !== cur.count && a.arrangement === undefined) next.arrangement = undefined; // the usual arrangement for that many
       next.count = a.count;
@@ -3750,7 +4163,7 @@ function registerCore(reg, ctx) {
     if (a.split) next.split = a.split;
     if (a.max !== undefined) next.max = a.max > 0 ? a.max - 1 : null;
     if (a.show_camera !== undefined) next.show_camera = a.show_camera;
-    s.layout = { ...LY.normalize(next), show_camera: next.show_camera !== false };
+    s.layout = { ...LY.normalize(next), camera_mark: next.show_camera === true };
     ctx.view?.syncPanes?.();
     return ctx.view?.layoutInfo?.() ?? s.layout;
   }, true);
@@ -3796,7 +4209,7 @@ function registerCore(reg, ctx) {
     ctx.doc.settings.layout = {
       ...LY.normalize({ count: 4, arrangement: 'grid', panes: [cur.panes[0], { view: 'top', projection: 'parallel' }, { view: 'profile', corridor: c.id }, { view: 'section', corridor: c.id }] }),
       station: a.station ?? Math.round(len / 2),
-      show_camera: ctx.doc.settings.layout?.show_camera !== false,
+      camera_mark: ctx.doc.settings.layout?.camera_mark === true,
     };
     if (ctx.view?.syncPanes) {
       ctx.view.syncPanes();
@@ -4220,7 +4633,7 @@ function registerCore(reg, ctx) {
     ctx.selection.set(made.filter((e) => !S.isPoint(e)).map((e) => e.id).slice(0, 2000));
     return report.done({ format: fmt.id, file: a.path ? String(a.path).split(/[\\/]/).pop() : undefined, ...(extra || {}) });
   }, true);
-  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks), geojson and shp (points, lines, polygons with attributes). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf, geojson, shp'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file') }, ['format']), async (a) => {
+  def('file', 'export', `Export: ${MODEL_FORMATS.join(', ')} (models, viewport image, video) or an exchange format: landxml (points, surfaces, alignments, linework), ifc (BIM: IFC4, or IFC4X3 with schema), dxf (CAD R12: layers, polylines, points, 3D faces, components as blocks), geojson and shp (points, lines, polygons with attributes). selection: only the selected entities.`, obj({ format: str('format: glb, gltf, obj, stl, png, video, landxml, ifc, dxf, geojson, shp'), path: str('absolute output path; omit to be asked'), selection: bool('only the selection (and what is inside it)'), schema: str('IFC: IFC4 (default) or IFC4X3'), coordinates: str('DXF: project (E, N, Z, default) or local', ['project', 'local']), name: str('project name written in the file'), points: bool('LandXML: write the survey points (CgPoints), default true') }, ['format']), async (a) => {
     const fmt = F.getFormat(a.format);
     if (!fmt) {
       if (!MODEL_FORMATS.includes(a.format)) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
@@ -4246,9 +4659,38 @@ function registerCore(reg, ctx) {
     await io.writeText(path, text);
     return { path, format: fmt.id, bytes: text.length, entities: ents.length };
   }, true);
+  // ---------------------------------------------------------------- live references (#246)
+  const refsOf = (a) => (a.ids?.length ? D.resolve(ctx.doc, a.ids) : ctx.doc.entities).filter((e) => e.xref && (!a.path || e.xref.path === a.path));
+  def('file', 'reference_file', 'Show another design as a live reference: a .usda (or .usdc, .usdz, .glb, .obj…) shown read-only and snappable, read again whenever its file changes (another window can publish_reference to it). Move, hide or recolour its parts here: those overrides stay in this model and are never written to that file. Its shapes cannot be edited until bind_reference.', obj({ path: str('absolute path'), name: str('name in the Outliner') }), async (a) => {
+    a.path ||= await needIO().pick('reference', false);
+    if (!a.path) return { cancelled: true };
+    const g = D.addEntity(ctx.doc, { type: 'group', name: D.uniqueName(ctx.doc, a.name || String(a.path).split(/[\/]/).pop().replace(/\.\w+$/, '')), xref: { path: a.path, overrides: {} } });
+    const r = USD.applyReference(ctx.doc, g, await needIO().referenceParts(a.path));
+    ctx.selection.set([g.id]);
+    return { id: g.id, name: g.name, ...r };
+  }, true);
+  def('file', 'reload_reference', 'Read live references again from their files (all of them by default). Overrides made here stay on top.', obj({ ids, path: str('only the references to this file') }), async (a) => {
+    const list = refsOf(a);
+    if (!list.length && !a.path) throw new Error('No live reference to reload.');
+    for (const g of list) USD.applyReference(ctx.doc, g, await needIO().referenceParts(g.xref.path));
+    return { reloaded: list.map((g) => g.name) };
+  }, true);
+  def('file', 'bind_reference', 'Make live references local: their parts become ordinary shapes (overrides included) and the file is no longer followed.', obj({ ids }), (a) => {
+    const list = targets(ctx, a).filter((e) => e.xref);
+    if (!list.length) throw new Error('Select a live reference (a group read from another file).');
+    for (const g of list) USD.bindReference(ctx.doc, g);
+    return { bound: list.map((g) => g.name) };
+  }, true);
+  def('file', 'publish_reference', 'Publish this design as a live reference: write it to a .usda now and again after every change (debounced), so other windows that reference_file it follow along. stop: true stops publishing.', obj({ path: str('absolute .usda path; omit to be asked'), stop: bool('stop publishing') }), async (a) => {
+    if (a.stop) return needIO().publish(null);
+    a.path ||= await needIO().pick('usda', true, 'Live.usda');
+    if (!a.path) return { cancelled: true };
+    if (!/\.usda$/i.test(a.path)) throw new Error('Publish to a .usda file.');
+    return needIO().publish(a.path);
+  });
   reg.commands.get('import').compound = true;
   reg.commands.get('generate_texture').compound = true;
-  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh']) reg.commands.get(n).compound = true;
+  for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh', 'reference_file', 'reload_reference']) reg.commands.get(n).compound = true;
   // symmetry while editing (#27): the mirror-image push_pull / move_elements across the shape's middle
   const mirrorOf = (e, axis) => {
     const k = { x: 0, y: 1, z: 2 }[axis];
@@ -4331,7 +4773,7 @@ function registerCore(reg, ctx) {
       animated: doc.animation.tracks.length,
     };
   });
-  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a copilot prompt and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
+  def('scene', 'list_howtos', 'Help by intent: how-to pages for what people want to do (put a PDF in place, cut and fill a pad, hinge a door…), each with the clicks, a prompt for Plumb and the commands. query ranks them.', obj({ query: str('what you want to do, in words') }), (a) => findHowtos(a.query || '', 50).map(({ id, area, title, commands }) => ({ id, area, title, commands })));
   def('scene', 'open_howto', 'Open a how-to page in the Help panel (show the person how), and get its text.', obj({ id: str('page id from list_howtos', HOWTOS.map((x) => x.id)) }, ['id']), async (a) => {
     const page = HOWTOS.find((x) => x.id === a.id);
     if (!page) throw new Error(`No page "${a.id}". list_howtos shows them.`);

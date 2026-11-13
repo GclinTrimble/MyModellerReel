@@ -15,11 +15,11 @@ You are shaping an object rather than a building: rounded edges, a hollow case, 
 4. **Tools › Subdivide (smooth)** [Subdivide](action:subdivide) rounds a low-poly cage; **Deform…** [Deform](action:deform) tapers, twists or bends it and stays live.
    ![Tools › Subdivide (smooth) Subdivide rounds a low-poly cage; Deform… Deform tape](media/product-modelling/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > Make a 0.3 m cube with 3 cm rounded edges, hollow it to a 4 mm wall open at the top, then loft a vase through a 10 cm circle, a 16 cm circle and a 6 cm circle.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 

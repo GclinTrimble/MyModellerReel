@@ -16,7 +16,7 @@ You want the site tools where you can see them, a PDF taken from import to model
 4. **Site › [Base point](action:basePoint)**: click a point of the model whose real coordinates you know (a survey mark, a corner), then type its easting, northing, elevation and grid north. Nothing moves; the model and its survey points take those coordinates.
    ![The base point at a known point](media/site-setup/05.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > The project is in Paris: which coordinate system should I use? Use Lambert-93, and make the corner at 2, 0, -3 in the model E 652100, N 6862300, Z 35.
 
@@ -32,7 +32,7 @@ await api.set_base_point({ at: [2, 0, -3], e: 652100, n: 6862300, z: 35, north_a
 
 ## Good to know
 
-- The coordinate system list is built in (national grids and every UTM zone) and works offline; a map to click on is not there yet.
+- The coordinate system list is built in (national grids and every UTM zone) and works offline. To click the place on a map instead, see [Place the model on a map](howto:place-on-a-map).
 - Grid north is kept with the geolocation, so sun studies use it too.
 
 ## Related

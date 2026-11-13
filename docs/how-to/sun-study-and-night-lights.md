@@ -16,11 +16,11 @@ You want to show where shadows fall through a day at the real site, or the build
 4. After sunset it is night. **Tools › Lights**: [point](action:lightPoint), [spot](action:lightSpot) or [area](action:lightArea) lights; animate their colour or opacity to switch them on.
    ![After sunset it is night. Tools › Lights: point, spot or area lights; animate th](media/sun-study-and-night-lights/04.jpg)
 
-## Ask the copilot
+## Ask Plumb
 
 > The site is in Lyon. Make a sun study of 21 June from 6 am to 10 pm over 8 seconds, then light the entrance with two warm spot lights for a night view.
 
-The copilot runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
+Plumb runs the same commands as the steps above; with **AI › Propose AI changes for review** on, you accept or reject its changes first.
 
 ## From a script, the HTTP API or MCP
 
