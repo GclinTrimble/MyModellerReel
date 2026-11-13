@@ -3,6 +3,7 @@
 import { protocolOf, systemPrompt, runTurn } from '../core/agent.js';
 import { h, icon } from './ui.js';
 import { SKILLS } from '../core/skills.js';
+import * as FB from '../core/feedback.js';
 
 const SUGGESTIONS = [
   'Model a small two-storey house with a pitched roof, a door and four windows',
@@ -17,6 +18,7 @@ export class Assistant {
   constructor(app) {
     this.app = app;
     this.history = [];
+    this.turns = []; // this session's turns as training records (#232), newest last
     this.protocol = null;
     this.propose = localStorage.getItem('mymodellerreel.propose') === '1';
     this.el = this.build();
@@ -81,7 +83,7 @@ export class Assistant {
         'div.chat-empty',
         {},
         this.settings.provider === 'ollama' && window.native ? this.setupCard({ quiet: true }) : null,
-        h('p.muted', {}, 'Ask in plain words. The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.'),
+        h('p.muted', {}, 'Ask in plain words.', h('i.ph.ph-info.info-tip', { tabIndex: 0, role: 'img', title: 'The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.', 'aria-label': 'The copilot drafts for you with the same tools you have: what it makes stays editable (select it, change its parameters, or ask again), each turn is one undo step.' })),
         ...SUGGESTIONS.map((s) => h('button.chip', { onclick: () => this.ask(s) }, s)),
       ),
     );
@@ -125,12 +127,11 @@ export class Assistant {
       }
       box.hidden = false;
       const step = (key, done, title, text, btn) =>
-        h(`div.setup-step${done ? '.done' : s.next === key ? '.now' : ''}`, {}, icon(done ? 'check-circle' : 'circle', done), h('div.grow', {}, h('strong', {}, title), text ? h('div.small.muted', {}, text) : null), !done && s.next === key ? btn : null);
+        h(`div.setup-step${done ? '.done' : s.next === key ? '.now' : ''}`, {}, icon(done ? 'check-circle' : 'circle', done), h('div.grow', { title: text || '' }, h('strong', {}, title), text && s.next === key && !done ? h('div.small.muted', {}, text) : null), !done && s.next === key ? btn : null);
       const bar = h('div.learn-bar', { hidden: true, role: 'progressbar', 'aria-label': `Downloading ${s.model}` }, h('i'));
       const note = h('div.small.muted');
       box.replaceChildren(
-        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `The copilot is ready (${s.model} on this PC)` : 'Set up the copilot on this PC'), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
-        s.next === 'ready' ? null : h('p.small', {}, 'The copilot runs a free AI model on your own PC (nothing leaves it). Three steps, once:'),
+        h('div.row', {}, icon('sparkle'), h('strong.grow', {}, s.next === 'ready' ? `The copilot is ready (${s.model} on this PC)` : 'Set up the copilot on this PC', s.next === 'ready' ? null : h('i.ph.ph-info.info-tip', { tabIndex: 0, role: 'img', title: 'The copilot runs a free AI model on your own PC (nothing leaves it). Three steps, once.', 'aria-label': 'The copilot runs a free AI model on your own PC (nothing leaves it). Three steps, once.' })), h('button.icon-btn.sm', { title: 'Look again', 'aria-label': 'Look again', onclick: () => draw() }, icon('arrow-clockwise'))),
         s.provider !== 'ollama'
           ? h('p.small.muted', {}, 'The copilot uses an online model (Settings › AI).')
           : h(
@@ -188,7 +189,69 @@ export class Assistant {
   }
   stop() {
     this.stopped = true;
+    this.pendingAsk?.(null);
     window.native?.invoke('ai:abort');
+  }
+
+  /** A question from the copilot (#233): choice buttons and / or a box; resolves with the answer (null: stopped). */
+  askUser({ question, choices = [], allowText = true }) {
+    this.app.ui.show('ai');
+    return new Promise((resolve) => {
+      const done = (answer) => {
+        this.pendingAsk = null;
+        card.querySelectorAll('button, input').forEach((b) => (b.disabled = true));
+        if (answer != null) this.add(h('div.msg.user', {}, answer));
+        resolve(answer);
+      };
+      const typed = () => box.value.trim() && done(box.value.trim());
+      const box = allowText ? h('input', { placeholder: 'Your answer…', 'aria-label': 'Your answer', onkeydown: (e) => e.key === 'Enter' && typed() }) : null;
+      const card = h(
+        'div.ask-card',
+        { role: 'group', 'aria-label': 'The copilot asks' },
+        h('div.row', {}, icon('chat-circle-dots'), h('strong.grow', {}, question)),
+        choices.length ? h('div.row.wrap', {}, ...choices.map((c) => h('button.btn.sm', { onclick: () => done(c) }, c))) : null,
+        box ? h('div.row', {}, box, h('button.btn.sm.primary', { onclick: typed }, 'Answer')) : null,
+      );
+      this.pendingAsk?.(null);
+      this.pendingAsk = done;
+      this.add(card);
+      (box || card.querySelector('button'))?.focus();
+    });
+  }
+
+  /** Rate a turn (#232): a thumb saves it at once; tags and what should be different can follow. */
+  feedbackRow(turn) {
+    const app = this.app;
+    const tags = new Set();
+    let rating = null;
+    const status = h('span.small.muted', { role: 'status' });
+    const comment = h('textarea', { rows: 2, placeholder: 'What should be different? (optional)', 'aria-label': 'What should be different' });
+    const save = async (more) => {
+      try {
+        const r = await app.reg.run('rate_ai_turn', { turn: turn.id, rating, comment: comment.value.trim(), tags: [...tags] });
+        status.textContent = r.shared ? 'Thanks: saved and shared.' : r.share_error ? `Saved on this PC (not shared: ${r.share_error})` : 'Thanks: saved on this PC.';
+        if (more) extra.hidden = true;
+      } catch (e) {
+        status.textContent = e.message;
+      }
+    };
+    const thumb = (r, ic, label) =>
+      h('button.icon-btn.sm.fb-thumb', { title: label, 'aria-label': label, 'aria-pressed': 'false', onclick: () => {
+        rating = r;
+        row.querySelectorAll('.fb-thumb').forEach((b) => b.setAttribute('aria-pressed', String(b.title === label)));
+        extra.hidden = false;
+        void save(false);
+      } }, icon(ic));
+    const share = h('input', { type: 'checkbox', checked: !!this.settings.shareFeedback, onchange: (e) => app.reg.run('share_ai_feedback', { on: e.target.checked }).catch((err) => app.ui.toast(err.message, 'danger')) });
+    const extra = h(
+      'div.fb-more',
+      { hidden: true },
+      h('div.row.wrap', {}, ...FB.TAGS.map((t) => h('button.chip.sm', { 'aria-pressed': 'false', onclick: (e) => (tags.has(t) ? tags.delete(t) : tags.add(t), e.currentTarget.setAttribute('aria-pressed', String(tags.has(t)))) }, t))),
+      comment,
+      h('div.row', {}, h('label.small.row', { title: 'Rated answers, with the request and the model, upload to the MyStudioReel suite under your account to train a better modelling copilot.' }, share, 'Share to improve the copilot'), h('span.grow'), h('button.btn.sm.primary', { onclick: () => save(true) }, 'Send')),
+    );
+    const row = h('div.feedback', { role: 'group', 'aria-label': 'Rate this answer' }, h('div.row', {}, h('span.small.muted', {}, 'Was this right?'), thumb('good', 'thumbs-up', 'Good answer'), thumb('bad', 'thumbs-down', 'Not right'), status), extra);
+    return row;
   }
 
   add(node) {
@@ -257,6 +320,9 @@ export class Assistant {
     ctx.batchDepth = (ctx.batchDepth || 0) + 1;
     const turnLength = this.history.length;
     const had = new Set(app.store.doc.entities.map((e) => e.id));
+    const before = structuredClone(app.store.doc);
+    const steps = [];
+    const answers = [];
     const t0 = performance.now();
     const usage = { in: 0, out: 0, calls: 0, steps: 0 };
     app.onUsage = (d) => {
@@ -293,19 +359,22 @@ export class Assistant {
         hooks: {
           stopped: () => this.stopped,
           onThinking: (on) => (on ? this.add(thinking) : thinking.remove()),
-          onText: (t) => (this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
+          onText: (t) => (answers.push(t), this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
           onCall: (c) => {
             this.live?.classList.remove('live');
             this.live = null;
             usage.calls++;
+            steps.push({ name: c.name, args: c.args });
             const row = this.add(h('details.toolcall.running', {}, h('summary', {}, `${c.name} ${JSON.stringify(c.args).slice(0, 120)}`)));
             row.t0 = performance.now();
+            row.step = steps.at(-1);
             return row;
           },
           onResult: (row, c, result, isError) => {
             row.classList.remove('running');
             row.querySelector('summary').append(h('span.muted.small', {}, ` · ${Math.round(performance.now() - row.t0)} ms`));
             if (isError) row.classList.add('err');
+            if (row.step) isError ? (row.step.error = result?.error || result) : (row.step.result = result);
             app.store.changed(); // live update inside the batched turn
             if (result?.image) row.append(h('img', { src: result.image, alt: 'Screenshot the AI looked at', style: { maxWidth: '100%', borderRadius: '6px', marginTop: '4px' } }));
             row.append(h('pre', {}, JSON.stringify(result?.image ? { ...result, image: '(image)' } : (result ?? { ok: true })).slice(0, 4000)));
@@ -333,6 +402,12 @@ export class Assistant {
       // what it drafted, ready to change by hand (#225)
       const made = app.store.doc.entities.filter((e) => !had.has(e.id) && !e.parent && e.type !== 'point');
       if (made.length) this.add(this.madeList(made));
+      // every turn is a training record once rated (#232)
+      if (steps.length || answers.length) {
+        const turn = FB.turnRecord({ prompt: text, steps, answer: answers.join('\n'), before, after: app.store.doc, provider: this.settings.provider, model: this.modelName(), app_version: app.info?.version || '', seconds: (performance.now() - t0) / 1000, tokens: { in: usage.in, out: usage.out }, selection: [...(app.selection || [])] });
+        this.turns = [...this.turns.slice(-19), turn];
+        this.add(this.feedbackRow(turn));
+      }
       if (proposing && app.store.proposalDiff()?.empty) app.store.acceptProposal(); // nothing to review
       app.store.changed();
       this.busy = false;

@@ -317,13 +317,15 @@ export class Panes {
     // title chips
     for (const el of this.heads) el?.remove();
     this.heads = [];
+    // the view bar stays top right in every layout (#205): a chip of a pane reaching under it steps down
+    const vb = document.getElementById('viewbar');
+    const barLeft = 1 - ((vb?.offsetWidth || 0) + 12) / (this.wrap.clientWidth || 1);
     if (L.count > 1)
       docked.forEach((p, k) => {
         const r = rects[k];
         if (!r) return;
         const el = this.head(p, L);
-        // the view bar stays top right in every layout (#205): the chip of the pane under it steps down
-        const under = r.y < 1e-6 && r.x + r.w > 1 - 1e-6;
+        const under = r.y < 1e-6 && r.x + r.w > barLeft;
         Object.assign(el.style, { left: `calc(${pct(r.x)} + 8px)`, top: `calc(${pct(r.y)} + ${under ? 56 : 8}px)` });
         this.wrap.append(el);
         this.heads[p.i] = el;
@@ -353,31 +355,17 @@ export class Panes {
     const run = (name, args) => this.app.reg.run(name, args).catch((e) => this.app.ui.toast(e.message, 'danger'));
     const n = p.i + 1;
     const cfg = L.panes[p.i];
-    const proj = p.main ? this.vp.store.doc.settings.projection || 'perspective' : cfg.projection;
-    const scenes = this.vp.store.doc.scenes || [];
-    const roads = !p.main && this.vp.store.doc.entities.some((e) => e.derived?.generator === 'corridor');
     const flat = is2D(cfg);
-    const select = h(
-      'select.pane-view',
-      { 'aria-label': `View ${n}`, onchange: (e) => (e.target.value.startsWith('scene:') ? run('set_pane', { pane: n, scene: e.target.value.slice(6) }) : run('set_pane', { pane: n, view: e.target.value })) },
-      ...LY.VIEWS.filter((v) => roads || !LY.ROAD_VIEWS.includes(v) || v === cfg.view).map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
-      ...(['custom', 'scene'].includes(cfg.view) ? [h('option', { value: cfg.view, selected: true, disabled: true }, cfg.view === 'scene' ? cfg.scene : LABEL.custom)] : []),
-      ...scenes.map((s) => h('option', { value: `scene:${s.name}` }, `Scene: ${s.name}`)),
-    );
-    const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
+    const name = cfg.view === 'scene' ? cfg.scene : LABEL[cfg.view] || cfg.view;
+    const btn = (ic, label, onclick) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick }, icon(ic));
+    // just the pane's number (#205): its view, projection, wireframe, maximise and window are in the view bar's
+    // Views menu, which acts on the pane last worked in; a road drawing keeps its own stepping buttons
     const el = h(
       'div.pane-head',
-      { ondblclick: (e) => !e.target.closest('select, button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: 'Double-click to maximise or restore' },
-      h('span.pane-num', {}, String(n)),
-      select,
-      ...(cfg.view === 'section'
-        ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))]
-        : []),
+      { onclick: () => this.focus(p.i), ondblclick: (e) => !e.target.closest('button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: `View ${n}: ${name}. Click to work in it, double-click to maximise or restore` },
+      h('span.pane-num', { 'aria-label': `View ${n}: ${name}` }, String(n)),
+      ...(cfg.view === 'section' ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))] : []),
       ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
-      ...(flat ? [] : [btn('perspective', proj === 'parallel' ? 'Parallel projection (click for perspective)' : 'Perspective (click for parallel)', () => run('set_pane', { pane: n, projection: proj === 'parallel' ? 'perspective' : 'parallel' }), proj === 'parallel'),
-      btn('cube-transparent', 'Wireframe', () => run('set_pane', { pane: n, style: cfg.style === 'wireframe' ? 'shaded' : 'wireframe' }), cfg.style === 'wireframe')]),
-      btn(L.max === p.i ? 'corners-in' : 'corners-out', L.max === p.i ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: L.max === p.i ? 0 : n })),
-      ...(p.main ? [] : [btn('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane: n }))]),
     );
     el.classList.toggle('focused', this.focusI === p.i);
     return el;

@@ -73,6 +73,16 @@ app.ctx = {
   io: app.io,
   context: () => app.context,
   help: { open: (id) => app.help.open(id) },
+  // UI the copilot brings up (#233); each waits for the user
+  ui: {
+    ask: (q) => app.ai.askUser(q),
+    form: (name, values) => app.ui.commandDialog(name, values),
+    pick: async (what, count, hint) => (what === 'object' ? app.tools.pickEntity(hint) : (await app.tools.pickPoints(count, hint)).map((p) => p.toArray())),
+    panel: (tab) => app.ui.show(tab),
+  },
+  get aiTurns() {
+    return app.ai?.turns || []; // this session's copilot turns, for rate_ai_turn (#232)
+  },
   version: app.info?.version,
   plugins: {
     list: () => app.plugins,
@@ -476,15 +486,36 @@ if (!app.info.test && !restored?.doc?.entities?.length) app.ui.startScreen();
 app.viewport.controls.addEventListener('end', () => (store.doc.camera = app.viewport.getCamera()));
 
 // components dragged from the Library panel land where they are dropped (#45)
-canvas.addEventListener('dragover', (e) => e.dataTransfer.types.includes('text/x-mmr-asset') && e.preventDefault());
+canvas.addEventListener('dragover', (e) => (e.dataTransfer.types.includes('text/x-mmr-asset') || e.dataTransfer.types.includes('Files')) && e.preventDefault());
 canvas.addEventListener('drop', (e) => {
+  const hit = app.viewport.pick(e);
+  const p = hit ? hit.point : app.viewport.ray(e).intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+  const position = p ? p.toArray().map((x) => Math.round(x * 100) / 100) : undefined;
+  if (e.dataTransfer.files.length) return e.preventDefault(), dropFiles(e.dataTransfer.files, { position, library: e.shiftKey });
   const name = e.dataTransfer.getData('text/x-mmr-asset');
   if (!name) return;
   e.preventDefault();
-  const hit = app.viewport.pick(e);
-  const p = hit ? hit.point : app.viewport.ray(e).intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
-  app.reg.run('insert_asset', { name, ...(p ? { position: p.toArray().map((x) => Math.round(x * 100) / 100) } : {}) }).catch((err) => app.ui.toast(err.message, 'danger'));
+  app.reg.run('insert_asset', { name, position }).catch((err) => app.ui.toast(err.message, 'danger'));
 });
+// files dragged from the desktop: 3D models land where dropped (Shift, or onto the Library panel: into the library);
+// exchange files (LandXML, IFC, DXF, GeoJSON, Shapefile, JobXML) go through import
+const MODEL_FILE = /\.(glb|gltf|obj|stl|fbx)$/i;
+async function dropFiles(files, { position, library }) {
+  for (const f of files) {
+    const path = window.native.pathOf(f);
+    try {
+      if (MODEL_FILE.test(path) && library) app.ui.toast(`Added ${(await app.reg.run('add_to_library', { path })).added} to the library`);
+      else if (MODEL_FILE.test(path)) await app.reg.run('import', { path, position });
+      else await app.reg.run('import', { path });
+    } catch (err) {
+      app.ui.toast(`${f.name}: ${err.message}`, 'danger');
+    }
+  }
+}
+app.dropFiles = dropFiles;
+// the whole window takes file drops so a near miss does not make Electron navigate to the file
+window.addEventListener('dragover', (e) => e.dataTransfer.types.includes('Files') && e.preventDefault());
+window.addEventListener('drop', (e) => e.dataTransfer.files.length && e.target !== canvas && e.preventDefault());
 
 // Ctrl+M released: stop listening and transcribe (#98)
 window.addEventListener('keyup', (ev) => (ev.key.toLowerCase() === 'm' || ev.key === 'Control') && app.ai.recorder && app.ai.hear());

@@ -14,11 +14,12 @@ export const TOOLSETS = {
   look: { categories: [], names: ['set_style', 'set_camera', 'set_effects', 'set_environment', 'create_light', 'set_light', 'set_texture', 'set_material', 'set_material_maps', 'set_geolocation', 'set_sun_time', 'animate_sun', 'render_image', 'ai_render', 'generate_texture', 'get_scene', 'select_where'] },
   annotate: { categories: ['annotate'], names: ['get_scene', 'get_entity', 'select_where', 'measure', 'create_text', 'section', 'export_section', 'export_drawing'] },
   ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
+  materials: { categories: ['materials'], names: ['get_scene', 'get_entity', 'select_where', 'report_quantities'] },
   drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
 };
 
 /** Always offered: enough to look, undo and reach every other command. */
-export const ALWAYS = ['get_scene', 'get_entity', 'list_commands', 'run_script', 'select', 'undo'];
+export const ALWAYS = ['get_scene', 'get_entity', 'list_commands', 'run_script', 'select', 'undo', 'ask_user'];
 
 /** One example call per command: small models copy the shape of an example far better than they read a schema. */
 export const EXAMPLES = {
@@ -58,6 +59,10 @@ export const EXAMPLES = {
   detach_pane: { pane: 2 },
   road_views: { corridor: 'Road' },
   set_snaps: { midpoint: false },
+  paint_surface: { id: 'Site', material: 'Asphalt', inside: 'Car park boundary' },
+  define_surface_material: { name: 'Road base', code: '32 11 23', color: '#9b8f7e', density: 2100, thickness: 0.2, cost: 18 },
+  material_takeoff: { path: 'C:/jobs/site/takeoff.csv' },
+  show_surface_materials: { names: ['Asphalt'], only: true },
   apply_material: { ids: ['House'], material: 'Red brick' },
   suggest_coordinate_systems: { latitude: 48.85, longitude: 2.35 },
   set_section_plane: { name: 'Section', flip: true },

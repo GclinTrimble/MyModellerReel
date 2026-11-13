@@ -8,6 +8,7 @@ import * as P from './profiles.js';
 import * as R from './derived.js';
 import { booleanMeshes } from './csg.js';
 import { quantities, toCsv } from './quantities.js';
+import * as TK from './takeoff.js';
 import { reviewChecks, reviewStats } from './review.js';
 import * as RV from './review.js';
 import * as AN from './annotate.js';
@@ -62,6 +63,7 @@ import * as TX from './textures.js';
 import * as CRS from './crs.js';
 import * as LEARN from './learning.js';
 import * as ACH from './achievements.js';
+import * as FB from './feedback.js';
 import { MATERIALS } from './materials.js';
 import { rankCommands, EXAMPLES, TOOLSETS } from './routing.js';
 
@@ -100,12 +102,19 @@ export const GUIDE = `MyModellerReel conventions:
   (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
   curves on layers (filter by PDF layer, colour, width, window); list_drawing_text reads spot heights. Drafting on
   curves: offset_curve, trim, extend, fillet, chamfer, join_curves, connect_curves (two lines end to end, gap bridged), break_curve (split a line at a point), simplify_curve, divide_curve.
+- the person: ask_user (a question with choice buttons, waits), show_form (a command's form filled in for them to adjust and Run), pick_in_view (they click a point or an object), show_panel; rate_ai_turn / list_ai_feedback (their verdicts on your answers, kept as training data).
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
 - Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
   (schema IFC4 or IFC4X3; roles in metadata become IFC classes, metadata becomes property sets) and dxf.
   query_features / edit_attributes work on feature layers by attribute values.
 - Layers: create_layer / set_layer (colour, lock, current, globs like "C-ROAD/*"), move_to_layer, list_layers,
   merge_layers, map_layers, save_layer_state / restore_layer_state. New geometry goes on the current layer.
+- Surface materials (takeoff): define_surface_material (code, colour, density, thickness, cost per m²), paint_surface
+  on faces (brush at + radius, fill from a seed face stopped by breaklines, inside a boundary, all), show_surface_materials
+  (turn them on / off by type), material_takeoff (area, plan area, volume, weight, cost; CSV, JSON or GeoJSON).
+- Standards, always: prefer open formats and OGC standards (ogc.org/standards) for anything exchanged: GeoJSON / OGC API
+  Features encodings, CityGML / CityJSON, LandXML, IFC, EPSG codes for coordinate systems (urn:ogc:def:crs:EPSG::n),
+  CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
@@ -168,7 +177,7 @@ export function createRegistry(ctx) {
       let result;
       try {
         result = await c.run(args, ctx);
-        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), AN.syncAnnotations(ctx.doc);
+        if (c.mutates) S.syncPoints(ctx.doc), R.rebuildDerived(ctx.doc), Comp.syncComponents(ctx.doc), SW.syncTerrain(ctx.doc), TK.syncPaint(ctx.doc), AN.syncAnnotations(ctx.doc);
       } catch (e) {
         if (own) ctx.store.rollback(); // a command either happens whole or not at all
         else if (snap) ctx.store.doc = JSON.parse(snap);
@@ -3420,7 +3429,67 @@ function registerCore(reg, ctx) {
     await ctx.io.setSettings({ ai: { provider: a.provider, [a.provider]: part } });
     return { provider: a.provider, ...part };
   });
-  def('scene', 'set_language', 'The language of the menus and panels: en (English) or fr (Français).', obj({ lang: str('en | fr', Object.keys(I18N.LANGUAGES)) }, ['lang']), async (a) => {
+  // copilot feedback (#232): the AI panel keeps this session's turns (ctx.aiTurns); a rated one is saved as a training
+  // record on the PC, and uploaded to the suite when the user shares feedback
+  const fbIo = () => {
+    if (!ctx.io?.feedback) throw new Error('Needs the desktop app.');
+    return (...a) => ctx.io.feedback(...a);
+  };
+  def('ai', 'rate_ai_turn', `The user's verdict on a copilot answer, kept as training data for a better modelling agent: good or bad, what should be different (comment) and tags (${FB.TAGS.join(', ')}). Default: the last copilot turn.`, obj({ rating: str('good | bad', ['good', 'bad']), comment: str('what should be different'), tags: { type: 'array', items: { type: 'string', enum: FB.TAGS }, description: 'what went wrong (or great result)' }, turn: str('turn id (default: the last one)') }, ['rating']), async (a) => {
+    const turns = ctx.aiTurns || [];
+    const t = a.turn ? turns.find((x) => x.id === a.turn) : turns.at(-1);
+    if (!t) throw new Error('No copilot answer to rate yet: ask the copilot something first.');
+    Object.assign(t, FB.rate(t, a));
+    const s = await fbIo()('save', t);
+    t.shared = !!s.shared && !s.error;
+    return { id: t.id, rating: t.rating, tags: t.tags, shared: t.shared, ...(s.error ? { share_error: s.error } : {}) };
+  });
+  def('ai', 'list_ai_feedback', 'The copilot feedback given on this PC: how many answers were rated, the share of good ones, what goes wrong most (tags), per model, how many were shared, and the latest ratings.', obj({}), async () => {
+    const recs = (await fbIo()('list')).sort((x, y) => (y.at > x.at ? 1 : -1));
+    return { ...FB.summary(recs), sharing: !!ctx.io.settings?.()?.ai?.shareFeedback, recent: recs.slice(0, 10).map((r) => ({ id: r.id, at: r.at, rating: r.rating, prompt: r.prompt, tags: r.tags, comment: r.comment, shared: r.shared })) };
+  });
+  def('ai', 'export_ai_feedback', 'Write the rated copilot turns as a JSONL training file (one record per line: request, commands, answer, model before and after, verdict).', obj({ path: str('absolute .jsonl path') }), async (a) => {
+    const path = a.path || (await ctx.io.pick('jsonl', true, 'copilot-feedback.jsonl'));
+    if (!path) return { cancelled: true };
+    const recs = await fbIo()('list');
+    await fbIo()('export', path, FB.toJsonl(recs));
+    return { path, records: recs.filter((r) => r.rating).length };
+  });
+  def('ai', 'share_ai_feedback', 'Share copilot feedback to improve it (on: rated turns, with the request and the model, upload to the MyStudioReel suite under your account) or keep it on this PC only (off, the default).', obj({ on: bool('share (true) or keep on this PC (false)') }, ['on']), async (a) => {
+    if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
+    await ctx.io.setSettings({ ai: { shareFeedback: !!a.on } });
+    const up = a.on ? await fbIo()('share').catch((e) => ({ error: e.message })) : null;
+    return { sharing: !!a.on, ...(up || {}) };
+  });
+
+  // the copilot brings up UI (#233): a question, a filled form, a click in the view, a panel; the turn waits for the user
+  const uiHook = (k) => {
+    if (!ctx.ui?.[k]) throw new Error('Needs the desktop app.');
+    return ctx.ui[k];
+  };
+  def('ai', 'ask_user', 'Ask the user a question in the chat and wait for the answer. choices become buttons; allow_text adds a box for their own words (on when there are no choices). Ask when a request is ambiguous (which wall? how high?) instead of guessing.', obj({ question: str('the question, short'), choices: { type: 'array', items: { type: 'string' }, description: 'answers to click (2–6)' }, allow_text: bool('also let them type an answer') }, ['question']), async (a) => {
+    const answer = await uiHook('ask')({ question: a.question, choices: (a.choices || []).slice(0, 6), allowText: a.allow_text ?? !a.choices?.length });
+    return answer == null ? { answer: null, note: 'No answer (stopped).' } : { answer };
+  });
+  def('ai', 'show_form', "Open a command's form for the user, filled with what you know (values): they adjust it, pick points or objects in the view, and click Run. Waits; returns what the command returned, or cancelled.", obj({ command: str('command name, e.g. design_trench'), values: { type: 'object', description: 'arguments to fill in' } }, ['command']), async (a) => {
+    if (!reg.commands.get(a.command)) throw new Error(`No command ${a.command}.`);
+    const r = await uiHook('form')(a.command, a.values || {});
+    return r === undefined ? { cancelled: true } : { result: r };
+  });
+  def('ai', 'pick_in_view', 'Ask the user to click in the view and wait. what point: [x,y,z] points (count, default 1); what object: the id and name of the thing clicked. hint shows on the status bar ("Click the start of the trench").', obj({ what: str('point | object', ['point', 'object']), count: num('points to click (default 1)'), hint: str('what to click') }, ['what']), async (a) => {
+    const r = await uiHook('pick')(a.what, a.count || 1, a.hint || '');
+    if (a.what === 'object') {
+      const e = r && ctx.doc.entities.find((x) => x.id === r);
+      return e ? { id: e.id, name: e.name, type: e.type } : { cancelled: true };
+    }
+    return r?.length ? { points: r } : { cancelled: true };
+  });
+  def('ai', 'show_panel', "Open a side panel for the user: entity (an object's parameters, sizes and material), outliner, materials, scenes, library, survey, settings, help or ai; id selects that object first.", obj({ panel: str('which panel', ['entity', 'outliner', 'materials', 'scenes', 'library', 'survey', 'settings', 'help', 'ai']), id }, ['panel']), async (a) => {
+    if (a.id) await reg.run('select', { ids: [a.id] });
+    uiHook('panel')(a.panel);
+    return { shown: a.panel };
+  });
+  def('scene', 'set_language','The language of the menus and panels: en (English) or fr (Français).', obj({ lang: str('en | fr', Object.keys(I18N.LANGUAGES)) }, ['lang']), async (a) => {
     if (!ctx.io?.setSettings) throw new Error('Needs the desktop app.');
     await ctx.io.setSettings({ language: a.lang });
     return { language: a.lang };
@@ -3533,6 +3602,72 @@ function registerCore(reg, ctx) {
     }
     if (a.format === 'csv') out.csv = csv;
     return out;
+  });
+
+  // ---------------------------------------------------------------- surface materials: paint faces, take off
+  const MATF = { code: str('classification code (MasterFormat, Uniclass, a TBC material code…)'), color: common.color, density: num('kg/m³ (weight = volume × density)'), thickness: num('layer thickness, m (volume = area × thickness)'), cost: num('cost per m²'), description: str('notes') };
+  const planLines = (refs) => D.resolve(ctx.doc, refs).map((e) => (e.curve ? D.curvePoints(ctx.doc, e) : S.isLinework(e) ? S.lineworkPath(ctx.doc, e) : null)).filter(Boolean).map((pts) => pts.map((p) => [p[0], p[2]]));
+  def('materials', 'define_surface_material', 'Add or edit a surface material in the library (painted on faces with paint_surface): code, colour, density, thickness, cost per m². visible false hides its faces; rename renames it everywhere.', obj({ name: str('material name'), ...MATF, visible: bool('show its faces (default true)'), rename: str('new name') }, ['name']), (a) => ({ material: TK.define(ctx.doc, a) }), true);
+  def('materials', 'delete_surface_material', 'Remove a surface material from the library; faces painted with it become unpainted.', obj({ name: str('material name') }, ['name']), (a) => (TK.remove(ctx.doc, a.name), { deleted: a.name }), true);
+  def('materials', 'list_surface_materials', 'The surface material library (code, colour, density, thickness, cost, shown or hidden) with the painted area of each.', obj({}), () => {
+    const rows = new Map(TK.takeoff(ctx.doc).rows.map((r) => [r.material, r]));
+    return { materials: TK.library(ctx.doc).map((m) => ({ ...m, visible: !m.hidden, area: rows.get(m.name)?.area || 0 })) };
+  });
+  def('materials', 'show_surface_materials', 'Hide or show the faces painted with a surface material (asphalt, turf, gravel, concrete…): turn them on or off by material type. only: show these and hide every other; all: show every material.', obj({ names: { type: 'array', items: { type: 'string' }, description: 'materials to change' }, visible: bool('show (true) or hide (false)'), only: bool('show the names given, hide the rest'), all: bool('show every material') }), (a) => {
+    const lib = TK.library(ctx.doc);
+    const names = new Set((a.names || []).map((n) => TK.get(ctx.doc, n).name));
+    for (const m of lib) {
+      const on = a.all ? true : a.only ? names.has(m.name) : names.has(m.name) ? a.visible !== false : !m.hidden;
+      on ? delete m.hidden : (m.hidden = true);
+    }
+    return { visible: lib.filter((m) => !m.hidden).map((m) => m.name), hidden: lib.filter((m) => m.hidden).map((m) => m.name) };
+  }, true);
+  def('materials', 'paint_surface', 'Paint faces of a mesh or surface with a surface material (material "none" clears) for takeoff. Pick the faces by: faces (indices), at + radius (a brush, world metres), seed + fill (flood fill from a face, stopping at bends over angle, at breaklines and, by default, where the paint changes), inside (a closed curve or plan points [[x,z],…]), or all.', obj({ id, material: str('material name, or "none" to clear'), faces: { type: 'array', items: { type: 'integer' }, description: 'face indices' }, at: v3('brush centre, world [x,y,z]'), radius: num('brush radius, m (default 1)'), seed: { type: 'integer', description: 'fill: the face to start from' }, fill: bool('flood fill from seed'), angle: num('fill: largest bend between faces, degrees (default 30)'), breaklines: { type: 'array', items: { type: 'string' }, description: 'fill: curves or linework the fill does not cross' }, over_paint: bool('fill: cross into faces of another material too'), inside: { description: 'a closed curve id/name, or plan points [[x,z],…]' }, all: bool('every face') }, ['id', 'material']), (a) => {
+    const e = D.resolve(ctx.doc, [a.id])[0];
+    if (!e?.mesh) throw new Error(`${a.id} is not a mesh or surface.`);
+    const name = a.material === 'none' ? null : TK.get(ctx.doc, a.material).name;
+    const w = D.worldMesh(ctx.doc, e);
+    let faces = a.faces || [];
+    if (a.all) faces = e.mesh.f.map((_, i) => i);
+    else if (a.at) faces = TK.facesNear(w, a.at, a.radius || 1);
+    else if (a.fill || a.seed !== undefined) {
+      if (!(a.seed >= 0 && a.seed < w.f.length)) throw new Error(`seed must be a face index 0–${w.f.length - 1}.`);
+      faces = TK.region(w, a.seed, { angle: a.angle ?? 30, lines: a.breaklines ? planLines(a.breaklines) : [], sameMaterial: !a.over_paint, fm: e.fm });
+    } else if (a.inside) {
+      const poly = Array.isArray(a.inside) ? a.inside : planLines([a.inside])[0];
+      if (!poly || poly.length < 3) throw new Error('inside needs a closed curve or at least three plan points.');
+      faces = TK.facesInside(w, poly);
+    }
+    if (!faces.length) throw new Error('No faces picked: check the brush position, the seed face or the boundary.');
+    TK.paint(e, faces, name);
+    const area = faces.reduce((s, fi) => s + G.faceArea(w, fi), 0);
+    return { id: e.id, material: name || 'none', faces: faces.length, area: Math.round(area * 1000) / 1000 };
+  }, true);
+  def('materials', 'material_takeoff', 'How many m² of turf, m³ or tonnes of gravel, asphalt, concrete: surface material quantities (takeoff, MSI) per painted material: the faces, 3D area, plan area, volume (area × thickness), weight (× density) and cost (× cost per m²). path writes .csv, .json, or .geojson (the painted faces as Polygon Z features with their material, in project coordinates).', obj({ ids: { ...ids, description: 'only these (default: the whole model)' }, format: str('json (default) or csv', ['json', 'csv']), path: str('absolute .csv, .json or .geojson path') }), async (a) => {
+    const rep = TK.takeoff(ctx.doc, { ids: a.ids });
+    const out = { ...rep };
+    if (a.path) {
+      if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app; omit path to get the numbers.');
+      await ctx.io.writeText(a.path, /\.geojson$/i.test(a.path) ? JSON.stringify(TK.toGeoJson(ctx.doc, { ids: a.ids })) : /\.json$/i.test(a.path) ? JSON.stringify(rep, null, 2) : TK.takeoffCsv(rep));
+      out.written = a.path;
+    }
+    if (a.format === 'csv') out.csv = TK.takeoffCsv(rep);
+    return out;
+  });
+  def('materials', 'import_surface_materials', 'Read a surface material library (JSON, or CSV with columns name, code, color, density, thickness, cost, description): materials are added or updated by name.', obj({ path: str('absolute .json or .csv path'), text: str('or the file text') }), async (a) => {
+    let text = a.text;
+    if (!text) {
+      if (!a.path || !ctx.io?.readText) throw new Error('Give text, or a path (in the desktop app).');
+      text = await ctx.io.readText(a.path);
+    }
+    const list = TK.parseLibrary(text);
+    for (const m of list) TK.define(ctx.doc, m);
+    return { imported: list.length, names: list.map((m) => m.name) };
+  }, true);
+  def('materials', 'export_surface_materials', 'Write the surface material library as JSON or CSV (by the path extension), to share it or load it in another model.', obj({ path: str('absolute .json or .csv path') }, ['path']), async (a) => {
+    if (!ctx.io?.writeText) throw new Error('Writing files needs the desktop app.');
+    await ctx.io.writeText(a.path, /\.csv$/i.test(a.path) ? TK.libraryCsv(ctx.doc) : JSON.stringify({ format: 'mymodellerreel-materials', version: 1, materials: TK.library(ctx.doc) }, null, 2));
+    return { written: a.path, materials: TK.library(ctx.doc).length };
   });
 
   def('ai', 'review_model', 'Design review: finds floating parts, collisions, parts below the ground, unlikely sizes and broken parametric shapes; with a vision model it also critiques four views (iso, front, top, right). include_images returns the four views.', obj({ use_ai: bool('ask the vision model too (default true when one is set up)'), include_images: bool('return the four views as images'), views: bool('take the four screenshots (default true)') }), async (a) => {
@@ -4057,11 +4192,12 @@ function registerCore(reg, ctx) {
     return ctx.io;
   };
   def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
+  def('file', 'add_to_library', 'Copy a 3D model (glb, gltf, obj, stl, fbx; others become GLB) into the component library, to place it again in any model (insert_asset).', obj({ path: str('absolute path (default: a file dialog)') }), (a) => needIO().addToLibrary(a.path));
   def('file', 'open', 'Open a .glb/.gltf (MyModellerReel files reopen fully editable).', obj({ path: str('absolute path') }), (a) => needIO().open(a.path));
   // ---------------------------------------------------------------- files: models and exchange formats (#152)
   const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'usdz', 'png', 'video'];
   def('file', 'list_formats', 'File formats this app reads and writes, with their options (LandXML, IFC, DXF and models).', obj({}), () => [...F.listFormats(), { id: 'glb / gltf / obj / stl / fbx', label: '3D models (insert)', import: true, export: true }]);
-  def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), Trimble JobXML (points) and FXL (feature library), GeoJSON and Shapefile (features with attributes), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | jxl | fxl | geojson | shp | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)') }), async (a) => {
+  def('file', 'import', 'Bring a file into the current model: LandXML (points, surfaces, alignments, linework), Trimble JobXML (points) and FXL (feature library), GeoJSON and Shapefile (features with attributes), IFC (BIM elements with property sets, storeys, layers, georeferencing), DXF (CAD linework, layers, blocks as components, 3D faces) or a 3D model (glb, gltf, obj, stl, fbx). Returns what came in, what was skipped and why.', obj({ path: str('absolute path'), text: str('or: the file contents (text formats)'), format: str('when the extension does not say: landxml | jxl | fxl | geojson | shp | ifc | dxf'), layer: str('put everything on this layer'), coordinates: str('DXF: project (E, N, Z) or local; default: project when the numbers are big', ['project', 'local']), units: str('DXF without units: m | ft | usft'), properties: bool('IFC: read property sets (default true)'), position: v3('3D models: where the base centre lands (default: as in the file, framed)') }), async (a) => {
     const doc = ctx.doc;
     if (!a.path && a.text === undefined) {
       a.path = await needIO().pick('import', false);
@@ -4069,7 +4205,7 @@ function registerCore(reg, ctx) {
     }
     let fmt = a.format ? F.getFormat(a.format) : a.path ? F.formatFor(a.path) : null;
     if (a.format && !fmt) throw new Error(`Unknown format "${a.format}". list_formats shows them.`);
-    if (!fmt && a.path) return needIO().importModel(a.path);
+    if (!fmt && a.path) return needIO().importModel(a.path, a.position);
     if (!fmt) throw new Error('Give path, or text with format.');
     if (!fmt.read) throw new Error(`${fmt.label}: export only.`);
     let data = a.text;

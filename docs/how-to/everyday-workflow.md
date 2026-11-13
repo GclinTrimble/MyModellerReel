@@ -19,7 +19,7 @@ You want to fill in a dialog without knowing the scripting names, keep a growing
 6. **View › [Ribbon](action:ribbon)**: any menu as a ribbon of big buttons in tabs (Draw and modify, Edit, Arrange, View, Animate, Site, Drawings); pick which in its list. **View › [Side toolbar](action:sideToolbar)** hides the side toolbar when the ribbon has the tools.
    ![Ribbons](media/everyday-workflow/06.jpg)
 
-The view bar stays at the top right whatever the layout, with **Select**, **perspective / parallel** and **wireframe** for the pane you work in. Grips on a selected shape appear one at a time as the pointer comes near a corner or edge, never through a face.
+The view bar stays at the top right whatever the layout; its **Views** menu has the standard views, **parallel projection** and **wireframe** for the pane you work in. Grips on a selected shape appear one at a time as the pointer comes near a corner or edge, never through a face.
 
 **[Path / alignment](tool:curve)** (with the Line tool): click points; **A** switches to arc segments, **S** smooths the path into a spline, `r 5` rounds every corner to 5 m. Enter keeps it as a path for sweeps and motion; **Ctrl+Enter** makes it a road alignment, whose radii you change corner by corner in the Entity panel. Sweeps have civil sections too: road crown, barrier and mountable kerbs, footpath with kerb, V-ditch, lined channel, U-drain, hollow pipe, pipe trench, guard rail, L-wall.
 
