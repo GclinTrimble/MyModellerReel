@@ -1027,23 +1027,94 @@ export class UI {
       const parallel = (pane === 1 ? s.projection : cfg?.projection) === 'parallel';
       const wire = multi ? cfg?.style === 'wireframe' : !!s.wireframe;
       const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
-      vb.replaceChildren(
-        btn('cursor', 'Select (Space)', () => this.app.tools.set('select'), tool === 'select'),
-        btn('perspective', parallel ? 'Parallel projection: click for perspective' : 'Perspective: click for parallel projection', () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }), parallel),
-        btn('cube-transparent', 'Wireframe', () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()), wire),
-        h('span.sep'),
-        drop('cube', 'Standard views (in the pane you last worked in)', () => ['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run }))),
-        drop(navTool.icon, 'Navigate: orbit, pan, zoom window, walk', () => NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) }))),
-        btn('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run()),
-        drop('squares-four', 'Views: one, two, three or four panes', () => ['layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', '-', 'fitPanes'].map((k) => (k === '-' ? k : { label: A[k].label, icon: A[k].icon, run: A[k].run }))),
-        h('span.sep'),
-        drop('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
-        drop('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
-        ...['edges', 'shadows'].map((k) => btn(A[k].icon, A[k].label, A[k].run, s[k])),
-        h('span.sep'),
-        btn('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active),
-        btn('sidebar-simple', 'Side panel (Ctrl+B)', A.sidePanel.run, !document.body.classList.contains('no-dock')),
-      );
+      const doc = this.app.store.doc;
+      const L = panes?.layout;
+      const maxed = multi && L.max === pane - 1;
+      const camera = doc.settings.layout?.camera_mark === true;
+      const roads = pane > 1 && doc.entities.some((e) => e.derived?.generator === 'corridor');
+      // the drop-downs always hold everything; the wide bar adds the buttons for what is used most
+      const nav = () => [
+        ...NAV.map((id) => TOOLS.find((x) => x.id === id)).map((x) => ({ label: tr(x.label), icon: x.icon, key: x.key, checked: () => this.app.tools.id === x.id, run: () => this.app.tools.set(x.id) })),
+        '-',
+        { label: 'Zoom extents', icon: 'corners-out', key: 'Shift+Z', run: () => A.zoomExtents.run() },
+        ...(multi ? [{ label: A.fitPanes.label, icon: A.fitPanes.icon, run: A.fitPanes.run }] : []),
+        'Touchpad: Alt + drag orbits, Alt + Shift + drag pans, pinch zooms',
+      ];
+      const views = () => [
+        multi ? `View ${pane}` : 'Standard views',
+        ...['iso', 'top', 'front', 'right', 'left', 'back'].map((v) => ({ label: `${A[v].label} view`, icon: A[v].icon, run: A[v].run })),
+        ...(roads ? [{ label: 'Long profile', icon: 'chart-line', run: () => run('set_pane', { pane, view: 'profile' }) }, { label: 'Cross section', icon: 'line-segments', run: () => run('set_pane', { pane, view: 'section' }) }] : []),
+        '-',
+        { label: 'Parallel projection', icon: 'perspective', checked: () => parallel, run: () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }) },
+        { label: 'Wireframe', icon: 'cube-transparent', checked: () => wire, run: () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()) },
+        ...(multi
+          ? [
+              { label: maxed ? 'Restore the views' : 'Maximise this view', icon: maxed ? 'corners-in' : 'corners-out', run: () => run('set_layout', { max: maxed ? 0 : pane }) },
+              ...(pane > 1 ? [{ label: 'Move to its own window', icon: 'arrow-square-out', run: () => run('detach_pane', { pane }) }] : []),
+              { label: 'Show the main camera in the other views', icon: 'video-camera', checked: () => camera, run: () => run('set_layout', { show_camera: !camera }) },
+            ]
+          : []),
+        ...((doc.scenes || []).length ? ['Scenes', ...doc.scenes.map((sc) => ({ label: sc.name, icon: 'camera', run: () => run('set_pane', { pane, scene: sc.name }) }))] : []),
+        'Layout',
+        ...['layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4'].map((k) => ({ label: A[k].label, icon: A[k].icon, run: A[k].run })),
+      ];
+      const B = (ic, label, fn, pressed) => ({ ic, label, fn, pressed });
+      const D = (ic, label, items) => ({ ic, label, items });
+      // wide: [select group, pane group, views group, display group]; a 0 merges that group into its drop-downs
+      const groups = (wide) => [
+        [
+          B('cursor', 'Select (Space)', () => this.app.tools.set('select'), tool === 'select'),
+          ...(wide[0]
+            ? [
+                B('perspective', parallel ? 'Parallel projection: click for perspective' : 'Perspective: click for parallel projection', () => run('set_pane', { pane, projection: parallel ? 'perspective' : 'parallel' }), parallel),
+                B('cube-transparent', 'Wireframe', () => (multi ? run('set_pane', { pane, style: wire ? 'shaded' : 'wireframe' }) : A.wireframe.run()), wire),
+              ]
+            : []),
+        ],
+        multi && wide[1]
+          ? [
+              B(maxed ? 'corners-in' : 'corners-out', maxed ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: maxed ? 0 : pane })),
+              ...(pane > 1 ? [B('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane }))] : []),
+              B('video-camera', 'Show the main camera in the other views', () => run('set_layout', { show_camera: !camera }), camera),
+            ]
+          : [],
+        [
+          D('cube', 'Views: standard views, projection, wireframe, layout', views),
+          D(navTool.icon, 'Navigate: orbit, pan, zoom, walk', nav),
+          ...(wide[2] ? [B('corners-out', 'Zoom extents (Shift+Z)', () => A.zoomExtents.run())] : []),
+        ],
+        wide[3]
+          ? [
+              D('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
+              D('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
+              ...['edges', 'shadows'].map((k) => B(A[k].icon, A[k].label, A[k].run, s[k])),
+            ]
+          : [D('eye', 'Display and snaps (stays open)', () => [...this.displayItems(), '-', ...this.snapSettings()])],
+        [B('film-strip', 'Timeline (Ctrl+T)', A.timeline.run, this.app.timeline.active), B('sidebar-simple', 'Side panel (Ctrl+B)', A.sidePanel.run, !document.body.classList.contains('no-dock'))],
+      ];
+      const el = (c) => (c.items ? drop(c.ic, c.label, c.items) : btn(c.ic, c.label, c.fn, c.pressed));
+      // a folded control shows in the More menu: a drop-down as a heading and its entries
+      const asItems = (c) => (c.items ? ['-', c.label.split(/[:(]/)[0].trim(), ...c.items()] : [{ label: c.label, icon: c.ic, run: c.fn, checked: c.pressed === undefined ? undefined : () => c.pressed }]);
+      // the room: the pane's width less its own controls on the multi-view bar, else the view's width
+      const bar = vb.closest('.pane-toolbar');
+      const r = bar && panes.rects?.get(panes.all()[panes.focusI]);
+      const W = panes?.wrap.clientWidth || 0;
+      const room = r ? (r.x + r.w) * W - (parseFloat(getComputedStyle(bar).right) || 0) - r.x * W - 8 - (bar.firstElementChild?.offsetWidth || 0) - 14 : (vb.parentElement?.clientWidth || innerWidth) - (parseFloat(getComputedStyle(vb).right) || 0) - 12;
+      // shown: how many controls stay; the rest, last first, go into More
+      const fits = (gs, shown = Infinity) => {
+        let n = 0;
+        const kept = gs.map((g) => g.filter(() => n++ < shown)).filter((g) => g.length);
+        const folded = gs.flat().slice(shown);
+        vb.replaceChildren(
+          ...kept.flatMap((g, i) => [...(i ? [h('span.sep')] : []), ...g.map(el)]),
+          ...(folded.length ? [h('span.sep'), drop('dots-three', 'More view tools', () => folded.flatMap(asItems).filter((it, i) => i || it !== '-'))] : []),
+        );
+        return vb.scrollWidth <= room;
+      };
+      // with room every button shows; narrower, the groups merge into their drop-downs (display, views, the pane's
+      // own, then projection), and only then do the last controls fold, one by one, into More. Never wraps.
+      const steps = [[1, 1, 1, 1], [1, 1, 1, 0], [1, 1, 0, 0], [1, 0, 0, 0], [0, 0, 0, 0]];
+      if (!steps.some((w) => fits(groups(w)))) for (let shown = groups([0, 0, 0, 0]).flat().length - 1; shown >= 1 && !fits(groups([0, 0, 0, 0]), shown); shown--);
     };
     this.renderViewbar = render;
     new ResizeObserver(() => render()).observe(vb.parentElement);

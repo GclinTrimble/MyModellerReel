@@ -164,10 +164,10 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .pane-frame.focused .pane-num { color: var(--my-accent-text); }
 /* the one floating bar of a multi-pane view: the pane's own controls, then the view bar */
 .pane-toolbar {
-  position: absolute; z-index: 3; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: var(--my-space-0); padding: var(--my-space-1);
+  position: absolute; z-index: 3; display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: var(--my-space-0); padding: var(--my-space-1);
   background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2);
 }
-.pane-toolbar .viewbar { display: contents; } /* its buttons wrap one by one in a narrow pane */
+.pane-toolbar .viewbar { position: static; padding: 0; border: 0; background: none; box-shadow: none; } /* one row: ui.js groups or folds what does not fit */
 .pane-head { display: flex; align-items: center; gap: var(--my-space-0); font: var(--my-text-xs) var(--my-font-ui); }
 .pane-head .pane-num { min-width: 16px; text-align: center; font-family: var(--my-font-mono); color: var(--my-accent-text); }
 .pane-head .sep { align-self: stretch; width: 1px; background: var(--my-border); margin: var(--my-space-1); }
