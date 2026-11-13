@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { Store, newDoc } from '../src/core/document.js';
 import { createRegistry } from '../src/core/commands.js';
-import { runTurn, systemPrompt, protocolOf } from '../src/core/agent.js';
+import { runTurn, systemPrompt, protocolOf, newStats } from '../src/core/agent.js';
 import { TASKS } from './eval-tasks.js';
 
 const DATA = process.env.MMR_HOME || (process.env.APPDATA ? path.join(process.env.APPDATA, 'MyModellerReel') : path.join(os.homedir(), '.config', 'MyModellerReel'));
@@ -76,10 +76,11 @@ export async function runTask(task, spec, { routing = true } = {}) {
   const protocol = protocolOf(p.provider);
   const history = [{ role: 'user', content: task.prompt }];
   const t0 = Date.now();
-  let stats = { steps: 0, calls: 0, errors: 0 };
+  const stats = newStats(); // filled as it runs: a crash keeps the timings so far
   let crash = null;
   try {
-    stats = await runTurn({
+    await runTurn({
+      stats,
       protocol,
       chat: p.chat,
       run: (n, a) => reg.run(n, a),
@@ -108,7 +109,7 @@ async function main() {
     for (const t of tasks) {
       const r = await runTask(t, m, { routing });
       rows.push(r);
-      console.log(`${m.padEnd(28)} ${t.name.padEnd(18)} ${(r.score * 100).toFixed(0).padStart(4)} %  ${String(r.calls).padStart(3)} calls ${String(r.errors).padStart(2)} errors ${r.seconds.toFixed(1).padStart(6)} s${r.failed.length ? `  ✗ ${r.failed.join('; ')}` : ''}`);
+      console.log(`${m.padEnd(28)} ${t.name.padEnd(18)} ${(r.score * 100).toFixed(0).padStart(4)} %  ${String(r.calls).padStart(3)} calls ${String(r.errors).padStart(2)} errors ${r.seconds.toFixed(1).padStart(6)} s (model ${(r.model_ms / 1000).toFixed(1)} s, ${r.steps} steps${r.tokens_per_s ? `, ${r.tokens_per_s} tok/s` : ''})${r.failed.length ? `  ✗ ${r.failed.join('; ')}` : ''}`);
     }
   console.log('\nModel                         score   calls  errors  (routing ' + (routing ? 'on' : 'off') + ')');
   for (const m of models) {

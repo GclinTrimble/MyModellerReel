@@ -1,7 +1,7 @@
 // The in-app assistant (Plumb): a chat panel over the shared agent loop (src/core/agent.js), which drives the same command
 // registry as the UI. Each turn is one undo step, or a pending proposal when "Propose" is on. One Assistant per agent
 // profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
-import { protocolOf, systemPrompt, runTurn, userMessage } from '../core/agent.js';
+import { protocolOf, systemPrompt, runTurn, userMessage, newStats, shortArgs, splitThinking, turnSummary } from '../core/agent.js';
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
 import { h, icon, infoTip } from './ui.js';
 import { sketchPad } from './sketch.js';
@@ -42,6 +42,7 @@ export class Assistant {
     this.agents = agents;
     this.queue = []; // tasks waiting while a turn runs: { text, done }
     this.history = [];
+    this.turns = []; // the last turns' timings (ai_turns)
     this.protocol = null;
     this.propose = localStorage.getItem('mymodellerreel.propose') === '1';
     this.el = this.build();
@@ -312,7 +313,9 @@ export class Assistant {
 
   add(node) {
     this.log.querySelector('.chat-empty')?.remove();
-    this.log.append(node);
+    // the running turn's card stays last
+    if (this.card?.isConnected && node !== this.card) this.log.insertBefore(node, this.card);
+    else this.log.append(node);
     this.log.scrollTop = this.log.scrollHeight;
     return node;
   }
@@ -382,7 +385,14 @@ export class Assistant {
     this.stopped = false;
     this.sendBtn.replaceChildren(icon('stop'));
     this.sendBtn.title = 'Stop';
-    const thinking = h('div.thinking', {}, h('i'), h('i'), h('i'));
+    // the running turn (#257): what it does now, elapsed time, steps and a Stop, kept at the end of the thread
+    const stats = (this.stats = newStats());
+    const status = h('span.grow', { 'aria-live': 'polite' }, 'Thinking…');
+    const clock = h('span.turn-clock');
+    const say = (t) => (status.textContent = t);
+    this.card = this.add(h('div.turn-live', {}, h('span.turn-spin', { 'aria-hidden': 'true' }), status, clock, h('button.btn.sm', { title: 'Stop this turn: what is done so far stays (undo removes it)', onclick: () => this.stop() }, icon('stop'), 'Stop')));
+    const tick = () => (clock.textContent = `${Math.floor((performance.now() - t0) / 1000)} s · step ${stats.steps || 1}${stats.calls ? ` · ${stats.calls} call${stats.calls === 1 ? '' : 's'}` : ''}`);
+    const ticker = setInterval(tick, 250);
     // The whole turn is one undo step (or one proposal); the view still updates after every tool call.
     // Agents at work together share the batch: the first opens it (and its proposal), the last closes it.
     const crew = this.agents.crew;
@@ -395,26 +405,39 @@ export class Assistant {
     const turnLength = this.history.length;
     (ctx.turnStarts ||= []).push(app.store.doc.journal?.length || 0); // "save what we just did as a tool" (#242)
     const had = new Set(app.store.doc.entities.map((e) => e.id));
-    const t0 = performance.now();
-    const usage = { in: 0, out: 0, calls: 0, steps: 0 };
-    app.onUsage = (d) => {
-      const u = d?.usage || {};
-      usage.in += u.input_tokens ?? u.prompt_tokens ?? d?.prompt_eval_count ?? 0;
-      usage.out += u.output_tokens ?? u.completion_tokens ?? d?.eval_count ?? 0;
-    };
-    // text streams into a live bubble; the final text replaces it so nothing shows twice
+    // text streams into a live bubble, reasoning (<think>) folded above it with a live preview; the final text
+    // replaces the streamed one so nothing shows twice
     this.delta = (t) => {
-      thinking.remove();
-      if (!this.live) this.live = this.add(h('div.msg.assistant.live', {}, ''));
-      this.live.textContent += t;
+      if (!this.live) this.live = this.add(h('div.msg.assistant.live', {}, h('details.think', { hidden: true }, h('summary'), h('div.think-text')), h('div.msg-text')));
+      const b = this.live;
+      b.raw = (b.raw || '') + t;
+      const r = splitThinking(b.raw);
+      const think = b.firstChild;
+      think.hidden = !r.thinking && !r.open;
+      think.firstChild.textContent = r.open ? `Reasoning… ${r.thinking.slice(-90)}` : `Reasoned (${r.thinking.split(/\s+/).length} words)`;
+      think.lastChild.textContent = r.thinking;
+      b.lastChild.textContent = r.text;
+      say(r.open ? 'Reasoning…' : 'Writing…');
       this.log.scrollTop = this.log.scrollHeight;
     };
+    const t0 = performance.now();
+    tick();
     try {
       await runTurn({
+        stats,
         protocol,
         chat: (body) => app.chat({ ...body, agent: { id: this.profile.id, provider: this.profile.provider, model: this.profile.model } }),
         // a failed call leaves nothing behind for the model to trip over; one touching another agent's work is held
-        run: (name, args) => crewRun(crew, ctx, this.profile, (n, a) => app.reg.run(n, a), name, args),
+        run: async (name, args) => {
+          try {
+            return await crewRun(crew, ctx, this.profile, (n, a) => app.reg.run(n, a), name, args);
+          } finally {
+            // the view shows each change as it lands (the turn stays one undo step); a frame lets it paint even when a
+            // reply holds several calls, and the timeout keeps a hidden window (no frames) going
+            app.store.changed();
+            await new Promise((r) => (requestAnimationFrame(r), setTimeout(r, 50)));
+          }
+        },
         list: () => app.reg.list(),
         history: this.history,
         system: () =>
@@ -422,28 +445,36 @@ export class Assistant {
         toolset: this.profile.toolset !== 'auto' ? this.profile.toolset : this.settings.toolset || 'auto',
         hooks: {
           stopped: () => this.stopped,
-          onThinking: (on) => (on ? this.add(thinking) : thinking.remove()),
-          onText: (t) => ((reply = t), this.live ? ((this.live.textContent = t), this.live.classList.remove('live'), (this.live = null)) : this.add(h('div.msg.assistant', {}, t))),
+          onThinking: (on) => on && say('Thinking…'),
+          onText: (t) => {
+            reply = t;
+            if (!this.live) return this.add(h('div.msg.assistant', {}, t));
+            this.live.lastChild.textContent = t;
+            this.live.classList.remove('live');
+            this.live = null;
+          },
           onCall: (c) => {
             this.live?.classList.remove('live');
             this.live = null;
-            usage.calls++;
-            const row = this.add(h('details.toolcall.running', {}, h('summary', {}, `${c.name} ${JSON.stringify(c.args).slice(0, 120)}`)));
-            row.t0 = performance.now();
-            return row;
+            say(`Running ${c.name}…`);
+            tick();
+            const args = shortArgs(c.args);
+            return this.add(h('details.toolcall.running', {}, h('summary', { title: JSON.stringify(c.args) }, h('span.tc-icon', { 'aria-hidden': 'true' }), h('b', {}, c.name), args ? ` ${args}` : '')));
           },
-          onResult: (row, c, result, isError) => {
+          onResult: (row, c, result, isError, ms) => {
             row.classList.remove('running');
-            row.querySelector('summary').append(h('span.muted.small', {}, ` · ${Math.round(performance.now() - row.t0)} ms`));
-            if (isError) row.classList.add('err');
-            app.store.changed(); // live update inside the batched turn
+            row.classList.add(isError ? 'err' : 'ok');
+            const sum = row.querySelector('summary');
+            if (isError) sum.append(h('span.tc-err', {}, ` · ${String(result.error).slice(0, 140)}`));
+            sum.append(h('span.muted', {}, ` · ${ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`}`));
+            say('Thinking…');
+            tick();
             if (result?.image) row.append(h('img', { src: result.image, alt: 'Screenshot the AI looked at', style: { maxWidth: '100%', borderRadius: '6px', marginTop: '4px' } }));
             row.append(h('pre', {}, JSON.stringify(result?.image ? { ...result, image: '(image)' } : (result ?? { ok: true })).slice(0, 4000)));
           },
         },
       });
     } catch (e) {
-      thinking.remove();
       const msg = e.message.replace(/^Error invoking remote method 'ai:chat': (Error: )?/, '');
       // cannot reach the local model: the setup card, not a raw network error (#224)
       const unreachable = /ECONNREFUSED|Is Ollama running|fetch failed|model .*not found|pull the model|not downloaded yet/i.test(msg) && (this.provider() === 'ollama' || this.provider() === 'builtin');
@@ -455,11 +486,22 @@ export class Assistant {
       this.live?.classList.remove('live');
       this.live = null;
       this.delta = null;
-      app.onUsage = null;
-      const tok = usage.in + usage.out;
-      this.add(h('div.turn-stats.muted.small', {}, `${((performance.now() - t0) / 1000).toFixed(1)} s · ${usage.calls} tool call${usage.calls === 1 ? '' : 's'}${tok ? ` · ${tok > 999 ? `${(tok / 1000).toFixed(1)}k` : tok} tokens (${usage.in} in, ${usage.out} out)` : ''}`));
+      clearInterval(ticker);
+      this.card.remove();
+      this.card = null;
+      // the finished turn keeps its numbers; open it for each step's model and tool time
+      this.turns.push({ task: typed.slice(0, 200), at: new Date().toISOString(), provider: this.provider(), model: this.modelName(), stopped: !!this.stopped, ...stats });
+      this.turns.splice(0, this.turns.length - 20);
+      this.add(
+        h(
+          'details.turn-stats.muted.small',
+          {},
+          h('summary', { title: 'Time, steps and tokens of this turn' }, turnSummary(stats)),
+          h('div.turn-trace', {}, ...stats.trace.map((x) => h('div', {}, x.tool ? `  ${x.tool} · ${x.ms} ms${x.error ? ` · ${x.error}` : ''}` : `step ${x.step} · model ${(x.model_ms / 1000).toFixed(1)} s${x.in + x.out ? ` · ${x.in} in, ${x.out} out` : ''}`))),
+        ),
+      );
       if (crew.end(this.profile.id)) ctx.batchDepth--;
-      app.learning?.aiTurn(usage.calls);
+      app.learning?.aiTurn(stats.calls);
       // what it drafted, ready to change by hand (#225)
       const made = app.store.doc.entities.filter((e) => !had.has(e.id) && !e.parent && e.type !== 'point');
       if (made.length) this.add(this.madeList(made));

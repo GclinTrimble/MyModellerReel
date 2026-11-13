@@ -3887,6 +3887,7 @@ function registerCore(reg, ctx) {
   def('ai', 'remove_agent', 'Delete an agent profile (not Plumb).', obj({ agent }, ['agent']), (a) => crew().remove(a.agent));
   def('ai', 'ask_agent', 'Give an agent a task: it joins that agent\'s queue and runs when the agent is free, alongside other agents. Returns at once (the reply goes to its thread).', obj({ agent, text: str('the task'), ids: { ...ids, description: 'entities to point it at' }, point: v3('a point in the model, world metres') }, ['text']), (a) => crew().ask(a.agent, a.text, { ids: a.ids, point: a.point }));
   def('ai', 'stop_agent', 'Stop an agent\'s running turn and clear its queue (what it did so far stays; undo removes it).', obj({ agent }), (a) => crew().stop(a.agent));
+  def('ai', 'ai_turns', 'Timings of an agent\'s last AI turns (default Plumb) and of the one running: total, model and tool time in ms, steps, tool calls, errors, tokens in / out and tokens per second, with a trace of each step (model time, tokens) and each tool call (time, error).', obj({ agent, last: num('how many finished turns (default 5)') }), (a) => crew().turns(a.agent, a.last ?? 5));
   def('ai', 'retry_agent', 'Run an agent\'s last task again.', obj({ agent }), (a) => crew().retry(a.agent));
   def('ai', 'held_change', 'A change held because two agents touched the same thing: apply it (one undo step) or drop it.', obj({ n: num('its number, from list_agents'), action: str('apply | drop', ['apply', 'drop']) }, ['n', 'action']), (a) => crew().held(a.n, a.action));
 

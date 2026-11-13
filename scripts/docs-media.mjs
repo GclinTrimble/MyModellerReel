@@ -30,8 +30,9 @@ const none = () => run('select', { mode: 'none' });
 let dir;
 let n = 0;
 let last = null;
-/** One step: a toast naming it, then a capture that waited for the window to repaint. */
-async function shot(label) {
+/** One step: a toast naming it, then a capture that waited for the window to repaint (moving: a view that never
+ * settles, e.g. a running turn's clock, is taken once). */
+async function shot(label, { moving = false } = {}) {
   await js(`document.querySelectorAll('.toast').forEach((t) => t.remove()); ${label ? `const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = ${JSON.stringify(label)}; document.getElementById('toasts').append(t);` : ''} window.mmr.app.ui.setStatus(''); window.mmr.app.viewport.render(); return 1;`);
   let prev = null;
   let png = null;
@@ -39,6 +40,10 @@ async function shot(label) {
     await wait(i ? 900 : 2500);
     const p = await req('GET', '/api/window-screenshot');
     if (p.subarray(1, 4).toString() !== 'PNG') continue;
+    if (moving) {
+      png = p;
+      break;
+    }
     if (prev && p.equals(prev) && !(last && p.equals(last))) {
       png = p;
       break;
@@ -317,6 +322,30 @@ const PAGES = {
     await shot('Type what you want in plain words; Enter sends');
     await js("window.mmr.app.ui.openPalette(); const i = document.querySelector('#palette-input'); i.value = 'hinge a door'; i.dispatchEvent(new Event('input')); return 1;");
     await shot('');
+    await clean();
+    // a running turn (#257), from a scripted model so it needs none: reasoning, then commands landing one by one
+    await js(`const a = window.mmr.app, t = a.agents.current, sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const call = (n, x) => ({ function: { name: n, arguments: x } });
+      const plan = [
+        { think: 'The house is 10 m wide. A 2 m terrace along the south wall, then four posts and two beams for the pergola.', calls: [call('create_box', { width: 10, height: 0.15, depth: 2, position: [0, 0, 5], name: 'Terrace' })] },
+        { calls: [-4.8, 4.8].flatMap((x) => [call('create_cylinder', { radius: 0.08, height: 2.6, position: [x, 0.15, 5.8], name: 'Post' })]) },
+        { calls: [call('create_box', { width: 10, height: 0.2, depth: 0.12, position: [0, 2.75, 5.8], name: 'Beam' })] },
+        { text: 'Done: a 10 × 2 m terrace and a pergola over it.' },
+      ];
+      window.__realChat = a.chat;
+      a.chat = async () => {
+        const s = plan.shift();
+        if (s.think) { t.delta('<think>'); for (const w of s.think.split(' ')) (t.delta(w + ' '), await sleep(70)); t.delta('</think>'); }
+        await sleep(2500);
+        return s.calls ? { message: { role: 'assistant', content: '', tool_calls: s.calls }, prompt_eval_count: 2400, eval_count: 60 } : { message: { role: 'assistant', content: s.text }, prompt_eval_count: 300, eval_count: 20 };
+      };
+      t.reset();
+      t.send('Add a 2 m deep terrace along the south wall, and a pergola over it');
+      return 1;`);
+    await wait(4000);
+    await shot('While Plumb works: what it does now, the time so far, each command as it runs, and Stop', { moving: true });
+    await wait(9000);
+    await js('window.mmr.app.chat = window.__realChat; return 1;');
   },
   async 'review-and-quantities'() {
     await fresh();

@@ -54,8 +54,10 @@ export function parseReply(protocol, data) {
       message: { role: 'assistant', content },
     };
   }
-  const m = protocol === 'ollama' ? data.message : data.choices?.[0]?.message;
+  let m = protocol === 'ollama' ? data.message : data.choices?.[0]?.message;
   if (!m) throw new Error(`Unexpected reply: ${JSON.stringify(data).slice(0, 300)}`);
+  // reasoning (<think>…</think>, Qwen 3 and the like) is not the answer, and would fill the context on later steps
+  if (typeof m.content === 'string' && m.content.includes('<think>')) m = { ...m, content: splitThinking(m.content).text };
   const calls = (m.tool_calls || []).map((c, i) => {
     let args = c.function.arguments;
     if (typeof args === 'string') {
@@ -111,51 +113,110 @@ numbers and the issues an automatic check found. Reply with at most 8 short bull
 or intersecting parts, wrong scale or proportions, missing obvious parts, things that would not stand or work), then
 one or two improvements. Name parts as the scene does. No preamble.`;
 
+/** The tokens a reply reports, { in, out }: Anthropic, OpenAI and Ollama (the built-in model too) fields. */
+export function usageOf(data) {
+  const u = data?.usage || {};
+  return { in: u.input_tokens ?? u.prompt_tokens ?? data?.prompt_eval_count ?? 0, out: u.output_tokens ?? u.completion_tokens ?? data?.eval_count ?? 0 };
+}
+
+/** Text that may carry reasoning in <think>…</think>: { thinking, text, open } (open: still thinking, no closing tag yet). */
+export function splitThinking(s = '') {
+  const parts = [];
+  const text = s.replace(/<think>([\s\S]*?)(<\/think>|$)/g, (_, t) => (parts.push(t), '')).replace(/^\s*<\/think>/, '');
+  return { thinking: parts.join('\n').trim(), text: text.trim(), open: /<think>(?![\s\S]*<\/think>)/.test(s) };
+}
+
+/** A tool call's arguments in a few words, for the step list: `width 2, height 1, name "Box"`. */
+export function shortArgs(args, max = 80) {
+  const num = (x) => (typeof x === 'number' ? +x.toFixed(3) : x);
+  const val = (v) =>
+    typeof v === 'string' ? JSON.stringify(v.length > 24 ? `${v.slice(0, 24)}…` : v)
+    : Array.isArray(v) ? (v.length <= 4 && v.every((x) => typeof x === 'number') ? `[${v.map(num).join(', ')}]` : `[${v.length}]`)
+    : v && typeof v === 'object' ? '{…}'
+    : String(num(v));
+  const s = Object.entries(args || {}).filter(([k]) => k !== '__unparsed').map(([k, v]) => `${k} ${val(v)}`).join(', ');
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/** A finished turn's numbers for people: "12.4 s · model 10.1 s · tools 0.3 s · 3 steps · 2 calls · 18 tok/s". */
+export function turnSummary(st) {
+  const sec = (ms) => `${(ms / 1000).toFixed(1)} s`;
+  const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
+  return [sec(st.ms), `model ${sec(st.model_ms)}`, `tools ${sec(st.tool_ms)}`, n(st.steps, 'step'), n(st.calls, 'tool call'), st.errors ? n(st.errors, 'error') : '', st.tokens_in + st.tokens_out ? `${st.tokens_in} in, ${st.tokens_out} out tokens` : '', st.tokens_per_s ? `${st.tokens_per_s} tok/s` : ''].filter(Boolean).join(' · ');
+}
+
+/** Fresh turn timings (see runTurn). */
+export function newStats() {
+  return { steps: 0, calls: 0, errors: 0, ms: 0, model_ms: 0, tool_ms: 0, tokens_in: 0, tokens_out: 0, tokens_per_s: 0, trace: [] };
+}
+
 /**
  * One user turn: ask, run the tool calls, feed results back, until the model answers without tools.
  * chat(body) → provider JSON. run(name, args) → command result. hooks: onText, onCall(call) → token, onResult(token,
- * call, result, isError), onThinking(bool), stopped(). Returns { steps, calls, errors }.
+ * call, result, isError), onThinking(bool), stopped().
+ * Returns its timings, `stats` (newStats(); filled as it runs, so a caller that passes its own reads them live and after
+ * an error): { steps, calls, errors, ms, model_ms, tool_ms, tokens_in, tokens_out, tokens_per_s,
+ * trace: [{ step, model_ms, in, out } | { step, tool, ms, error? }] }.
  */
-export async function runTurn({ protocol, chat, run, list, history, system, toolset = null, routing = true, hooks = {}, maxSteps = MAX_STEPS }) {
-  const stats = { steps: 0, calls: 0, errors: 0 };
-  for (let step = 0; step < maxSteps && !hooks.stopped?.(); step++) {
-    stats.steps++;
-    const tools = toolDefs(protocol, selectTools(protocol, list(), { history, toolset, routing }));
-    hooks.onThinking?.(true);
-    let data;
-    try {
-      data = await chat(buildRequest(protocol, { system: typeof system === 'function' ? system() : system, tools, history }));
-    } finally {
-      hooks.onThinking?.(false);
-    }
-    const { text, calls, message } = parseReply(protocol, data);
-    history.push(message);
-    if (text) hooks.onText?.(text);
-    if (!calls.length) return stats;
-    const results = [];
-    for (const c of calls) {
-      if (hooks.stopped?.()) {
-        results.push(toolResultMessage(protocol, c, { error: 'Stopped by the user before this ran.' }, true));
-        continue;
-      }
-      const token = hooks.onCall?.(c);
-      let result;
-      let isError = false;
+export async function runTurn({ protocol, chat, run, list, history, system, toolset = null, routing = true, hooks = {}, maxSteps = MAX_STEPS, stats = newStats(), now = () => performance.now() }) {
+  const t0 = now();
+  // The instructions and tools stay the same for the whole turn (#257): a local model then reuses what it already read
+  // (its prompt cache) and reads only the new messages each step; tool results tell it what changed.
+  const sys = typeof system === 'function' ? system() : system;
+  const tools = toolDefs(protocol, selectTools(protocol, list(), { history, toolset, routing }));
+  try {
+    for (let step = 0; step < maxSteps && !hooks.stopped?.(); step++) {
+      stats.steps++;
+      hooks.onThinking?.(true);
+      let data;
+      const tm = now();
       try {
-        if (c.args?.__unparsed !== undefined) throw new Error(`Your arguments for ${c.name} were not valid JSON: ${String(c.args.__unparsed).slice(0, 200)}`);
-        result = await run(c.name, c.args);
-      } catch (e) {
-        isError = true;
-        result = { error: e.message };
+        data = await chat(buildRequest(protocol, { system: sys, tools, history }));
+      } finally {
+        hooks.onThinking?.(false);
+        const ms = Math.round(now() - tm);
+        const u = usageOf(data);
+        stats.model_ms += ms;
+        stats.tokens_in += u.in;
+        stats.tokens_out += u.out;
+        stats.trace.push({ step: stats.steps, model_ms: ms, in: u.in, out: u.out });
       }
-      stats.calls++;
-      if (isError) stats.errors++;
-      hooks.onResult?.(token, c, result, isError);
-      results.push(toolResultMessage(protocol, c, result, isError));
+      const { text, calls, message } = parseReply(protocol, data);
+      history.push(message);
+      if (text) hooks.onText?.(text);
+      if (!calls.length) return stats;
+      const results = [];
+      for (const c of calls) {
+        if (hooks.stopped?.()) {
+          results.push(toolResultMessage(protocol, c, { error: 'Stopped by the user before this ran.' }, true));
+          continue;
+        }
+        const token = hooks.onCall?.(c);
+        let result;
+        let isError = false;
+        const tc = now();
+        try {
+          if (c.args?.__unparsed !== undefined) throw new Error(`Your arguments for ${c.name} were not valid JSON: ${String(c.args.__unparsed).slice(0, 200)}`);
+          result = await run(c.name, c.args);
+        } catch (e) {
+          isError = true;
+          result = { error: e.message };
+        }
+        const ms = Math.round(now() - tc);
+        stats.calls++;
+        stats.tool_ms += ms;
+        if (isError) stats.errors++;
+        stats.trace.push({ step: stats.steps, tool: c.name, ms, ...(isError ? { error: String(result.error).slice(0, 200) } : {}) });
+        hooks.onResult?.(token, c, result, isError, ms);
+        results.push(toolResultMessage(protocol, c, result, isError));
+      }
+      if (protocol === 'anthropic') history.push({ role: 'user', content: results });
+      else history.push(...results);
     }
-    if (protocol === 'anthropic') history.push({ role: 'user', content: results });
-    else history.push(...results);
+    if (!hooks.stopped?.()) hooks.onText?.('I stopped after many steps. Say "continue" to go on.');
+    return stats;
+  } finally {
+    stats.ms = Math.round(now() - t0);
+    stats.tokens_per_s = stats.tokens_out && stats.model_ms ? Math.round(stats.tokens_out / (stats.model_ms / 1000)) : 0;
   }
-  if (!hooks.stopped?.()) hooks.onText?.('I stopped after many steps. Say "continue" to go on.');
-  return stats;
 }

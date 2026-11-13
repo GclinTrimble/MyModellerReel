@@ -101,6 +101,11 @@ export class Agents {
     t.stop();
     return { stopped: t.profile.name };
   }
+  /** Timings of an agent's last turns, and of the one running (its numbers so far). */
+  turns(ref, last = 5) {
+    const t = this.thread(ref);
+    return { agent: t.profile.name, running: t.busy ? { task: t.lastTask, ...t.stats } : null, turns: t.turns.slice(-last) };
+  }
   retry(ref) {
     const t = this.thread(ref);
     if (!t.lastTask) throw new Error(`${t.profile.name} has no task to retry.`);

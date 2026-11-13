@@ -140,9 +140,7 @@ app.reg = createRegistry(app.ctx);
 /** One request to the configured AI provider (the main process holds the keys). Errors read as plain sentences. */
 app.chat = async (body) => {
   try {
-    const data = (await native.invoke('ai:chat', body)).data;
-    app.onUsage?.(data);
-    return data;
+    return (await native.invoke('ai:chat', body)).data;
   } catch (e) {
     throw new Error(String(e.message).replace(/^Error invoking remote method 'ai:chat': (Error: )?/, ''));
   }

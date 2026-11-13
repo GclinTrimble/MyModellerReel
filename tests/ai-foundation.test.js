@@ -178,7 +178,7 @@ test('agent loop: runs tool calls, feeds errors back, routes tools for local mod
     hooks: { onText: (t) => texts.push(t) },
   });
   assert.equal(ctx.doc.entities.length, 1);
-  assert.deepEqual(stats, { steps: 4, calls: 3, errors: 2 });
+  assert.deepEqual([stats.steps, stats.calls, stats.errors], [4, 3, 2]);
   assert.ok(seen[0].length <= 18 && seen[0].includes('place_on') && seen[0].includes('create_box'));
   assert.ok(history.some((m) => m.role === 'tool' && /No entity .*nothing/.test(m.content)));
   assert.ok(history.some((m) => m.role === 'tool' && /not valid JSON/.test(m.content)));

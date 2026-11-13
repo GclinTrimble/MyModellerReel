@@ -15,12 +15,22 @@ async function* lines(body) {
   }
   if (buf.trim()) yield buf;
 }
+/** Reasoning sent apart from the text (Ollama thinking, reasoning_content, Claude thinking) goes to the page inside
+ * <think>…</think>, the way Qwen-style models write it, so the page shows every provider's reasoning the same way. */
+function thinker(onText) {
+  let on = false;
+  return {
+    think: (t) => t && (on || ((on = true), onText('<think>')), onText(t)),
+    text: (t) => t && (on && ((on = false), onText('</think>')), onText(t)),
+  };
+}
 const sse = async function* (body) {
   for await (const l of lines(body)) if (l.startsWith('data:')) yield l.slice(5).trim();
 };
 
 /** Anthropic Messages SSE → the Messages response object. */
 async function anthropic(body, onText) {
+  const out = thinker(onText);
   let msg = null;
   const blocks = [];
   const json = [];
@@ -31,7 +41,8 @@ async function anthropic(body, onText) {
     else if (e.type === 'content_block_start') (blocks[e.index] = { ...e.content_block }), (json[e.index] = '');
     else if (e.type === 'content_block_delta') {
       const b = blocks[e.index];
-      if (e.delta.type === 'text_delta') (b.text = (b.text || '') + e.delta.text), onText(e.delta.text);
+      if (e.delta.type === 'text_delta') (b.text = (b.text || '') + e.delta.text), out.text(e.delta.text);
+      else if (e.delta.type === 'thinking_delta') out.think(e.delta.thinking);
       else if (e.delta.type === 'input_json_delta') json[e.index] += e.delta.partial_json;
     } else if (e.type === 'content_block_stop' && blocks[e.index]?.type === 'tool_use') blocks[e.index].input = json[e.index] ? JSON.parse(json[e.index]) : {};
     else if (e.type === 'message_delta') Object.assign(msg, e.delta, { usage: { ...msg.usage, ...e.usage } });
@@ -42,6 +53,7 @@ async function anthropic(body, onText) {
 
 /** OpenAI-compatible chat completions SSE → { choices: [{ message }], usage }. */
 async function openai(body, onText) {
+  const out = thinker(onText);
   const m = { role: 'assistant', content: '', tool_calls: [] };
   let usage;
   let finish;
@@ -52,7 +64,8 @@ async function openai(body, onText) {
     const c = e.choices?.[0];
     if (!c) continue;
     if (c.finish_reason) finish = c.finish_reason;
-    if (c.delta?.content) (m.content += c.delta.content), onText(c.delta.content);
+    out.think(c.delta?.reasoning_content || c.delta?.reasoning);
+    if (c.delta?.content) (m.content += c.delta.content), out.text(c.delta.content);
     for (const t of c.delta?.tool_calls || []) {
       const cur = (m.tool_calls[t.index ?? 0] ||= { id: '', type: 'function', function: { name: '', arguments: '' } });
       if (t.id) cur.id = t.id;
@@ -66,13 +79,15 @@ async function openai(body, onText) {
 
 /** Ollama /api/chat NDJSON → the non-streaming reply. */
 async function ollama(body, onText) {
+  const out = thinker(onText);
   const m = { role: 'assistant', content: '' };
   let last = {};
   for await (const l of lines(body)) {
     if (!l.trim()) continue;
     const e = JSON.parse(l);
     if (e.error) throw new Error(`ollama: ${e.error}`);
-    if (e.message?.content) (m.content += e.message.content), onText(e.message.content);
+    out.think(e.message?.thinking);
+    if (e.message?.content) (m.content += e.message.content), out.text(e.message.content);
     if (e.message?.tool_calls) (m.tool_calls ||= []).push(...e.message.tool_calls);
     last = e;
   }

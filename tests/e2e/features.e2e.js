@@ -1014,6 +1014,54 @@ test('agent profiles work at once (#243) and Ask at the cursor (#244)', async ()
   await ok('remove_agent', { agent: 'Helper' });
 });
 
+test('a running turn shows what it does, its time and Stop; the view changes per command; the timings stay (#257)', async () => {
+  await ok('new_model');
+  await app.evaluate(({ ipcMain }) => {
+    const call = (name, args) => ({ role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] });
+    const steps = [
+      { think: true, message: call('create_box', { width: 1, height: 1, depth: 1, name: 'Live box' }) },
+      { message: call('place_on', { ids: ['Live box'], target: 'nothing' }) },
+      { wait: 2500, message: { role: 'assistant', content: 'Done.' } },
+    ];
+    ipcMain.removeHandler('ai:chat');
+    ipcMain.handle('ai:chat', async (e, body) => {
+      const s = steps.shift() || { message: { role: 'assistant', content: 'Done.' } };
+      if (s.think) for (const t of ['<think>', 'One box, ', '1 m.', '</think>']) e.sender.send('ai:delta', t, body.agent?.id || '');
+      await new Promise((r) => setTimeout(r, s.wait || 300));
+      return { provider: 'ollama', data: { message: s.message, prompt_eval_count: 1000, eval_count: 20 } };
+    });
+  });
+  await w.evaluate(() => window.mmr.app.agents.thread().reset()); // a new chat: only this turn's steps
+  const undoBefore = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  await ok('ask_agent', { text: 'Make a box' });
+  let run;
+  for (let i = 0; i < 100 && !((run = (await ok('ai_turns')).running)?.calls >= 2); i++) await w.waitForTimeout(50);
+  assert.equal(run.calls, 2, 'the running turn’s numbers so far');
+  const live = await w.evaluate(() => ({
+    clock: document.querySelector('.turn-live .turn-clock')?.textContent,
+    stop: !!document.querySelector('.turn-live button'),
+    rows: [...document.querySelectorAll('.toolcall')].map((r) => `${r.classList.contains('err') ? 'x' : 'ok'} ${r.querySelector('summary').textContent}`),
+    think: document.querySelector('.msg .think summary')?.textContent,
+    shown: [...window.mmr.app.viewport.objs.keys()].length,
+  }));
+  assert.match(live.clock, /^\d+ s · step [23] · 2 calls$/);
+  assert.ok(live.stop, 'a Stop on the card');
+  assert.match(live.rows[0], /^ok create_box width 1, height 1, depth 1, name "Live box" · \d+ ms$/);
+  assert.match(live.rows[1], /^x place_on .* · No entity .*nothing.* · \d+ ms$/);
+  assert.equal(live.think, 'Reasoned (4 words)');
+  assert.ok(live.shown >= 1, 'the box is in the view while the turn still runs');
+  await w.click('.turn-live button');
+  for (let i = 0; i < 100 && (await ok('ai_turns')).running; i++) await w.waitForTimeout(50);
+  const { turns } = await ok('ai_turns');
+  const t = turns.at(-1);
+  assert.deepEqual([t.steps, t.calls, t.errors, t.tokens_in, t.tokens_out, t.stopped], [3, 2, 1, 3000, 60, true]);
+  assert.ok(t.model_ms >= 2500 && t.ms >= t.model_ms + t.tool_ms - 5, JSON.stringify(t));
+  assert.deepEqual(t.trace.map((x) => x.tool || 'model'), ['model', 'create_box', 'model', 'place_on', 'model']);
+  assert.equal(await w.locator('.turn-live').count(), 0);
+  assert.match(await w.locator('.turn-stats summary').last().textContent(), /^\d+\.\d s · model \d+\.\d s · tools \d+\.\d s · 3 steps · 2 tool calls · 1 error · 3000 in, 60 out tokens · \d+ tok\/s$/);
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length), undoBefore + 1, 'the whole turn is one undo step');
+});
+
 test('help that answers and my own tools (#241, #242): Ask Plumb, F1 over a tool, a turn saved as a tool, My tools', async () => {
   await ok('new_model');
   // a scripted local model: one-shot help answers have no tools; copilot turns do
