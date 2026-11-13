@@ -1320,3 +1320,60 @@ test('map layers (#264–#267): a WMTS and a WFS layer from services stubbed in 
   await w.locator('.map-layer', { hasText: 'Aerial' }).getByRole('checkbox').uncheck();
   await w.waitForFunction(() => window.mmr.doc.settings.map_layers.find((L) => L.name === 'Aerial').visible === false);
 });
+
+test('terrain and buildings from services (stubbed): terrain streams, Save as surface, buildings stand on it and come in as prisms', async () => {
+  await ok('new_model');
+  await app.evaluate(({ ipcMain, nativeImage }) => {
+    // Terrarium tiles: every pixel 32768 + 20 + col / 256… → heights 20 m plus a gentle slope across each tile
+    const w = 16;
+    const bgra = Buffer.alloc(w * w * 4);
+    for (let i = 0; i < w * w; i++) bgra.set([0, 20 + (i % w), 128, 255], i * 4); // B, G, R, A: R 128 → 32768, G 20…35
+    const png = nativeImage.createFromBitmap(bgra, { width: w, height: w }).toPNG();
+    const wfs = '<?xml version="1.0"?><WFS_Capabilities version="2.0.0" xmlns="http://www.opengis.net/wfs/2.0" xmlns:ows="http://www.opengis.net/ows/1.1"><ows:OperationsMetadata><ows:Operation name="GetFeature"><ows:Parameter name="outputFormat"><ows:AllowedValues><ows:Value>application/json</ows:Value></ows:AllowedValues></ows:Parameter></ows:Operation></ows:OperationsMetadata><FeatureTypeList><FeatureType><Name>bag:pand</Name><Title>Buildings</Title><DefaultCRS>urn:ogc:def:crs:OGC:1.3:CRS84</DefaultCRS></FeatureType></FeatureTypeList></WFS_Capabilities>';
+    const sq = (x, y, d) => [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]];
+    const buildings = { type: 'FeatureCollection', features: [{ type: 'Feature', id: 'b1', properties: { identificatie: 'Depot', ground: 21, roof: 30 }, geometry: { type: 'Polygon', coordinates: sq(172.6, -43.53, 0.0002) } }] };
+    ipcMain.removeHandler('ogc:get');
+    ipcMain.handle('ogc:get', (_, url, opts = {}) => {
+      if (/terrarium/.test(url)) return { status: 200, type: 'image/png', bytes: png };
+      if (/GetFeature/i.test(url)) return { status: 200, type: 'application/json', text: JSON.stringify(buildings) };
+      if (/wfs/i.test(url)) return { status: 200, type: 'text/xml', text: wfs };
+      throw new Error('no service here');
+    });
+  });
+  await ok('set_coordinate_system', { epsg: 2193, name: 'NZGD2000 / NZTM 2000' });
+  await ok('set_base_point', { latitude: -43.53, longitude: 172.6, z: 0 });
+  await ok('set_camera', { position: [60, 120, 160], target: [20, 20, -20] });
+  await ok('add_map_layer', { url: 'https://tiles.test/terrarium/{z}/{x}/{y}.png', elevation: 'terrarium', max_zoom: 15, name: 'Terrain' });
+  await w.waitForFunction(() => {
+    const L = window.mmr.doc.settings.map_layers[0];
+    const g = window.mmr.app.mapLayers.groups.get(L.id)?.group;
+    if (!g?.children.length) return false;
+    const p = g.children[0].geometry.attributes.position;
+    return p.getY(0) > 19 && p.getY(0) < 36;
+  }, null, { timeout: 15000 });
+  // Save as surface from the panel
+  await w.click('[data-tab="survey"]');
+  await w.locator('.survey-views button', { hasText: 'Maps' }).click();
+  await w.locator('.map-layer', { hasText: 'Terrain' }).getByRole('button', { name: 'Save as surface' }).click();
+  await w.waitForFunction(() => window.mmr.doc.entities.some((e) => e.meta?.surface && /Terrain/.test(e.meta.source || '')), null, { timeout: 15000 });
+  const surf = await w.evaluate(() => {
+    const e = window.mmr.doc.entities.find((x) => x.meta?.surface);
+    const ys = e.mesh.v.map((v) => v[1] + e.position[1]);
+    return { min: Math.min(...ys), max: Math.max(...ys), faces: e.mesh.f.length };
+  });
+  assert.ok(surf.min >= 19.9 && surf.max <= 36.1 && surf.faces > 100, `heights from the tiles: ${JSON.stringify(surf)}`);
+  // buildings: footprints with ground and roof heights stand up as one merged mesh, then come in as prisms
+  await ok('add_map_layer', { url: 'https://bag.test/wfs?SERVICE=WFS&REQUEST=GetCapabilities', name: 'Buildings', style: { fill: '#d9d4c7', extrude: { base: 'ground', top: 'roof' } } });
+  await w.waitForFunction(() => {
+    const L = window.mmr.doc.settings.map_layers.find((x) => x.name === 'Buildings');
+    const m = window.mmr.app.mapLayers.groups.get(L.id)?.group.children.find((o) => o.isMesh);
+    if (!m) return false;
+    m.geometry.computeBoundingBox();
+    const b = m.geometry.boundingBox;
+    return Math.abs(b.max.y - b.min.y - 9) < 0.01 && Math.abs(b.min.y - 21) < 0.01;
+  }, null, { timeout: 15000 });
+  const r = await ok('import_features', { layer: 'Buildings', at: [0, 0], radius: 200 });
+  assert.equal(r.buildings, 1);
+  const b = await ok('get_entity', { id: 'Depot' });
+  assert.ok(Math.abs(b.min[1] - 21) < 0.01 && Math.abs(b.max[1] - 30) < 0.01, `the depot from 21 to 30 m: ${b.min[1]} ${b.max[1]}`);
+});

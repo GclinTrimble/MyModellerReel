@@ -9,6 +9,7 @@ export const CONFORMANCE = [
   { standard: 'OGC Two Dimensional Tile Matrix Set 2.0 (17-083r4)', classes: ['WebMercatorQuad (EPSG:3857) tile matrix sets'], not: ['other tile matrix sets are listed but not drawn'] },
   { standard: 'OGC API - Tiles 1.0 (20-057)', classes: ['core', 'tileset', 'collections map tiles in WebMercatorQuad'], not: ['vector tiles'] },
   { standard: 'OGC WMS 1.3.0 (06-042)', classes: ['GetCapabilities', 'GetMap in EPSG:3857, one request per tile'], not: ['GetFeatureInfo', 'SLD_BODY'] },
+  { standard: 'OGC WCS 2.0.1 (09-110r4) with the CRS (11-053r1) and scaling (12-039) extensions', classes: ['GetCapabilities', 'GetCoverage KVP per Web Mercator tile, GeoTIFF, as elevation (DTM / DSM)'], not: ['DescribeCoverage', 'range subsetting', 'other output formats'] },
   { standard: 'OGC WFS 2.0 (09-025r2)', classes: ['GetCapabilities', 'GetFeature with BBOX, COUNT / STARTINDEX paging, GeoJSON output, FES 2.0 PropertyIsEqualTo filters'], not: ['GML 3.2 output parsing', 'transactions', 'stored queries'] },
   { standard: 'OGC API - Features Part 1 Core 1.0 (17-069r4)', classes: ['core', 'geojson', 'bbox', 'limit and next links'], not: ['html'] },
   { standard: 'OGC API - Features Part 2 CRS by Reference 1.0 (18-058)', classes: ['crs: OGC:CRS84 requested; the project CRS when the collection offers it'], not: [] },
@@ -42,6 +43,7 @@ export function sniff(text) {
   if (/<(\w+:)?Capabilities[\s>][\s\S]*WMTS|xmlns(:\w+)?="http:\/\/www\.opengis\.net\/wmts/.test(t)) return 'wmts';
   if (/WMS_Capabilities|WMT_MS_Capabilities/.test(t)) return 'wms';
   if (/WFS_Capabilities/.test(t)) return 'wfs';
+  if (/<(\w+:)?Capabilities[\s>][\s\S]*opengis\.net\/wcs\/2/.test(t)) return 'wcs';
   return null;
 }
 
@@ -62,7 +64,7 @@ export function webMercatorZooms(set) {
 /** Read GetCapabilities XML (WMTS, WMS, WFS): { kind, version, title, provider, layers, sets?, getTile?, getMap?, getFeature? }. */
 export function readCapabilities(text, url = '') {
   const kind = sniff(text);
-  if (!kind || kind === 'ogcapi') throw new Error('Not a WMTS, WMS or WFS capabilities document.');
+  if (!kind || kind === 'ogcapi') throw new Error('Not a WMTS, WMS, WFS or WCS capabilities document.');
   const root = X.parse(text).children.find((c) => c.name && !c.name.startsWith('?'));
   const ident = X.kid(root, 'ServiceIdentification') || X.kid(root, 'Service');
   const provider = val(X.kid(root, 'ServiceProvider'), 'ProviderName') || X.all(root, 'ContactOrganization')[0]?.text.trim() || '';
@@ -106,6 +108,14 @@ export function readCapabilities(text, url = '') {
     };
     for (const l of X.kids(X.kid(root, 'Capability'), 'Layer')) walk(l, []);
     out.formats = X.all(X.all(root, 'GetMap')[0] || { children: [] }, 'Format').map((f) => f.text.trim());
+  } else if (kind === 'wcs') {
+    // coverages (DTM, DSM…): GetCoverage per web map tile needs the CRS and scaling extensions
+    out.getCoverage = op('GetCoverage') || url;
+    const profiles = X.all(root, 'Profile').map((p) => p.text.trim());
+    out.crsExtension = profiles.some((p) => /WCS_service-extension_crs/.test(p));
+    out.scaling = profiles.some((p) => /WCS_service-extension_scaling/.test(p));
+    out.geotiff = profiles.some((p) => /geotiff/i.test(p)) || X.all(root, 'formatSupported').some((x) => /tiff/i.test(x.text));
+    for (const c of X.all(root, 'CoverageSummary')) out.layers.push({ id: val(c, 'CoverageId'), title: val(c, 'Title') || val(c, 'CoverageId'), abstract: val(c, 'Abstract') || '' });
   } else {
     out.getFeature = op('GetFeature') || url;
     const formats = X.all(X.all(root, 'Operation').find((x) => x.attrs.name === 'GetFeature') || { children: [] }, 'Value').map((v) => v.text.trim());
@@ -160,6 +170,11 @@ export function tileUrl(L, z, x, y) {
     return q(base(L.url), { SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetMap', LAYERS: L.layer, STYLES: L.style || '', CRS: 'EPSG:3857', BBOX: `${a},${b},${c},${d}`, WIDTH: 256, HEIGHT: 256, FORMAT: L.format || 'image/png', TRANSPARENT: 'TRUE' });
   }
   if (L.type === 'ogcapi') return `${base(L.url).replace(/\/$/, '')}/collections/${encodeURIComponent(L.layer)}/map/tiles/WebMercatorQuad/${z}/${y}/${x}?f=${/jpe?g/.test(L.format || '') ? 'jpg' : 'png'}`;
+  if (L.type === 'wcs') {
+    const [a, b, c, d] = tileBounds(z, x, y);
+    const crs = 'http://www.opengis.net/def/crs/EPSG/0/3857';
+    return `${q(base(L.url), { SERVICE: 'WCS', VERSION: '2.0.1', REQUEST: 'GetCoverage', COVERAGEID: L.layer, FORMAT: 'image/tiff', SUBSETTINGCRS: crs, OUTPUTCRS: crs })}&SUBSET=x(${a},${c})&SUBSET=y(${b},${d})&SCALESIZE=x(256),y(256)`;
+  }
   if (L.type === 'wmts') {
     const m = L.zooms?.[z];
     if (m === undefined || m === null) return null;
@@ -187,6 +202,10 @@ export function layerFrom(caps, { layer, style, format, set } = {}) {
     if (!s) throw new Error(`"${l.id}" has no Web Mercator tile matrix set (it offers ${l.sets.join(', ')}). Add it from the service's WMS instead, or ask its provider for WebMercatorQuad.`);
     const fmt = format || l.templateFormat || l.formats.find((f) => /png/.test(f)) || l.formats[0] || 'image/png';
     return { type: 'wmts', url: caps.getTile || caps.url, ...common, style: style || l.styles.find((x) => x.default)?.id || l.styles[0]?.id || 'default', format: fmt, set: s.id, zooms: s.zooms, template: l.template, dimensions: l.dimensions };
+  }
+  if (caps.kind === 'wcs') {
+    if (!caps.crsExtension || !caps.scaling) throw new Error('That WCS cannot reproject and scale (the CRS and scaling extensions), so it cannot stream as tiles.');
+    return { type: 'wcs', kind: 'elevation', encoding: 'geotiff', url: caps.getCoverage || caps.url, ...common };
   }
   if (caps.kind === 'wms') return { type: 'wms', url: caps.getMap || caps.url, ...common, style: style || '', format: format || (caps.formats || []).find((f) => /png/.test(f)) || 'image/png' };
   if (caps.kind === 'wfs') return { type: 'wfs', kind: 'features', url: caps.getFeature || caps.url, ...common, json: caps.json, crs: l.crs };
@@ -265,7 +284,7 @@ export function projectGeoJson(fc, forward) {
 // ---------------------------------------------------------------- OWS Context (OGC 14-055r2, GeoJSON encoding)
 
 const OWC = 'http://www.opengis.net/spec/owc-geojson/1.0/req';
-const OFFER = { wmts: `${OWC}/wmts`, wms: `${OWC}/wms`, wfs: `${OWC}/wfs`, ogcapi: 'http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/core', 'ogcapi-features': 'http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core', xyz: 'https://mymodellerreel.app/owc/xyz' };
+const OFFER = { wmts: `${OWC}/wmts`, wms: `${OWC}/wms`, wfs: `${OWC}/wfs`, wcs: `${OWC}/wcs`, ogcapi: 'http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/core', 'ogcapi-features': 'http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core', xyz: 'https://mymodellerreel.app/owc/xyz' };
 const KIND = Object.fromEntries(Object.entries(OFFER).map(([k, v]) => [v, k]));
 
 /** Layers (map and feature) as an OWS Context GeoJSON document. bbox: [w, s, e, n] in degrees, optional. */
@@ -291,7 +310,7 @@ export function toOwsContext(layers, { title = 'Map layers', bbox = null, update
             ...(L.style && typeof L.style === 'object' ? { styles: [{ name: 'style', content: { type: 'application/vnd.ogc.se+xml', text: toSld(L.style, L.layer) } }] } : {}),
           },
         ],
-        'mmr:layer': { type: L.type, kind: L.kind, layer: L.layer, style: L.style, format: L.format, set: L.set, zooms: L.zooms, template: L.template, dimensions: L.dimensions, opacity: L.opacity ?? 1, where: L.where, cql: L.cql, service: L.service },
+        'mmr:layer': { type: L.type, kind: L.kind, layer: L.layer, style: L.style, format: L.format, set: L.set, zooms: L.zooms, template: L.template, dimensions: L.dimensions, opacity: L.opacity ?? 1, where: L.where, cql: L.cql, service: L.service, encoding: L.encoding, max_zoom: L.max_zoom },
       },
     })),
   };
@@ -312,7 +331,7 @@ export function fromOwsContext(doc) {
       const url = new URL(op.href, 'http://x');
       const layer = own.layer || url.searchParams.get('LAYERS') || url.searchParams.get('LAYER') || url.searchParams.get('TYPENAMES') || url.searchParams.get('typeName') || '';
       const sld = o.styles?.find((s) => /se\+xml|sld/.test(s.content?.type || ''))?.content?.text;
-      return { ...own, type, kind: own.kind || (type === 'wfs' || type === 'ogcapi-features' ? 'features' : 'map'), name: p.title || layer, url: op.href, layer, visible: p.active !== false, opacity: own.opacity ?? 1, attribution: p.rights || '', ...(own.style ? {} : sld ? { style: fromSld(sld) } : {}) };
+      return { ...own, type, kind: own.kind || (type === 'wfs' || type === 'ogcapi-features' ? 'features' : type === 'wcs' ? 'elevation' : 'map'), name: p.title || layer, url: op.href, layer, visible: p.active !== false, opacity: own.opacity ?? 1, attribution: p.rights || '', ...(own.style ? {} : sld ? { style: fromSld(sld) } : {}) };
     })
     .filter(Boolean);
 }

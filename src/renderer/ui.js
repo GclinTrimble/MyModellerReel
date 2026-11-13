@@ -3006,7 +3006,7 @@ export class UI {
       again();
     };
     const add = async () => {
-      const r = await run('add_map_layer', { url: st.url.trim(), ...(st.layer ? { layer: st.layer } : {}) });
+      const r = await run('add_map_layer', { url: st.url.trim(), ...(st.layer ? { layer: st.layer } : {}), ...(st.heights && st.caps?.kind !== 'wcs' ? { elevation: st.heights } : {}) });
       if (r) this.toast(`${r.name}: ${r.standard}${r.note ? ` · ${r.note}` : ''}`), (st.caps = null), again();
     };
     const row = (L, i) => {
@@ -3019,7 +3019,7 @@ export class UI {
           'div.row',
           {},
           h('input', { type: 'checkbox', checked: L.visible !== false, 'aria-label': `Show ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, visible: e.target.checked }) }),
-          icon(feat ? 'polygon' : 'map-trifold'),
+          icon(feat ? (L.style?.extrude ? 'buildings' : 'polygon') : L.kind === 'elevation' ? 'mountains' : 'map-trifold'),
           h('b.grow', { title: `${L.type.toUpperCase()} · ${L.url}` }, L.name),
           h('button.icon-btn.sm', { title: 'Up', 'aria-label': `Move ${L.name} up`, disabled: top, onclick: () => run('set_map_layer', { layer: L.id, order: i + 1 }) }, icon('arrow-up')),
           h('button.icon-btn.sm', { title: 'Down', 'aria-label': `Move ${L.name} down`, disabled: i === 0, onclick: () => run('set_map_layer', { layer: L.id, order: i - 1 }) }, icon('arrow-down')),
@@ -3031,6 +3031,10 @@ export class UI {
           h('label.row', {}, 'Opacity ', h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: L.opacity ?? 1, 'aria-label': `Opacity of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, opacity: +e.target.value }) })),
           feat ? h('label.row', {}, 'Colour ', h('input', { type: 'color', value: L.style?.stroke || '#d9480f', 'aria-label': `Colour of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, style: { stroke: e.target.value, point: e.target.value, fill: e.target.value } }) })) : null,
           feat ? h('label.row', {}, 'Label ', h('input.cell', { value: L.style?.label || '', placeholder: 'attribute', 'aria-label': `Label attribute of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, style: { label: e.target.value.trim() || undefined } }) })) : null,
+          L.kind === 'elevation'
+            ? h('button.btn.sm', { title: 'Save the heights around the view as a surface in the model, to edit like any surface', onclick: () => { const v = app.mapLayers?.view(); this.toast('Reading the heights…'); run('elevation_to_surface', { layer: L.id, at: v ? [v.x, v.z] : [0, 0], radius: Math.round(Math.min(500, v?.radius || 150)) }).then((r) => r && this.toast(`${r.name}: ${r.triangles.toLocaleString()} triangles, a sample every ${r.spacing} m`)); } }, icon('mountains'), 'Save as surface')
+            : null,
+          feat ? h('label.row', { title: 'Buildings: the attributes with their base and roof heights (or a height in metres)' }, '3D ', h('input.cell', { value: L.style?.extrude?.base ?? '', placeholder: 'base', 'aria-label': `Base height attribute of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, style: { extrude: { ...(L.style?.extrude || {}), base: e.target.value.trim() || undefined } } }) }), h('input.cell', { value: L.style?.extrude?.top ?? L.style?.extrude?.height ?? '', placeholder: 'roof or m', 'aria-label': `Roof height attribute of ${L.name}`, onchange: (e) => { const t = e.target.value.trim(); const ex = { ...(L.style?.extrude || {}) }; delete ex.top; delete ex.height; run('set_map_layer', { layer: L.id, style: { extrude: t ? { ...ex, ...(Number.isFinite(+t) ? { height: +t } : { top: t }) } : undefined } }); } })) : null,
           app.mapLayers?.errors.get(L.id) ? h('span.param-error', { title: app.mapLayers.errors.get(L.id) }, icon('warning'), ' not loading') : null,
         ),
         feat
@@ -3061,6 +3065,7 @@ export class UI {
             {},
             h('div.small', {}, h('b', {}, st.caps.title || st.caps.kind.toUpperCase()), st.caps.provider ? ` · ${st.caps.provider}` : '', ` · ${st.caps.kind.toUpperCase()} ${st.caps.version || ''}`),
             h('select', { 'aria-label': 'Layer', onchange: (e) => (st.layer = e.target.value) }, st.caps.layers.map((l) => h('option', { value: l.id, selected: l.id === st.layer, disabled: l.drawable === false }, `${l.title}${l.drawable === false ? ' (no Web Mercator tiles)' : l.features ? ' · features' : ''}`))),
+            st.caps.kind !== 'wcs' && st.caps.kind !== 'wfs' && !(st.caps.layers.find((l) => l.id === st.layer)?.features) ? h('label.row.small', {}, 'Holds ', h('select', { 'aria-label': 'What the tiles hold', onchange: (e) => (st.heights = e.target.value || null) }, [['', 'a map or imagery'], ['terrarium', 'heights: Terrarium'], ['mapbox', 'heights: Terrain-RGB'], ['geotiff', 'heights: GeoTIFF']].map(([v, t2]) => h('option', { value: v, selected: (st.heights || '') === v }, t2)))) : st.caps.kind === 'wcs' ? h('div.small.muted', {}, icon('mountains'), ' Coverages are heights (DTM / DSM): they stream as ground the other layers drape on.') : null,
             h('div.row.wrap', {}, h('button.btn.primary', { onclick: add }, icon('plus'), 'Add layer'), h('button.btn', { onclick: () => this.commandDialog('save_map_service', { name: st.caps.title || '', url: st.url.trim(), layers: st.layer ? [st.layer] : [] }) }, icon('bookmark-simple'), 'Save to my services…')),
           )
         : null,

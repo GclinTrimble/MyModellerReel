@@ -445,6 +445,14 @@ export class IO {
     return native().invoke('glb:compress', path, method, out);
   }
   // ---------------------------------------------------------------- Phase 22: OGC services, map services, GeoPackage
+  /** An image file's pixels: { width, height, rgba } (elevation tiles packed in RGB). */
+  async imageRgba(bytes) {
+    const bmp = await createImageBitmap(new Blob([bytes]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const g = c.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+    g.drawImage(bmp, 0, 0);
+    return { width: bmp.width, height: bmp.height, rgba: g.getImageData(0, 0, bmp.width, bmp.height).data };
+  }
   ogcGet(url, opts = {}) {
     return native().invoke('ogc:get', url, opts);
   }
