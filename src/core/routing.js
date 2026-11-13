@@ -13,7 +13,8 @@ export const TOOLSETS = {
   insight: { categories: [], names: ['report_quantities', 'review_model', 'check_clashes', 'section_cut', 'bounds_of', 'measure', 'select_where', 'list_skills'] },
   look: { categories: [], names: ['set_style', 'set_camera', 'set_effects', 'set_environment', 'create_light', 'set_light', 'set_texture', 'set_material', 'set_material_maps', 'set_geolocation', 'set_sun_time', 'animate_sun', 'render_image', 'ai_render', 'generate_texture', 'get_scene', 'select_where'] },
   annotate: { categories: ['annotate'], names: ['get_scene', 'get_entity', 'select_where', 'measure', 'create_text', 'section', 'export_section', 'export_drawing'] },
-  ai: { categories: ['extend', 'ai', 'recipe'], names: [] },
+  ai: { categories: ['extend', 'ai', 'recipe', 'mytools', 'help'], names: [] },
+  maps: { categories: ['maps'], names: ['get_scene', 'set_coordinate_system', 'set_geolocation'] },
   materials: { categories: ['materials'], names: ['get_scene', 'get_entity', 'select_where', 'report_quantities'] },
   drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
 };

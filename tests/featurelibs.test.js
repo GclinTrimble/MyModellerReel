@@ -130,3 +130,15 @@ test('editCode and searchCodes', () => {
   assert.deepEqual(S.searchCodes(codes, 'tr').map((r) => r.code), ['TREE', 'BTREE']);
   assert.deepEqual(S.searchCodes(codes, 'roads').map((r) => r.code), ['KERB']);
 });
+
+test('create_feature_library builds a library in the app, no file, and can make the model use it', async () => {
+  const { reg, ctx, files } = withStore();
+  const r = await reg.run('create_feature_library', { name: 'Site', codes: [{ code: 'kerb', description: 'Kerb', type: 'line', layer: 'Roads' }, { code: 'TREE', type: 'point' }], use: true });
+  assert.equal(r.codes, 2);
+  assert.equal(r.in_use, 'Site');
+  assert.equal(ctx.doc.featureCodes.KERB.layer, 'Roads');
+  assert.ok(ctx.doc.featureCodes.KERB.line, 'type line joins points');
+  assert.deepEqual(Object.keys(files), [], 'nothing written to disk');
+  await reg.run('edit_library_code', { library: 'Site', code: 'POST', type: 'point' });
+  assert.ok(ctx.doc.featureCodes.POST, 'later codes reach the model that uses it');
+});

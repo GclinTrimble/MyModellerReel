@@ -128,6 +128,13 @@ export const GUIDE = `MyModellerReel conventions:
 - Insight: report_quantities (count, area, volume, length, cost by material, tag or metadata), review_model (floating
   parts, collisions, scale errors, plus a vision critique), list_skills / use_skill (domain know-how).
 - Agents: list_agents, ask_agent hands a task to another agent profile (it works alongside you), save_agent.
+- Commands first, files last: every feature is a command (list_commands finds it; run_script calls many), so build
+  models, objects, surfaces, points, layers, materials, libraries and sequences directly: create_*, define_*, add_*,
+  edit_*. Direct ways for what looks like a file: points → add_points; a code library → create_feature_library /
+  edit_library_code; 2D linework → create_curve; surface materials → define_surface_material; map layers →
+  add_map_layer; a schedule → import_schedule with tasks. Never write a file in order to import it, and never compose
+  file contents (FXL, JSON, CSV, DXF, OBJ, LandXML…) for an import_* / load_* command. Import only a file the person
+  gives you, or when no command can build it; export only what they ask to share.
 - list_commands with a query ("hinge a door") finds the right command when you are unsure.
 - For repetitive or parametric geometry prefer ONE run_script call (JavaScript; \`api.<command>(args)\` returns results).
 - Check your work: get_scene for numbers, screenshot to look at the model.`;
@@ -1225,6 +1232,19 @@ function registerCore(reg, ctx) {
     return fmtPt(p);
   }, true);
 
+  def('terrain', 'add_points', 'Add many survey points in one step, by Northing/Easting/Elevation (project units; grid: true for grid coordinates), each with an optional name, code, description and attributes. The way to enter a list of points: no file needed.', obj({ points: { type: 'array', items: obj({ name: str('point name'), n: num('Northing'), e: num('Easting'), z: num('Elevation'), code: str('feature code'), desc: str('description'), attrs: obj({}, []) }, ['n', 'e']) }, grid: bool('the coordinates are grid (map) coordinates') }, ['points']), (a) => {
+    const doc = ctx.doc;
+    const k = S.UNITS[S.geo(doc).units] || 1;
+    const added = a.points.map((q) => {
+      let c = { n: q.n * k, e: q.e * k, z: (q.z ?? 0) * k };
+      if (a.grid) c = S.gridToProject(doc, c);
+      return S.addPoint(doc, { ...c, name: q.name, code: q.code || '', desc: q.desc || '', attrs: q.attrs || {} });
+    });
+    afterPoints();
+    ctx.selection.set(added.map((p) => p.id));
+    return { added: added.length, points: added.slice(0, 50).map(fmtPt) };
+  }, true);
+
   // ---------------------------------------------------------------- COGO (#227): the maths is in cogo.js, shared with the COGO panel's preview
   const DIR = 'azimuth (45.5, DMS 45°30\'00"), quadrant bearing (N45°30\'E), or a turn from the last leg: R90 / L45 (deflection), AR270 (angle right)';
   const PT = (d) => ({ description: `${d}: a point name, or [Northing, Easting, Elevation]`, ui: { kind: 'point', names: true } });
@@ -1660,6 +1680,11 @@ function registerCore(reg, ctx) {
   const usedLibrary = () => ctx.doc.featureLibrary?.name || null;
   const libName = str('library name (feature_libraries lists them)');
   def('terrain', 'feature_libraries', 'The feature code libraries saved on this computer (name, number of codes, where they came from) and the one this model uses.', obj({}), async () => ({ libraries: await codeLibs().call('list'), in_use: usedLibrary() }));
+  def('terrain', 'create_feature_library', 'Make a new feature code library on this computer, built here (no file): its codes as a list of { code, description, type, layer, colour, attributes… }, or none to add them later with edit_library_code. use: true makes this model use it.', obj({ name: str('library name'), codes: { type: 'array', items: obj({ code: str('e.g. KERB'), ...CODE_FIELDS }, ['code']) }, use: bool('make this model use it'), replace: bool('replace a library of that name') }, ['name']), async (a) => {
+    const codes = Object.fromEntries((a.codes || []).map((c) => [c.code.toUpperCase(), S.editCode({}, c)]));
+    const r = await codeLibs().call('save', { name: a.name, source: 'built in the app', codes }, !!a.replace);
+    return a.use ? { ...r, in_use: r.name, processed: useLibrary(await codeLibs().call('get', r.name)) } : r;
+  }, true);
   def('terrain', 'import_feature_library', 'Keep a feature code library on this computer under a name: a Trimble FXL (Feature Definition Manager: codes, descriptions, point / line / polygon, layers, colours, line styles, attributes with their types and pick lists) or a JSON library { CODE: { … } }, from a path or text; with neither, the model\'s own codes. Then use_feature_library makes a model use it.', obj({ path: str('absolute .fxl or .json path'), text: str('or: the file contents'), format: str('when the extension does not say', ['fxl', 'json']), name: str('library name (default: the file name)'), replace: bool('replace a library of that name') }), async (a) => {
     let text = a.text;
     if (a.path && text === undefined) {
@@ -3256,11 +3281,11 @@ function registerCore(reg, ctx) {
     return { deleted: n };
   }, true);
 
-  def('animate', 'import_schedule', 'A 4D sequence from a schedule: CSV (Name, Start, Finish, optional Element / Tag), MS Project XML or Primavera P6 XER. Each task builds the shapes it matches (its Element column, else by layer or name, or a metadata field), between its start and finish; a date caption shows the day and the tasks.', obj({ path: str('absolute .csv / .xml / .xer path'), text: str('the file\'s text instead of path'), match: str('auto | tag | name', ['auto', 'tag', 'name']), field: str('metadata key holding the task id or name'), seconds_per_day: num('timeline seconds per day (default: the schedule in 20 s)'), effect: str('how pieces arrive', ['grow', 'rise', 'fade', 'appear']), caption: bool('show the date and tasks (default true)'), us_dates: bool('month first in 3/1/2027') }), async (a) => {
+  def('animate', 'import_schedule', 'A 4D sequence from a schedule: CSV (Name, Start, Finish, optional Element / Tag), MS Project XML or Primavera P6 XER. Each task builds the shapes it matches (its Element column, else by layer or name, or a metadata field), between its start and finish; a date caption shows the day and the tasks.', obj({ path: str('absolute .csv / .xml / .xer path'), text: str('the file\'s text instead of path'), tasks: { type: 'array', description: 'or: the tasks themselves, no file', items: obj({ name: str('task name'), start: str('start date, YYYY-MM-DD'), finish: str('finish date, YYYY-MM-DD'), element: str('names or tags it builds, | between them') }, ['name', 'start', 'finish']) }, match: str('auto | tag | name', ['auto', 'tag', 'name']), field: str('metadata key holding the task id or name'), seconds_per_day: num('timeline seconds per day (default: the schedule in 20 s)'), effect: str('how pieces arrive', ['grow', 'rise', 'fade', 'appear']), caption: bool('show the date and tasks (default true)'), us_dates: bool('month first in 3/1/2027') }), async (a) => {
     const doc = ctx.doc;
-    const text = a.text ?? (a.path ? await ctx.io?.readText?.(a.path) : null);
-    if (!text) throw new Error('Give path (a schedule file) or text.');
-    const tasks = SQ.parseSchedule(text, { us: !!a.us_dates });
+    const text = a.tasks ? null : a.text ?? (a.path ? await ctx.io?.readText?.(a.path) : null);
+    if (!a.tasks && !text) throw new Error('Give tasks, or path (a schedule file) or text.');
+    const tasks = a.tasks ? SQ.scheduleTasks(a.tasks) : SQ.parseSchedule(text, { us: !!a.us_dates });
     const t0 = tasks[0].start;
     const days = Math.max(1, (Math.max(...tasks.map((x) => x.finish)) - t0) / 86400000);
     const spd = a.seconds_per_day || Math.round((20 / days) * 1000) / 1000;

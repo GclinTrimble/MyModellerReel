@@ -202,8 +202,14 @@ export function parseSchedule(text, { us = false } = {}) {
       tasks.push({ id: ci >= 0 ? c[ci] : String(tasks.length + 1), name: c[cn], start: parseDate(c[cs], { us }), finish: parseDate(c[cf], { us }), element: ce >= 0 ? c[ce] : '' });
     }
   }
-  tasks = tasks.filter((x) => x.name && Number.isFinite(x.start) && Number.isFinite(x.finish));
-  if (!tasks.length) throw new Error('No tasks with a name, a start and a finish date in that file.');
+  return scheduleTasks(tasks);
+}
+
+/** Tasks given directly ({ name, start, finish as dates or ms, element }), checked and sorted like a parsed schedule. */
+export function scheduleTasks(list, { us = false } = {}) {
+  const ms = (d) => (typeof d === 'number' ? d : parseDate(String(d ?? ''), { us }));
+  const tasks = list.map((x, i) => ({ ...x, id: String(x.id ?? i + 1), name: x.name, start: ms(x.start), finish: ms(x.finish), element: x.element || '' })).filter((x) => x.name && Number.isFinite(x.start) && Number.isFinite(x.finish));
+  if (!tasks.length) throw new Error('No tasks with a name, a start and a finish date.');
   for (const x of tasks) if (x.finish < x.start) [x.start, x.finish] = [x.finish, x.start];
   return tasks.sort((a, b) => a.start - b.start);
 }
