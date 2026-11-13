@@ -15,7 +15,9 @@ import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
 import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
 import { invert as invertAffine } from '../core/underlay.js';
+import { isSurface } from '../core/project.js';
 import { viewDirection } from '../core/layout.js';
+import { lineworkOffsets } from '../core/survey.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -51,7 +53,32 @@ export function makeMaterial(m, opts = {}) {
     polygonOffsetUnits: opts.flat ? -2 : 1,
     vertexColors: !!opts.vertexColors,
   });
+  if (opts.facets) facetShade(mat);
   return mat;
+}
+
+/**
+ * Surfaces: a faint hillshade per triangle on top of the matte lighting. Near-level triangles all catch the sky the
+ * same, so slope is exaggerated (×3) and lit from the sun's side, 45° up; at most ±FACET of the colour changes.
+ */
+const FACET = 0.14;
+const FACET_LIGHT = { value: new THREE.Vector3(-0.5, 0.7071, -0.5) };
+function facetShade(mat) {
+  mat.customProgramCacheKey = () => 'facets';
+  mat.onBeforeCompile = (s) => {
+    s.uniforms.facetLight = FACET_LIGHT;
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFacetN;')
+      .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nvFacetN = mat3(modelMatrix) * objectNormal;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vFacetN;\nuniform vec3 facetLight;').replace(
+      '#include <opaque_fragment>',
+      `#include <opaque_fragment>
+      vec3 fn = normalize(vFacetN) * (gl_FrontFacing ? 1.0 : -1.0);
+      fn = normalize(vec3(fn.x * 3.0, fn.y, fn.z * 3.0));
+      float hill = dot(fn, facetLight);
+      gl_FragColor.rgb *= 1.0 + ${FACET.toFixed(2)} * clamp((hill - 0.7071) / 0.2929, -1.0, 1.0);`,
+    );
+  };
 }
 
 export function applyTransform(obj, e) {
@@ -127,12 +154,16 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
     cache.used.add(c);
     return c;
   };
-  for (const e of doc.entities) {
+  // a symbol tinted by an attribute (S.symbolTransform): its parts take the colour, the shared definition does not
+  const tints = new Map();
+  for (const t of doc.entities) if (t.tint) for (const d of D.descendants(doc, t.id)) tints.set(d.id, t.tint);
+  for (let e of doc.entities) {
+    if (tints.has(e.id)) e = { ...e, material: { ...e.material, color: tints.get(e.id) }, byLayer: false };
     let o;
     if (e.mesh) {
       const g = geo(e.mesh);
       const drape = e.drape && underlay ? doc.entities.find((x) => x.id === e.drape.underlay && x.underlay) : null;
-      o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer || doc.settings.color_by === 'layer' ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape }));
+      o = new THREE.Mesh(drape ? drapedGeometry(g.geometry, e, drape) : g.geometry, makeMaterial(e.mesh.fc && !drape ? { ...e.material, color: '#ffffff' } : e.byLayer || doc.settings.color_by === 'layer' ? { ...e.material, color: L.colorOf(doc, e) } : e.material, { xray, flat: e.mesh.f.length === 1, vertexColors: !!e.mesh.fc && !drape, facets: isSurface(e) && !drape }));
       if (drape) (o.material.map = underlay(drape).material.map), (o.material.color.set('#ffffff')), (o.userData.draped = true);
       else if (!styled) applyMaps(o, e.material, dirty);
       const sm = styled && styleMaterial(styled, { clipping });
@@ -172,6 +203,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
       const pts = e.line.points.map((id) => doc.entities.find((x) => x.id === id)).filter(Boolean).map((p) => new THREE.Vector3(...p.position));
       if (e.line.closed && pts.length > 2) pts.push(pts[0]);
       o = styledLine(doc, e, pts.map((p) => p.toArray()), clipping, fat);
+      for (const off of lineworkOffsets(doc, e)) o.add(styledLine(doc, e, off.path, clipping, fat)); // they follow its points
       o.userData.isCurve = true;
     } else if (e.curve) {
       const sp = samplePoints(e.curve);
@@ -513,6 +545,7 @@ export class Viewport {
     const el = elevation * D2R;
     this.sun.position.set(c.x + Math.sin(az) * Math.cos(el) * size * 2, c.y + Math.sin(el) * size * 2, c.z - Math.cos(az) * Math.cos(el) * size * 2);
     this.sun.target.position.copy(c);
+    FACET_LIGHT.value.set(Math.sin(az), 1, -Math.cos(az)).normalize(); // the sun's side, 45° up: it adds to the sun's shading
     const cam = this.sun.shadow.camera;
     cam.left = cam.bottom = -size;
     cam.right = cam.top = size;

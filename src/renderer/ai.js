@@ -3,6 +3,7 @@
 // profile (#243): its own thread, queue and model; tool calls go through the crew (src/core/agents.js).
 import { protocolOf, systemPrompt, runTurn, userMessage, newStats, shortArgs, splitThinking, turnSummary } from '../core/agent.js';
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
+import { agentBadge } from './agents.js';
 import { h, icon, infoTip } from './ui.js';
 import { sketchPad } from './sketch.js';
 import * as FB from '../core/feedback.js';
@@ -111,9 +112,10 @@ export class Assistant {
     const ok = p === 'ollama' || p === 'builtin' || s[p]?.hasKey;
     const others = this.agents.profiles.length > 1;
     this.head.replaceChildren(
+      agentBadge(this.profile),
       others
         ? h('select.agent-pick', { title: 'Which agent this thread belongs to', 'aria-label': 'Agent', style: { color: this.profile.color }, onchange: (e) => this.agents.open(e.target.value) }, this.agents.profiles.map((a) => h('option', { value: a.id, selected: a.id === this.profile.id }, a.name)))
-        : icon('sparkle'),
+        : null,
       !this.mine
         ? h('span.small.muted.grow', { title: 'The skill of this agent (change it in the Agents panel)' }, this.profile.skill ? SKILLS[this.profile.skill]?.label || this.profile.skill : 'No skill')
         : h(

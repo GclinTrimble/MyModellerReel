@@ -151,7 +151,6 @@ export function diffDocs(before, after) {
 export function addEntity(doc, props) {
   const id = `e${doc.nextId++}`;
   const kind = props.type === 'group' ? 'Group' : 'Shape';
-  const count = doc.entities.filter((e) => e.type === (props.type || 'mesh')).length + 1;
   const e = {
     type: 'mesh',
     parent: null,
@@ -164,7 +163,7 @@ export function addEntity(doc, props) {
     ...props,
   };
   e.id = id;
-  e.name ||= `${kind} ${count}`;
+  e.name ||= `${kind} ${doc.entities.filter((x) => x.type === (props.type || 'mesh')).length + 1}`; // counted only when unnamed: thousands of named adds stay linear
   e.material = { color: DEFAULT_COLOR, opacity: 1, metalness: 0, roughness: 0.85, ...(props.material || {}) };
   e.tag ||= doc.settings.current_layer || 'Untagged';
   doc.entities.push(e);
@@ -282,7 +281,17 @@ export function worldMesh(doc, e) {
 }
 
 export function removeEntity(doc, e) {
-  const gone = new Set([e.id, ...descendants(doc, e.id).map((d) => d.id)]);
+  removeEntities(doc, [e]);
+}
+
+/** Remove many entities and their descendants in one pass over the model (one by one is quadratic). */
+export function removeEntities(doc, list) {
+  const gone = new Set(list.map((e) => e.id));
+  for (let grew = gone.size > 0; grew; ) {
+    grew = false;
+    for (const x of doc.entities) if (x.parent && gone.has(x.parent) && !gone.has(x.id)) (gone.add(x.id), (grew = true));
+  }
+  if (!gone.size) return;
   doc.entities = doc.entities.filter((x) => !gone.has(x.id));
   doc.animation.tracks = doc.animation.tracks.filter((t) => !gone.has(t.target));
   if (doc.animation.motions) doc.animation.motions = doc.animation.motions.filter((m) => !gone.has(m.target));

@@ -8,12 +8,13 @@ import { getGenerator } from '../core/derived.js';
 import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt, BRUSH } from './tools.js';
 import * as TK from '../core/takeoff.js';
 import * as TX from '../core/textures.js';
-import { buildForm, SWATCHES, codeGrid } from './forms.js';
+import { buildForm, SWATCHES, codeGrid, attrInput } from './forms.js';
 import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
 import * as Assets from '../core/assets.js';
 import * as SW from '../core/sitework.js';
+import { isSurface } from '../core/project.js';
 import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
 import { t, LANGUAGES } from '../core/i18n.js';
@@ -317,6 +318,67 @@ export class UI {
     });
   }
 
+  /**
+   * A point's attributes, in a small card next to the click: one row per attribute of its code, Tab to the next, Enter
+   * to keep them, Esc to skip. Resolves to the values (checked, cleaned) or null when skipped.
+   */
+  attrCard(at, defs, values = {}, title = 'Attributes') {
+    const doc = this.app.store.doc;
+    return new Promise((resolve) => {
+      const rows = defs.map((a) => {
+        const f = attrInput(a, values[a.name] ?? a.default, doc);
+        const msg = h('div.attr-err', { role: 'alert' });
+        const check = () => {
+          const r = f.read();
+          msg.textContent = r.error || '';
+          f.input.setAttribute('aria-invalid', String(!!r.error));
+          return r;
+        };
+        f.input.addEventListener('input', () => msg.textContent && check());
+        f.input.addEventListener('change', check);
+        return { a, f, msg, check, el: h('label.attr-field', { title: a.description || '' }, h('span', {}, a.name, a.required ? h('span.form-req', {}, ' *') : null), f.el, msg) };
+      });
+      const card = h('div.code-card.attr-card', { role: 'dialog', 'aria-label': title }, h('div.code-title', {}, icon('list-bullets'), h('span.grow', {}, title)), h('div.attr-fields', {}, rows.map((r) => r.el)), h('div.code-keys', {}, 'Tab next · Enter OK · Esc skip'));
+      const away = (e) => !card.contains(e.target) && done(null);
+      const done = (v) => {
+        card.remove();
+        window.removeEventListener('pointerdown', away, true);
+        resolve(v);
+      };
+      const ok = () => {
+        const out = {};
+        let bad = null;
+        for (const r of rows) {
+          const res = r.check();
+          if (res.error) bad ||= r;
+          else if (res.value !== undefined) out[r.a.name] = res.value;
+        }
+        if (bad) return bad.f.input.focus();
+        done(out);
+      };
+      card.addEventListener('keydown', (e) => {
+        e.stopPropagation(); // the view's shortcuts stay out of the typing
+        if (e.key === 'Escape') done(null);
+        else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') (e.preventDefault(), ok());
+        else if (e.key === 'Tab') {
+          // round the card, not out of it
+          const ins = rows.map((r) => r.f.input);
+          const i = ins.indexOf(e.target);
+          if (i >= 0 && ((e.shiftKey && i === 0) || (!e.shiftKey && i === ins.length - 1))) (e.preventDefault(), ins[e.shiftKey ? ins.length - 1 : 0].focus());
+        }
+      });
+      document.body.append(card);
+      const r = card.getBoundingClientRect();
+      card.style.left = `${Math.max(8, Math.min((at.clientX ?? innerWidth / 2) + 12, innerWidth - r.width - 8))}px`;
+      card.style.top = `${Math.max(8, Math.min((at.clientY ?? innerHeight / 2) + 12, innerHeight - r.height - 8))}px`;
+      setTimeout(() => {
+        window.addEventListener('pointerdown', away, true);
+        rows[0]?.f.input.focus();
+        rows[0]?.f.input.select?.();
+      });
+    });
+  }
+
   /** The form steps aside while points (or, with thing, one object: its id) are clicked in the view. */
   async pickInView(n, hint, thing = false) {
     const dlg = this.$('modal');
@@ -346,7 +408,12 @@ export class UI {
     this.actions = {
       new: { label: 'New model', icon: 'file-plus', key: 'Ctrl+N', run: () => app.newModel() },
       open: { label: 'Open…', icon: 'folder-open', key: 'Ctrl+O', run: run('open', {}) },
-      save: { label: 'Save', icon: 'floppy-disk', key: 'Ctrl+S', run: () => app.reg.run('save', { path: app.file || undefined }).catch((e) => this.toast(e.message, 'danger')) },
+      save: { label: 'Save', icon: 'floppy-disk', key: 'Ctrl+S', run: () => app.reg.run('save', { path: app.file || undefined }).then((r) => r?.project && this.toast(`Saved project ${r.name}`)).catch((e) => this.toast(e.message, 'danger')) },
+      openProject: { label: 'Open project…', icon: 'folder-open', run: () => app.reg.run('open_project', {}).then((r) => r.cancelled || this.toast(`Project ${r.name}: ${r.points} points, ${r.files} source files${r.from_database?.length ? ` · from its database: ${r.from_database.join(', ')}` : ''}`)).catch((e) => this.toast(e.message, 'danger')) },
+      saveProject: { label: 'Save as project folder…', icon: 'folder-simple-plus', run: async () => {
+        const dir = await app.io.pickFolder('Save the project in a folder');
+        if (dir) app.reg.run('save_project', { path: dir }).then((r) => this.toast(`Saved project ${r.name}: database, scene, model and ${r.files} source files${r.warnings ? ` · ${r.warnings.length} warnings` : ''}`)).catch((e) => this.toast(e.message, 'danger'));
+      } },
       saveAs: { label: 'Save as…', icon: 'floppy-disk', key: 'Ctrl+Shift+S', run: run('save', {}) },
       howto: { label: 'How do I…', icon: 'question', key: 'F1', run: () => ((this.app.help.page = null), this.show('help')) },
       startScreen: { label: 'New from template…', icon: 'squares-four', run: () => this.startScreen() },
@@ -439,6 +506,7 @@ export class UI {
       selectSimilar: { label: 'Select similar', icon: 'selection-plus', run: () => (sel()[0] ? app.reg.run('select_where', { similar_to: sel()[0], mode: 'add' }).catch((e) => this.toast(e.message, 'danger')) : this.toast('Select one thing first.')) },
       selectWhere: { label: 'Select by…', icon: 'list-magnifying-glass', run: form('select_where') },
       metadata: { label: 'Set metadata…', icon: 'tag-simple', run: form('set_metadata') },
+      componentOrigin: { label: 'Set component origin…', icon: 'crosshair-simple', run: () => this.commandDialog('set_component_origin', sel().length && app.entity(sel()[0])?.component ? { name: app.entity(sel()[0]).name } : {}) },
       makeComponent: { label: 'Make component…', icon: 'squares-four', run: () => (sel().length ? this.commandDialog('make_component', { name: app.entity(sel()[0])?.name }) : this.toast('Select what the component is made of.')) },
       placeComponent: { label: 'Place component…', icon: 'squares-four', run: async () => { const r = await this.commandDialog('place_component', { name: Object.keys(app.store.doc.components || {})[0] }); if (r?.id) app.tools.place([r.id]); } },
       makeUnique: { label: 'Make unique', icon: 'link-break', run: () => sel().length && app.reg.run('make_unique', {}).then((r) => this.toast(`Now its own component: ${r.component}`)).catch((e) => this.toast(e.message, 'danger')) },
@@ -692,8 +760,8 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', 'exportGpkg', '-', 'quantities', '-', 'plugins'],
-      Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'openProject', 'saveProject', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', 'exportGpkg', '-', 'quantities', '-', 'plugins'],
+      Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'componentOrigin', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
@@ -916,7 +984,7 @@ export class UI {
     pop.hidden = false;
     const w = pop.offsetWidth;
     const left = side === 'right' ? r.right + 6 : Math.min(r.left, innerWidth - w - 8);
-    const top = Math.max(8, Math.min(side === 'right' ? r.top : r.bottom + 4, innerHeight - pop.offsetHeight - 8)); // stays on screen
+    const top = Math.max(8, Math.min(side === 'right' ? r.top : side === 'above' ? r.top - pop.offsetHeight - 4 : r.bottom + 4, innerHeight - pop.offsetHeight - 8)); // stays on screen
     Object.assign(pop.style, { left: `${left}px`, top: `${top}px` });
   }
   addPluginButton({ icon: ic = 'puzzle-piece', label, run }) {
@@ -1067,7 +1135,7 @@ export class UI {
           '-',
           a('group'),
           ...(one?.type === 'group' ? [a('ungroup')] : []),
-          a('makeComponent'),
+          one?.component ? a('componentOrigin') : a('makeComponent'),
           a('duplicate'),
           a('copy'),
           '-',
@@ -1309,6 +1377,7 @@ export class UI {
     this.renderProposal();
     this.renderMacro();
     this.renderManager();
+    this.renderSelectionBar(); // its toggles follow the model
     this.app.tools?.tool?.renderBar?.(); // the in-view bar of a tool follows the library and the selection
     const chip = this.$('context-chip');
     const ctx = this.app.context && this.app.entity(this.app.context);
@@ -1342,21 +1411,22 @@ export class UI {
     );
   }
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
+  // '# Name' starts a labelled group, '-' an unlabelled one; tabs and groups go in the order the work is done
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'fieldbook', 'mapLayers', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
-      Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
-      Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
-      Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
-      Earthworks: ['cutFill', 'volumeReport', 'corridorVolumes', 'corridorSolids'],
-      Materials: ['tool:matbrush', 'materialManager'],
+      Survey: ['# Set up', 'coordSys', 'basePoint', 'mapPick', 'loadLibrary', 'featureCode', '# Bring in', 'importPoints', 'fieldbook', '# Points', 'tool:point', 'addPoint', 'cogo', 'processCodes', '# Show and share', 'survey', 'mapLayers', 'exportPoints'],
+      Surfaces: ['# Create', 'surface', 'contourZ', 'fromContours', 'groundFromCloud', 'importTerrain', '# Refine', 'breakline', 'boundary', 'editSurface', 'smooth', '# Check', 'checkSurface', 'analyze', 'contours'],
+      Design: ['# Platforms', 'pad', 'stamp', '# Along a line', 'road', 'lineSlope', 'trench', '# Surfaces', 'plane', 'offsetSurface', 'newTerrain', 'tool:sculpt', '# On the ground', 'drape', 'drapeImage', 'water'],
+      Roads: ['# Lay out', 'alignment', 'corridor', 'editCorridor', '# Review', 'roadViews', 'profile', 'sections', '# Into the ground', 'corridorSurface', 'applyCorridor'],
+      Earthworks: ['# Surfaces', 'cutFill', 'volumeReport', '# Roads', 'corridorVolumes', 'corridorSolids'],
+      Materials: ['# Surface materials', 'tool:matbrush', 'materialManager'],
     },
     Drawings: {
       '1 Bring in': ['importPdf', 'importImage', 'readDrawing', 'vectorise'],
       '2 Scale': ['tool:calibrate', 'drawingScale', 'snapDrawings'],
       '3 Place on the map': ['tool:control', 'georef', 'georefReport', 'worldFile'],
       '4 Take lines out': ['pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours'],
-      '5 Clean up': ['tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide'],
+      '5 Clean up': ['# Trim and extend', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', '# Shape', 'offset', 'fillet', 'chamfer', '# Tidy', 'joinCurves', 'explode', 'simplify', 'divide'],
       '6 To the model': ['elevate', 'toBreaklines', 'extrudeLines', 'sweepLines'],
     },
   };
@@ -1368,8 +1438,8 @@ export class UI {
       const tabs = {};
       let cur = 'Main';
       for (const id of this.menus[m] || []) {
-        if (id === '-') continue;
-        if (!this.actions[id] && !id.startsWith('tool:')) cur = id;
+        if (id === '-') (tabs[cur] ||= []).push(id); // the menu's separators divide the tab
+        else if (!this.actions[id] && !id.startsWith('tool:')) cur = id;
         else (tabs[cur] ||= []).push(id);
       }
       out[m === 'Tools' ? 'Draw and modify' : m] = tabs;
@@ -1403,6 +1473,15 @@ export class UI {
     } catch {}
     this.app.viewport.dirty = true;
   }
+  /** A tab's ids as [label, ids] groups: '# Name' starts a labelled group, '-' an unlabelled one; empty groups dropped. */
+  ribbonGroups(ids) {
+    const groups = [['', []]];
+    for (const id of ids) {
+      if (id === '-' || id.startsWith('# ')) groups.push([id === '-' ? '' : id.slice(2), []]);
+      else groups.at(-1)[1].push(id);
+    }
+    return groups.filter(([, g]) => g.length);
+  }
   renderRibbon() {
     let el = this.$('ribbon');
     if (!el) {
@@ -1423,12 +1502,65 @@ export class UI {
     };
     el.replaceChildren(
       h('div.ribbon-tabs', {}, h('select', { 'aria-label': 'Ribbon', onchange: (e) => this.setRibbon(e.target.value) }, Object.keys(this.ribbons()).map((n) => h('option', { value: n, selected: n === name }, t(n)))), ...Object.keys(tabs).map((k) => h('button.ribbon-tab', { role: 'tab', 'aria-selected': String(k === tab), onclick: () => this.setRibbon(name, k) }, k)), h('span.spacer'), h('button.icon-btn.sm', { title: 'Hide the ribbon', 'aria-label': 'Hide the ribbon', onclick: () => this.setRibbon(null) }, icon('x'))),
-      h('div.ribbon-body', {}, ...tabs[tab].map(item).filter(Boolean)),
+      h('div.ribbon-body', {}, ...this.ribbonGroups(tabs[tab]).map(([label, ids]) => h('div.ribbon-group', {}, h('div.ribbon-group-items', {}, ...ids.map(item).filter(Boolean)), label ? h('div.ribbon-group-label', {}, t(label)) : null))),
     );
     this.app.viewport.dirty = true;
   }
 
+  /**
+   * The floating bar at the bottom of the view while something is selected: details, zoom and ask; a surface from
+   * selected points and lines; on one surface, how it shows (triangles, colours, slope arrows, contours).
+   */
+  renderSelectionBar() {
+    const app = this.app;
+    const doc = app.store.doc;
+    let bar = this.$('selection-bar');
+    if (!bar) document.querySelector('.viewport-wrap').append((bar = h('div.selection-bar', { id: 'selection-bar', role: 'toolbar', 'aria-label': 'Selection' })));
+    const ents = app.selection.map((id) => app.entity(id)).filter(Boolean);
+    bar.hidden = !ents.length;
+    if (!ents.length) return bar.replaceChildren();
+    const go = (name, args) => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
+    // icons only: the name is the tooltip
+    const b = (label, ic, run) => h('button.icon-btn.sm', { type: 'button', title: t(label), 'aria-label': t(label), onclick: run }, icon(ic));
+    const items = [
+      b('Details', 'info', () => (this.setSidePanel(true), this.show('entity'))),
+      b('Zoom to selection', 'magnifying-glass-plus', () => this.actions.zoomSel.run()),
+      b('Ask', 'chat-teardrop-dots', () => {
+        const r = bar.getBoundingClientRect();
+        app.agents.askAt(r.left, r.top - 6, null, true);
+      }),
+    ];
+    const all = ents.flatMap((e) => [e, ...D.descendants(doc, e.id)]);
+    const pts = all.filter(S.isPoint);
+    const lines = all.filter((e) => S.isLinework(e) || e.curve);
+    if (pts.length >= 3) {
+      const ids = (kind) => lines.filter((e) => (e.line?.kind || 'breakline') === kind).map((e) => e.id);
+      items.push(h('span.sel-sep'), b('Create a surface from the selection', 'mountains', () => go('create_surface', { points: pts.map((e) => e.id), breaklines: ids('breakline'), boundaries: ids('boundary') }).then((r) => r?.id && app.select([r.id]))));
+    }
+    const s = ents.length === 1 && isSurface(ents[0]) ? ents[0] : null;
+    if (s) {
+      // one button opens the surface display list (icon and name each, ticked when on); it stays open while you pick
+      const cur = () => app.entity(s.id) || s;
+      const colour = (label, ic, kind) => ({ label, icon: ic, checked: () => cur().analysis?.kind === kind, run: () => go('analyze_surface', { id: s.id, kind: cur().analysis?.kind === kind ? 'none' : kind }), keep: true });
+      const has = (k) => app.store.doc.entities.some((x) => x[k]?.surface === s.id);
+      const display = () => [
+        'Show on the surface',
+        { label: 'Triangles', icon: 'triangle', checked: () => !!cur().show_triangles, run: () => go('show_triangles', { ids: [s.id], show: !cur().show_triangles }), keep: true },
+        { label: 'Contours', icon: 'wave-sine', checked: () => has('contours'), run: () => go('surface_contours', { id: s.id, show: !has('contours') }), keep: true },
+        { label: 'Slope arrows', icon: 'arrow-down-right', checked: () => has('slopeArrows'), run: () => go('slope_arrows', { id: s.id, show: !has('slopeArrows') }), keep: true },
+        'Colour by',
+        colour('Elevation', 'chart-bar', 'elevation'),
+        colour('Slope', 'chart-line-up', 'slope'),
+        colour('Facing (aspect)', 'compass', 'aspect'),
+      ];
+      const d = h('button.icon-btn.sm.drop', { type: 'button', title: t('Surface display'), 'aria-label': t('Surface display'), 'aria-haspopup': 'menu' }, icon('stack'), icon('caret-up'));
+      d.onclick = () => this.popAt(d, display(), { side: 'above' });
+      items.push(h('span.sel-sep'), d);
+    }
+    bar.replaceChildren(...items);
+  }
   onSelection() {
+    this.renderSelectionBar();
     // a drawing selected: offer its workflow (#197), once, if no ribbon is open
     const one = this.app.selection.length === 1 && this.app.entity(this.app.selection[0]);
     if (one?.underlay && !this.ribbon && !this.ribbonOffered) (this.ribbonOffered = true), this.setRibbon('Drawings', one.underlay.affine ? '2 Scale' : '1 Bring in');
@@ -1467,7 +1599,7 @@ export class UI {
     const o = this.outline;
     const q = o.q.toLowerCase();
     const match = (e) => !q || e.name.toLowerCase().includes(q) || (e.tag || '').toLowerCase().includes(q) || (e.point?.code || '').toLowerCase().includes(q);
-    const kind = (e) => (e.type === 'point' ? 'Survey points' : e.annotation ? 'Dimensions and labels' : e.underlay ? 'Drawings' : e.pointcloud ? 'Point clouds' : e.alignment ? 'Alignments' : e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.generator === 'finished_ground' ? 'Surfaces' : e.curve ? 'Lines and curves' : 'Groups and shapes');
+    const kind = (e) => (e.type === 'point' ? 'Survey points' : e.fromCodes && !e.line ? 'Feature code symbols' : e.annotation ? 'Dimensions and labels' : e.underlay ? 'Drawings' : e.pointcloud ? 'Point clouds' : e.alignment ? 'Alignments' : e.meta?.surface || e.derived?.generator === 'surface' || e.derived?.generator === 'finished_ground' ? 'Surfaces' : e.curve ? 'Lines and curves' : 'Groups and shapes');
     const iconOf = (e) => (e.xref ? 'link-simple' : e.component ? 'squares-four' : e.type === 'group' ? 'folder-simple' : e.alignment ? 'path' : e.curve ? 'bezier-curve' : e.underlay ? (e.underlay.kind === 'pdf' ? 'file-pdf' : 'image') : e.type === 'point' ? 'map-pin' : e.annotation ? 'ruler' : 'cube');
     const order = [];
     const row = (e, depth) => {
@@ -1533,13 +1665,18 @@ export class UI {
       );
       return [r, ...(open || q ? kids.filter((k) => match(k) || q === '').flatMap((k) => row(k, depth + 1)) : [])];
     };
-    const folder = (key, label, ents) => {
+    // survey points fold again by where they came from: each field book, each imported file, the ones entered here
+    const byId = new Map(doc.entities.map((e) => [e.id, e]));
+    const nameOf = (id) => byId.get(id)?.name;
+    const folder = (key, label, ents, depth = 0) => {
       const open = o.open.has(key) || !!q;
       const ids = ents.map((e) => e.id);
+      const sources = key.endsWith('Survey points') ? Map.groupBy(ents, (p) => S.sourceOf(p, nameOf)) : null;
+      const inside = () => (sources && sources.size > 1 ? [...sources].sort(([a], [b]) => a.localeCompare(b)).flatMap(([s, list]) => folder(`${key}/${s}`, s, list, depth + 1)) : ents.flatMap((e) => row(e, depth + 1)));
       return [
         h(
           'div.tree-row.tree-folder',
-          { onclick: () => (open ? o.open.delete(key) : o.open.add(key), this.renderDock()), title: 'Click to fold or unfold' },
+          { style: depth ? { paddingLeft: `${6 + depth * 14}px` } : {}, onclick: () => (open ? o.open.delete(key) : o.open.add(key), this.renderDock()), title: 'Click to fold or unfold' },
           h('span.tree-fold', {}, icon(open ? 'caret-down' : 'caret-right')),
           icon('folder-simple'),
           h('span.name', {}, label),
@@ -1547,7 +1684,7 @@ export class UI {
           h('button.icon-btn.sm', { title: `Select all ${ents.length}`, 'aria-label': `Select ${label}`, onclick: (ev) => (ev.stopPropagation(), app.select(ids)) }, icon('selection-all')),
           h('button.icon-btn.sm', { title: 'Hide or show them all', 'aria-label': `Hide or show ${label}`, onclick: (ev) => (ev.stopPropagation(), run('set_properties', { ids, visible: !ents.every((e) => e.visible) })) }, icon(ents.every((e) => e.visible) ? 'eye' : 'eye-slash')),
         ),
-        ...(open ? ents.flatMap((e) => row(e, 1)) : []),
+        ...(open ? inside() : []),
       ];
     };
     const top = doc.entities.filter((e) => (o.by === 'hierarchy' ? !e.parent : true) && (match(e) || (e.type === 'group' && D.descendants(doc, e.id).some(match))));
@@ -1663,7 +1800,7 @@ export class UI {
       ['#toolbar', 'Tools', 'Draw (L, R, C, A…), push / pull (P), move (M), rotate (Q), measure (T). Hover a tool to see its key. While a tool works, type numbers: they go to the Measurements box.'],
       ['#vcb', 'Measurements box', 'Type exact values while drawing or moving: 2.5, 3,2, 150mm, 45°, x5 for five copies.'],
       ['#menubar', 'Menus', 'Everything has a menu entry: Site for survey and terrain, Drawings for PDFs and images, Animate for the timeline and videos.'],
-      ['#palette-btn', 'Search (Ctrl+K)', 'Find any command by what you want to do ("hinge a door"), or ask the AI from here.'],
+      ['#palette-btn', 'Search and ask (Ctrl+K)', 'Find any command by what you want to do ("hinge a door"), or ask an agent. Ctrl+K or Ctrl+Space over the model opens it where you point, with that point.'],
       ['#dock-tabs', 'Panels', 'AI chat, Outliner and layers, the selected entity, materials, scenes, the library, the survey table, settings.'],
       ['#timeline', 'Timeline', 'Keyframes, markers and captions; Animate › Render video turns it into an MP4.'],
       ['#api-pill', 'Automation', 'Every button is a command: scripts, the HTTP API and MCP (Claude and other AIs) drive the same ones.'],
@@ -2182,7 +2319,20 @@ export class UI {
         ...[['n', 'Northing'], ['e', 'Easting'], ['z', 'Elevation']].map(([k, l]) => h('label.row.small.param-row', {}, h('span', {}, l), h('input.grow', { type: 'number', step: 'any', value: p[k].toFixed(4), onchange: put(k) }))),
         h('label.row.small.param-row', {}, h('span', {}, 'Code'), h('input.grow', { value: p.code, list: 'code-list', onchange: put('code') }), h('datalist', { id: 'code-list' }, Object.keys(app.store.doc.featureCodes || {}).map((c) => h('option', { value: c })))),
         h('label.row.small.param-row', {}, h('span', {}, 'Description'), h('input.grow', { value: p.desc || '', onchange: put('desc') })),
-        ...Object.entries(p.attrs || {}).map(([k, v]) => h('label.row.small.param-row', {}, h('span', { title: 'Attribute' }, k), h('input.grow', { value: String(v), 'aria-label': `Attribute ${k}`, onchange: (ev) => run('edit_points', { points: [e.id], attrs: { [k]: typeof v === 'number' && Number.isFinite(+ev.target.value) ? +ev.target.value : ev.target.value } }) }))),
+        // its code's attributes, each with its own input (number, list, yes / no…), then any other it carries
+        ...(() => {
+          const defs = app.store.doc.featureCodes?.[S.parseCode(p.code).code]?.attrs || [];
+          const other = Object.keys(p.attrs || {}).filter((k) => !defs.some((a) => a.name === k)).map((k) => ({ name: k, type: typeof p.attrs[k] === 'number' ? 'number' : 'text' }));
+          return [...defs, ...other].map((a) => {
+            const f = attrInput(a, p.attrs?.[a.name], app.store.doc);
+            f.input.addEventListener('change', () => {
+              const r = f.read();
+              if (r.error) return this.toast(r.error, 'danger');
+              run('edit_points', { points: [e.id], attrs: { [a.name]: r.value ?? '' } });
+            });
+            return h('label.row.small.param-row', { title: a.description || '' }, h('span', { title: 'Attribute' }, a.name, a.required ? h('span.form-req', {}, ' *') : null), f.el);
+          });
+        })(),
       );
     }
     if (e.alignment) {
@@ -2268,6 +2418,7 @@ export class UI {
         {},
         h('div.overline', {}, `${e.line.kind}${e.line.boundary ? ` · ${e.line.boundary}` : ''} · ${e.line.points.length} points`),
         h('div.row.wrap', {}, h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'reverse' }) }, icon('arrows-left-right'), 'Reverse'), h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'smooth', smooth: !e.line.smooth }) }, icon('bezier-curve'), e.line.smooth ? 'Straight' : 'Smooth')),
+        this.lineOffsetsEditor(e),
       );
     if (e.derived?.report && e.mesh) {
       const tri = e.mesh.f.length;
@@ -2556,6 +2707,24 @@ export class UI {
     );
   }
 
+  /** A linework's offset lines (H right +, V up +), edited as rows and applied in one set_line_offsets. */
+  lineOffsetsEditor(e) {
+    const rows = (e.line.offsets || []).map((o) => ({ ...o }));
+    const box = h('div.form-stack', {});
+    const num = (o, k, label) => h('input', { type: 'number', step: '0.01', value: o[k] ?? 0, 'aria-label': label, style: { width: '58px' }, oninput: (ev) => (o[k] = +ev.target.value) });
+    const draw = () =>
+      box.replaceChildren(
+        h('div.overline', {}, 'Offsets · H right +, V up +'),
+        rows.length
+          ? h('table.qty', {}, h('tr', {}, h('th', {}, 'H (m)'), h('th', {}, 'V (m)'), h('th', {}, 'Label'), h('th', { title: 'In the surface' }, 'TIN'), h('th', {})),
+              rows.map((o, i) => h('tr', {}, h('td', {}, num(o, 'h', `Offset ${i + 1} horizontal`)), h('td', {}, num(o, 'v', `Offset ${i + 1} vertical`)), h('td', {}, h('input', { value: o.name || '', placeholder: 'Back of kerb', 'aria-label': `Offset ${i + 1} label`, style: { width: '100%', minWidth: '50px' }, oninput: (ev) => (o.name = ev.target.value) })), h('td', {}, h('input', { type: 'checkbox', checked: o.surface !== false, 'aria-label': `Offset ${i + 1} in the surface`, onchange: (ev) => (o.surface = ev.target.checked) })), h('td', {}, h('button.icon-btn.sm', { title: 'Remove', 'aria-label': `Remove offset ${i + 1}`, onclick: () => (rows.splice(i, 1), draw()) }, icon('trash'))))))
+          : h('p.small.muted', {}, 'No offsets. Add one for a kerb back, a ditch bottom or an edge of pavement: it follows the line, and a breakline\'s offsets go into its surfaces.'),
+        h('div.row.wrap', {}, h('button.btn.sm', { onclick: () => (rows.push({ h: rows.length ? rows.at(-1).h + 1 : 1, v: 0 }), draw()) }, icon('plus'), 'Add offset'), h('button.btn.sm.primary', { onclick: () => this.app.reg.run('set_line_offsets', { id: e.id, offsets: rows }).catch((err) => this.toast(err.message, 'danger')) }, icon('check'), 'Apply')),
+      );
+    draw();
+    return box;
+  }
+
   /** Library: sweep profiles (#135), recipes and macros (#93, #92), plugins. */
   panel_library() {
     const app = this.app;
@@ -2797,7 +2966,7 @@ export class UI {
       h('p.small.muted', {}, Object.keys(s.shortcuts || {}).length ? Object.entries(s.shortcuts).map(([k, v]) => `${k} → ${v}`).join(' · ') : 'None of your own yet.'),
       h('div.row', {}, h('button.btn.sm', { onclick: () => this.commandDialog('set_shortcut', { key: 'Ctrl+Shift+F', action: 'filletEdges' }) }, icon('keyboard'), 'Add a shortcut…')),
       h('h3', {}, t('Appearance')),
-      h('label.row', {}, h('input', { type: 'checkbox', checked: document.documentElement.classList.contains('dark'), onchange: () => app.toggleTheme() }), 'Dark theme'),
+      h('label.field', {}, h('span', {}, t('Theme')), h('select', { onchange: (e) => app.reg.run('set_theme', { mode: e.target.value }) }, [['auto', t('Auto (follow Windows)')], ['light', t('Light')], ['dark', t('Dark')]].map(([v, l]) => h('option', { value: v, selected: v === app.themeMode }, l)))),
       app.startup.supported &&
         h(
           'label.row',
@@ -3257,8 +3426,9 @@ export class UI {
         : h('p.small.muted', {}, 'Import points, then Surface… makes a live TIN.'),
       h('div.row', {}, h('h3.grow', {}, 'Feature codes'), h('button.btn', { onclick: this.actions.featureCode.run }, icon('plus'), 'Code…'), h('button.icon-btn.sm', { title: 'Feature code libraries', 'aria-label': 'Feature code libraries', onclick: this.actions.loadLibrary.run }, icon('books'))),
       doc.featureLibrary ? h('p.small.muted', {}, icon('books'), ` Library: ${doc.featureLibrary.name}`) : null,
-      h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.type}` : ''))),
-      h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
+      h('div.row.wrap', {}, Object.entries(doc.featureCodes || {}).map(([c, d]) => h('span.code-chip', { title: d.description || c }, h('i', { style: { background: d.color || '#1e3a4c' } }), c, d.line ? ' ⁄ line' : '', d.object ? ` ⁄ ${d.object.component || d.object.plan || d.object.type}` : ''))),
+      h('label.row.small', {}, h('span', {}, 'Labels'), h('select', { onchange: (e) => run('set_style', { point_labels: e.target.value }) }, [['name', 'Name'], ['name_z', 'Name + elevation'], ['code', 'Code'], ['attrs', 'Code + attributes'], ['all', 'All'], ['none', 'None']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.point_labels ?? 'name') === v }, l)))),
+      h('label.row.small', {}, h('span', {}, 'Symbols'), h('select', { onchange: (e) => run('set_style', { symbols: e.target.value }) }, [['points', 'Points only'], ['2d', '2D symbols'], ['3d', '3D models'], ['both', '2D + 3D']].map(([v, l]) => h('option', { value: v, selected: (doc.settings.symbols || 'both') === v }, l)))),
     );
   }
 
@@ -3404,52 +3574,24 @@ export class UI {
     );
   }
 
-  // ---------------------------------------------------------------- command palette (Ctrl+K)
+  // ---------------------------------------------------------------- search and commands (the list in the Ask prompt, agents.askAt)
+  /** Actions and commands matching q (lower case): ones without required parameters run at once, the others open their form. */
+  paletteItems(q) {
+    const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
+    const cmds = this.app.reg.list().map((c) => ({
+      label: c.name,
+      desc: c.description,
+      icon: (c.params.required || []).length ? 'textbox' : 'terminal',
+      run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
+    }));
+    return [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
+  }
   buildPalette() {
-    const dlg = this.$('palette');
-    const input = this.$('palette-input');
-    const list = this.$('palette-list');
-    let items = [];
-    let idx = 0;
-    const render = () => {
-      const q = input.value.trim().toLowerCase();
-      const acts = Object.entries(this.actions).map(([id, a]) => ({ label: a.label, key: a.key, icon: a.icon, run: a.run, id }));
-      // Every command: ones without required parameters run at once, the others open their form.
-      const cmds = this.app.reg.list().map((c) => ({
-        label: c.name,
-        desc: c.description,
-        icon: (c.params.required || []).length ? 'textbox' : 'terminal',
-        run: () => ((c.params.required || []).length || pickSteps(c.params).length ? this.commandDialog(c.name) : this.app.reg.run(c.name, {}).then((r) => this.toast(JSON.stringify(r).slice(0, 200))).catch((e) => this.toast(e.message, 'danger'))),
-      }));
-      items = [...acts, ...cmds].filter((i) => !q || `${i.label} ${i.desc || ''}`.toLowerCase().includes(q)).slice(0, 40);
-      if (q) items.push({ label: `Ask the AI: "${input.value.trim()}"`, icon: 'sparkle', run: () => this.app.ai.ask(input.value.trim()) });
-      idx = Math.min(idx, items.length - 1);
-      list.replaceChildren(...items.map((it, i) => h('li', { 'aria-selected': String(i === idx), onclick: () => go(i) }, icon(it.icon || 'dot-outline'), h('span', {}, it.label), it.desc ? h('span.desc', {}, it.desc) : null, it.key ? h('span.key', {}, it.key) : null)));
-      list.children[idx]?.scrollIntoView({ block: 'nearest' });
+    // Ctrl+K and Ctrl+Space are one prompt: at the pointer over the view, else just above this button
+    this.openPalette = () => this.app.agents.askAt();
+    this.$('palette-btn').onclick = () => {
+      const r = this.$('palette-btn').getBoundingClientRect();
+      this.app.agents.askAt(r.left, r.top - 4, null, true);
     };
-    const go = (i) => {
-      const it = items[i];
-      dlg.close();
-      it?.run();
-    };
-    input.oninput = () => ((idx = 0), render());
-    input.onkeydown = (e) => {
-      if (e.key === 'ArrowDown') (idx = Math.min(items.length - 1, idx + 1)), render(), e.preventDefault();
-      else if (e.key === 'ArrowUp') (idx = Math.max(0, idx - 1)), render(), e.preventDefault();
-      else if (e.key === 'Enter') {
-        // A sentence with no matching command goes straight to the AI.
-        const q = input.value.trim();
-        if (q.split(/\s+/).length > 2 && !items.slice(0, -1).some((x) => x.label.toLowerCase() === q.toLowerCase())) go(items.length - 1);
-        else go(idx);
-      }
-    };
-    this.openPalette = () => {
-      input.value = '';
-      idx = 0;
-      render();
-      dlg.showModal();
-      input.focus();
-    };
-    this.$('palette-btn').onclick = this.openPalette;
   }
 }

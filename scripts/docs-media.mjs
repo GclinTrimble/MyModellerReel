@@ -479,6 +479,75 @@ const PAGES = {
     await js('window.mmr.app.ui.closeModal(); return 1;');
     await run('manage_feature_library', { name: 'Old library', action: 'delete' });
   },
+  async 'project-folders'() {
+    await fresh();
+    const dir = path.join(os.tmpdir(), 'mmr-docs-project', 'Riverside upgrade').replace(/\\/g, '/');
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+    await run('set_coordinate_system', { epsg: 2193, name: 'NZGD2000 / NZTM' });
+    await run('import', { path: `${SAMPLES}/field.jxl` });
+    await run('create_surface', { name: 'EG' });
+    await run('set_view', { preset: 'iso' });
+    await run('zoom_extents', {});
+    await none();
+    await js("[...document.querySelectorAll('[aria-haspopup=menu]')].find((b) => b.textContent.trim() === 'File').click(); return 1;");
+    await shot('File › Save as project folder…: one folder for the whole job');
+    await clean();
+    const r = await run('save_project', { path: dir });
+    await run('new_document', {});
+    await run('open_project', { path: dir });
+    await run('zoom_extents', {});
+    await none();
+    await js("window.mmr.app.ui.outline = { by: 'hierarchy', q: '', open: new Set(['Survey points', 'Surfaces']) }; window.mmr.app.ui.show('outliner'); return 1;");
+    await shot(`Open project…: the model, its field book and surface; ${r.tables.length} tables in project.gpkg`);
+    await js("window.mmr.app.ui.show('ai'); return 1;");
+  },
+  async 'feature-code-symbols'() {
+    await fresh();
+    // the symbols: a lamp post (3D) and a flat plan block (2D), each made a component once
+    await run('create_cylinder', { radius: 0.12, height: 6, name: 'Pole', position: [0, 0, -40] });
+    await run('create_box', { width: 1.2, height: 0.15, depth: 0.3, name: 'Head', position: [0.5, 6, -40] });
+    await run('make_component', { ids: ['Pole', 'Head'], name: 'Lamp post' });
+    await run('set_component_origin', { name: 'Lamp post', at: [0, 0, -40] }); // the foot of the pole, not the middle of pole + arm
+    await run('create_cylinder', { radius: 0.12, height: 6, name: 'Pole 2', position: [6, 0, -40] });
+    await run('create_box', { width: 2.4, height: 0.15, depth: 0.3, name: 'Heads', position: [6, 6, -40] });
+    await run('make_component', { ids: ['Pole 2', 'Heads'], name: 'Lamp post double' });
+    await run('create_box', { width: 1, height: 0.02, depth: 1, name: 'Plan block', position: [12, 0, -40] });
+    await run('make_component', { ids: ['Plan block'], name: 'Lamp plan' });
+    const code = { code: 'LP', description: 'Lamp post', layer: 'Lighting', color: '#e8bc5e', object: { type: 'component', component: 'Lamp post', plan: 'Lamp plan', scale_attr: 'SCALE', rotation_attr: 'ROT', color_attr: 'COLOUR', variant_attr: 'TYPE', variants: { Double: { component: 'Lamp post double' } } }, attrs: [{ name: 'TYPE', type: 'list', options: ['Single', 'Double'], default: 'Single' }, { name: 'SCALE', type: 'number', decimals: 1, min: 0.5, max: 2, default: 1 }, { name: 'ROT', type: 'number', min: 0, max: 360, description: 'arm direction, ° from north' }, { name: 'COLOUR', type: 'color' }, { name: 'LAMP', type: 'list', options: ['LED', 'Sodium'], required: true }, { name: 'WORKING', type: 'boolean', default: true }] };
+    await js(`window.mmr.app.ui.commandDialog('define_feature_code', ${JSON.stringify(code)}, { form: true }); setTimeout(() => document.querySelector('[data-field=object]')?.scrollIntoView(), 300); return 1;`);
+    await shot('Site › Define feature code: its 2D and 3D symbols, and typed attributes');
+    await js('window.mmr.app.ui.closeModal(); return 1;');
+    await run('define_feature_code', code);
+    for (const [i, rot, col, k] of [[0, 0, '#2f6f86', 1], [1, 45, '#c8553d', 1.5], [2, 90, '#4c7a5a', 1], [3, 180, '#2f6f86', 2]]) await run('add_point', { n: 5400000 + i * 8, e: 650000 + i * 6, z: 10, code: 'LP', attrs: { ROT: rot, COLOUR: col, SCALE: k, LAMP: 'LED', TYPE: i === 2 ? 'Double' : 'Single' } });
+    await run('set_style', { point_labels: 'code' });
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    await none();
+    await js("window.mmr.app.tools.set('point'); const d = window.mmr.app.store.doc.featureCodes.LP.attrs; window.mmr.app.ui.attrCard({ clientX: innerWidth * 0.45, clientY: innerHeight * 0.4 }, d, {}, 'LP · new point'); setTimeout(() => { const i = document.querySelector('.attr-card input'); i.value = '5'; i.dispatchEvent(new Event('change')); }, 300); return 1;");
+    await shot('Survey point: after the code, its attributes next to the cursor (Tab, Enter)');
+    await js("document.querySelector('.attr-card')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); window.mmr.app.tools.set('select'); return 1;");
+    await run('set_style', { point_labels: 'attrs', symbols: '3d' });
+    await run('set_view', { preset: 'iso' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('Symbols 3D, labels Code + attributes: scaled, turned and tinted by their attributes');
+    await run('set_style', { symbols: '2d', point_labels: 'code' });
+    await run('set_view', { preset: 'top' });
+    await run('zoom_extents', {});
+    await none();
+    await shot('Symbols 2D: the plan block at each point');
+    await run('set_style', { symbols: 'both', point_labels: 'name' });
+    const rows = ['P,N,E,Z,CODE,ROT,LAMP,TYPE'];
+    for (let i = 0; i < 40; i++) rows.push(`B${i + 1},${5400040 + (i % 8) * 6},${650000 + Math.floor(i / 8) * 7},10,LP,${(i * 30) % 360},led,${i % 3 ? 'single' : 'double'}`);
+    await run('import_points', { text: rows.join('\n'), header: true, source: 'north-block.csv' });
+    await run('import', { path: `${SAMPLES}/field.jxl` });
+    await run('set_view', { preset: 'iso' });
+    await run('zoom_extents', {});
+    await none();
+    await js("window.mmr.app.ui.outline = { by: 'hierarchy', q: '', open: new Set(['Survey points', 'Survey points/File: north-block.csv']) }; window.mmr.app.ui.show('outliner'); return 1;");
+    await shot('Import a file: codes map by themselves; the Outliner folds points by field book and file');
+    await js("window.mmr.app.ui.show('ai'); return 1;");
+  },
   async 'bring-in-field-and-gis-data'() {
     await fresh();
     await run('import', { path: `${SAMPLES}/field.jxl` });

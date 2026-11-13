@@ -1,7 +1,7 @@
 // The sign-in screen (#115). The main process loads the app itself once a session exists.
 const native = window.native;
 const theme = localStorage.getItem('mymodellerreel.theme');
-document.documentElement.classList.toggle('dark', theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
+document.documentElement.classList.toggle('dark', theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches));
 
 function button(label, id, cls, ph, onclick) {
   const b = document.createElement('button');

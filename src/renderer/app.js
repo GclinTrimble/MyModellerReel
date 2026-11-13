@@ -84,6 +84,7 @@ app.ctx = {
     form: (name, values) => app.ui.commandDialog(name, values),
     pick: async (what, count, hint) => (what === 'object' ? app.tools.pickEntity(hint) : (await app.tools.pickPoints(count, hint)).map((p) => p.toArray())),
     panel: (tab) => app.ui.show(tab),
+    theme: (mode) => app.setTheme(mode),
   },
   get aiTurns() {
     return app.ai?.feedbackTurns || []; // this session's copilot turns, for rate_ai_turn (#232)
@@ -298,14 +299,19 @@ app.animateScenes = async () => {
   });
   app.timeline.open();
 };
-app.setTheme = (dark) => {
+// theme mode: 'auto' follows Windows (live), 'light' / 'dark' stick; the pick is remembered
+const darkOS = matchMedia('(prefers-color-scheme: dark)');
+darkOS.addEventListener('change', () => app.themeMode === 'auto' && app.setTheme('auto'));
+app.setTheme = (mode) => {
+  app.themeMode = ['light', 'dark'].includes(mode) ? mode : 'auto';
+  const dark = app.themeMode === 'auto' ? darkOS.matches : app.themeMode === 'dark';
   document.documentElement.classList.toggle('dark', dark);
-  localStorage.setItem('mymodellerreel.theme', dark ? 'dark' : 'light');
+  localStorage.setItem('mymodellerreel.theme', app.themeMode);
   app.viewport.scene.background = dark ? skyTexture('#33414c', '#181d22') : skyTexture('#cfe1e6', '#f4efe6');
   app.viewport.dirty = true;
   if (app.tools) app.ui.refresh();
 };
-app.toggleTheme = () => app.setTheme(!document.documentElement.classList.contains('dark'));
+app.toggleTheme = () => app.reg.run('set_theme', { mode: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
 app.mcpConfig = () => ({
   mcpServers: { mymodellerreel: { command: 'node', args: [`${app.info.appRoot || '<project folder>'}\\src\\mcp\\server.js`] } },
 });
@@ -473,8 +479,7 @@ native.onBeforeClose(async () => {
 });
 
 // ---------------------------------------------------------------- start
-const theme = localStorage.getItem('mymodellerreel.theme');
-app.setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
+app.setTheme(localStorage.getItem('mymodellerreel.theme'));
 // agent profiles (#243): app.ai is the thread on show (Plumb unless another agent's is open)
 app.agents = new Agents(app);
 app.ctx.agents = app.agents;
@@ -557,6 +562,7 @@ window.addEventListener('drop', (e) => e.dataTransfer.files.length && e.target !
 
 // where the pointer is, for Ask at the cursor (#244)
 canvas.addEventListener('pointermove', (e) => (app.agents.pointer = { x: e.clientX, y: e.clientY }));
+canvas.addEventListener('pointerleave', () => (app.agents.pointer = null)); // off the view, Ctrl+K / Ctrl+Space open above the search bar
 // Ctrl+M released: stop listening and transcribe (#98)
 window.addEventListener('keyup', (ev) => (ev.key.toLowerCase() === 'm' || ev.key === 'Control') && app.ai.recorder && app.ai.hear());
 // the gizmo's drags become one set_transform each (#67)

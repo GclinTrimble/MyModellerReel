@@ -15,6 +15,7 @@ import * as SW from '../core/sitework.js';
 import { floorAt, blocked } from './scale.js';
 import * as TK from '../core/takeoff.js';
 import { h } from './ui.js';
+import { parseCode } from '../core/survey.js';
 import { previewTies } from '../core/ties.js';
 
 const V = (...a) => new THREE.Vector3(...a);
@@ -1451,12 +1452,23 @@ class PointTool {
       this.asking = false;
     }
     if (code === null) return this.t.status(old ? 'Code unchanged.' : 'No point added.');
+    // a code with attributes: a small card for their values, next to the click (Esc: none for now)
+    const defs = this.t.app.store.doc.featureCodes?.[parseCode(code).code]?.attrs || [];
+    let attrs = null;
+    if (defs.length) {
+      this.asking = true;
+      try {
+        attrs = await this.t.app.ui.attrCard(ev, defs, old ? old.point.attrs || {} : {}, `${parseCode(code).code} · ${old ? old.name : 'new point'}`);
+      } finally {
+        this.asking = false;
+      }
+    }
     if (old) {
-      if (code !== old.point.code) await this.t.run('edit_points', { points: [old.id], code });
+      if (code !== old.point.code || attrs) await this.t.run('edit_points', { points: [old.id], code, ...(attrs ? { attrs } : {}) });
       return this.t.status(`Point ${old.name}: code ${code || '(none)'}.`);
     }
     this.code = code;
-    const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code });
+    const r = await this.t.run('add_point', { at: D.round3(p.toArray()), code, ...(attrs ? { attrs } : {}) });
     this.last = r.id;
     this.t.status(`Point ${r.name}: N ${r.n.toFixed(3)} E ${r.e.toFixed(3)} Z ${r.z.toFixed(3)}${code ? ` · ${code}` : ''}. Type #name to rename it.`);
   }

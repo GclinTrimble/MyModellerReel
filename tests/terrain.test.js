@@ -104,7 +104,7 @@ test('feature codes draw the drawing: lines, breaklines, trees, layers, warnings
   assert.equal(r.lines, 2);
   assert.equal(r.objects, 1);
   assert.ok(r.warnings.some((w) => /no feature code "FENCE"/.test(w)));
-  assert.ok(r.warnings.some((w) => /Point 6 \(TREE\) has no height/.test(w)));
+  assert.ok(r.warnings.some((w) => /Point 6 \(TREE\): height is needed/.test(w)));
   const lines = ctx.doc.entities.filter((e) => e.type === 'linework');
   assert.deepEqual(lines.map((l) => [l.name, l.line.kind, l.line.points.length, l.tag]), [['KERB', 'breakline', 3, 'Kerbs'], ['KERB 2', 'breakline', 2, 'Kerbs']]);
   await reg.run('edit_points', { points: ['6'], attrs: { height: 9 } });

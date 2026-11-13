@@ -67,7 +67,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin|usd|usda|usdc|usdz)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|svg|pdf|gml|gpkg)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpe?g|webp|tiff?|bmp|mp3|wav|ogg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|svg|pdf|gml|gpkg)$/i;
 
 let win;
 function createWindow(page) {
@@ -364,6 +364,30 @@ ipcMain.handle('file:open-dialog', async (_, { filters, multi }) => {
   const r = await dialog.showOpenDialog(win, { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters });
   return r.canceled ? null : multi ? r.filePaths : r.filePaths[0];
 });
+// projects (#277): a folder to save one into, and the source files copied in as they were imported
+ipcMain.handle('file:folder-dialog', async (_, { title, defaultPath } = {}) => {
+  const r = await dialog.showOpenDialog(win, { title, defaultPath, properties: ['openDirectory', 'createDirectory', 'promptToCreate'] });
+  return r.canceled ? null : r.filePaths[0];
+});
+// only the exchange files the app imports, only into a folder of a project (one with, or getting, its project.gpkg)
+const COPY_EXT = /\.(jxl|csv|txt|xyz|pnezd|penzd|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|prj|gpkg|pdf|png|jpe?g|tiff?|las|laz|ply|e57|pts|glb|gltf|obj|stl|fbx|usd|usda|usdc|usdz)$/i;
+ipcMain.handle('project:copy', (_, src, destDir) => {
+  if (!COPY_EXT.test(src)) throw new Error(`Refusing to copy ${path.basename(src)}: not a file the app imports.`);
+  if (!path.isAbsolute(src) || !path.isAbsolute(destDir) || !/[\\/](survey|codes|drawings|assets|surfaces|models)$/i.test(destDir)) throw new Error('Copies go into a project folder.');
+  if (!fs.existsSync(src)) return { missing: true };
+  fs.mkdirSync(destDir, { recursive: true });
+  const ext = path.extname(src);
+  const stem = path.basename(src, ext);
+  const same = (p) => fs.statSync(p).size === fs.statSync(src).size && fs.readFileSync(p).equals(fs.readFileSync(src));
+  // the same name with other bytes (two "points.csv" from two days) gets " (2)", " (3)"…
+  for (let n = 1; ; n++) {
+    const dest = path.join(destDir, n === 1 ? `${stem}${ext}` : `${stem} (${n})${ext}`);
+    if (path.resolve(dest) === path.resolve(src)) return { path: dest };
+    if (!fs.existsSync(dest)) return fs.copyFileSync(src, dest), { path: dest, copied: true };
+    if (same(dest)) return { path: dest };
+  }
+});
+ipcMain.handle('file:exists', (_, p) => fs.existsSync(p));
 ipcMain.handle('file:read', (_, p) => {
   if (!MODEL_EXT.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only model files.`);
   const b = fs.readFileSync(p);

@@ -6,6 +6,40 @@ import * as TR from './terrain.js';
 
 const tri = (m) => m.f.flatMap((f) => f.slice(1, -1).map((_, k) => [f[0], f[k + 1], f[k + 2]]));
 
+/**
+ * Slope arrows on a plan grid every spacing m: each points downhill, its length scaled by the grade (a third to nine
+ * tenths of the spacing, full at 20 % or steeper), lifted lift m off the surface. Flatter than min_grade gets none.
+ * [{ at, grade (%), bearing (downhill, degrees from north = −z), pts: [tail, head, barb, head, barb] }]
+ */
+export function slopeArrows(mesh, { spacing = 5, min_grade = 0.2, lift = 0.05, max = 4000 } = {}) {
+  const S = TR.sampler(mesh);
+  if (!S.bounds) return [];
+  const { x0, x1, z0, z1 } = S.bounds;
+  const step = Math.max(spacing, Math.sqrt(((x1 - x0) * (z1 - z0)) / max)); // shortcut: a coarser grid past max arrows
+  const d = step / 10;
+  const out = [];
+  for (let x = x0 + step / 2; x < x1; x += step)
+    for (let z = z0 + step / 2; z < z1; z += step) {
+      const [y, ye, yw, ys, yn] = [S.z(x, z), S.z(x + d, z), S.z(x - d, z), S.z(x, z + d), S.z(x, z - d)];
+      if ([y, ye, yw, ys, yn].some((v) => v === null)) continue;
+      const gx = (ye - yw) / (2 * d);
+      const gz = (ys - yn) / (2 * d);
+      const grade = Math.hypot(gx, gz) * 100;
+      if (grade < min_grade) continue;
+      const [ux, uz] = [-gx / Math.hypot(gx, gz), -gz / Math.hypot(gx, gz)]; // downhill
+      const half = (step * (0.33 + 0.57 * Math.min(1, grade / 20))) / 2;
+      const at = (s) => [x + ux * s, (S.z(x + ux * s, z + uz * s) ?? y) + lift, z + uz * s];
+      const head = at(half);
+      const barb = (side) => {
+        const b = half * 0.45;
+        const [bx, bz] = [head[0] - ux * b + side * uz * b * 0.6, head[2] - uz * b - side * ux * b * 0.6];
+        return [bx, (S.z(bx, bz) ?? y) + lift, bz];
+      };
+      out.push({ at: [x, y, z], grade: Math.round(grade * 10) / 10, bearing: Math.round(((Math.atan2(ux, -uz) * 180) / Math.PI + 360) % 360), pts: [at(-half), head, barb(1), head, barb(-1)] });
+    }
+  return out;
+}
+
 /** Contour lines every interval: [{ z, major, lines: [{ pts: [[x, y, z]], closed }] }]. */
 export function contours(mesh, { interval = 1, base = 0, major_every = 5, smooth = 0 } = {}) {
   if (!(interval > 0)) throw new Error('interval must be above 0.');

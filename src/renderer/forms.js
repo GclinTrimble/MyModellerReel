@@ -36,6 +36,206 @@ export function codeGrid(codes, onPick, { extra, query = '' } = {}) {
   return { el: h('div.code-browser', {}, search, list), search, draw };
 }
 
+// ---------------------------------------------------------------- feature code attributes and symbols
+
+/** The attribute types offered, as { type, kind } (kind keeps the Trimble FXL type: a photo is written back as one). */
+const ATTR_KINDS = { text: ['Text', { type: 'text' }], number: ['Number', { type: 'number' }], integer: ['Whole number', { type: 'number', kind: 'integer' }], list: ['List', { type: 'list' }], boolean: ['Yes / no', { type: 'boolean' }], date: ['Date', { type: 'text', kind: 'date' }], time: ['Time', { type: 'text', kind: 'time' }], color: ['Colour', { type: 'color' }], image: ['Image', { type: 'image', kind: 'photo' }], file: ['File', { type: 'text', kind: 'file' }], link: ['Link to a point', { type: 'link' }] };
+export const attrKind = (a) => (['integer', 'date', 'time', 'file'].includes(a.kind) ? a.kind : a.kind === 'photo' || a.type === 'image' ? 'image' : ATTR_KINDS[a.type] ? a.type : 'text');
+
+/**
+ * The attributes of a feature code as a table: name, type, needed, and per type its default, decimals, min / max, list
+ * items or linked code. Returns { el, read(), names() }; read() throws with a message on a bad row.
+ */
+export function attrsEditor(value, doc) {
+  const rows = (Array.isArray(value) ? value : []).map((a) => ({ ...a }));
+  const list = h('div.attr-table');
+  const codes = Object.keys(doc.featureCodes || {});
+  const draw = () => {
+    list.replaceChildren(
+      ...rows.map((a, i) => {
+        const set = (k) => (ev) => {
+          const t = ev.target.type === 'checkbox' ? ev.target.checked : ev.target.value.trim();
+          if (t === '' || t === false) delete a[k];
+          else a[k] = ['decimals', 'min', 'max'].includes(k) ? +t : k === 'options' ? t.split(',').map((x) => x.trim()).filter(Boolean) : t;
+        };
+        const kind = attrKind(a);
+        const who = a.name || `Attribute ${i + 1}`;
+        const small = (k, label, extra = {}) => h('label.attr-opt', {}, label, h('input', { value: a[k] === undefined ? '' : Array.isArray(a[k]) ? a[k].join(', ') : String(a[k]), 'aria-label': `${who} ${label}`, onchange: set(k), ...extra }));
+        const opts = [
+          kind === 'number' ? small('decimals', 'Decimals', { inputmode: 'numeric', class: 'form-num' }) : null,
+          kind === 'number' || kind === 'integer' ? [small('min', 'Min', { inputmode: 'decimal', class: 'form-num' }), small('max', 'Max', { inputmode: 'decimal', class: 'form-num' })] : [],
+          kind === 'list' ? small('options', 'Items', { placeholder: 'a, b, c' }) : null,
+          kind === 'link' ? small('link', 'Code', { list: 'attr-codes', placeholder: 'e.g. MH' }) : null,
+          kind === 'boolean'
+            ? h('label.attr-opt', {}, 'Default', h('select', { 'aria-label': `${who} Default`, onchange: (ev) => (ev.target.value ? (a.default = ev.target.value === 'yes') : delete a.default) }, [['', '—'], ['yes', 'Yes'], ['no', 'No']].map(([v, l]) => h('option', { value: v, selected: v === (a.default === undefined ? '' : a.default ? 'yes' : 'no') }, l))))
+            : kind === 'image' ? null : small('default', 'Default', kind === 'color' ? { placeholder: '#rrggbb' } : {}),
+          small('description', 'Help', { placeholder: 'shown on the form' }),
+        ].flat().filter(Boolean);
+        const move = (d) => () => (([rows[i], rows[i + d]] = [rows[i + d], rows[i]]), draw());
+        return h(
+          'div.attr-row',
+          { role: 'group', 'aria-label': who },
+          h(
+            'div.attr-main',
+            {},
+            h('input.attr-name', { value: a.name || '', placeholder: 'Name, e.g. DIAMETER', 'aria-label': 'Attribute name', onchange: (ev) => (a.name = ev.target.value.trim()) }),
+            h('select', { 'aria-label': `${who} type`, onchange: (ev) => {
+              for (const k of ['type', 'kind', 'options', 'decimals', 'min', 'max', 'link', 'default']) delete a[k];
+              Object.assign(a, ATTR_KINDS[ev.target.value][1]);
+              draw();
+            } }, Object.entries(ATTR_KINDS).map(([k, [label]]) => h('option', { value: k, selected: k === kind }, label))),
+            h('label.form-check', { title: 'A point with this code must have it' }, h('input', { type: 'checkbox', checked: !!a.required, 'aria-label': `${who} needed`, onchange: set('required') }), 'Needed'),
+            h('button.icon-btn.sm', { type: 'button', title: 'Up', 'aria-label': `Move ${who} up`, disabled: !i, onclick: move(-1) }, icon('arrow-up')),
+            h('button.icon-btn.sm', { type: 'button', title: 'Down', 'aria-label': `Move ${who} down`, disabled: i === rows.length - 1, onclick: move(1) }, icon('arrow-down')),
+            h('button.icon-btn.sm', { type: 'button', title: 'Remove', 'aria-label': `Remove ${who}`, onclick: () => (rows.splice(i, 1), draw()) }, icon('trash')),
+          ),
+          h('div.attr-opts', {}, ...opts),
+        );
+      }),
+      rows.length ? '' : h('p.small.muted', {}, 'No attributes: the points of this code carry only their code.'),
+    );
+  };
+  draw();
+  const add = h('button.btn.sm', { type: 'button', onclick: () => (rows.push({ name: '', type: 'text' }), draw(), list.querySelector('.attr-row:last-child .attr-name')?.focus()) }, icon('plus'), 'Add attribute');
+  return {
+    el: h('div.form-stack', {}, h('datalist', { id: 'attr-codes' }, codes.map((c) => h('option', { value: c }))), list, h('div.row', {}, add)),
+    defs: () => rows.filter((a) => a.name),
+    read() {
+      if (!rows.length) return Array.isArray(value) && value.length ? [] : undefined;
+      const seen = new Set();
+      for (const a of rows) {
+        if (!a.name) throw new Error('Each attribute needs a name.');
+        if (seen.has(a.name.toUpperCase())) throw new Error(`Two attributes are called ${a.name}.`);
+        seen.add(a.name.toUpperCase());
+        if (['decimals', 'min', 'max'].some((k) => a[k] !== undefined && !Number.isFinite(a[k]))) throw new Error(`${a.name}: decimals, min and max are numbers.`);
+        if (a.min !== undefined && a.max !== undefined && a.min > a.max) throw new Error(`${a.name}: min is more than max.`);
+        if (a.type === 'list' && !a.options?.length) throw new Error(`${a.name}: a list needs its items.`);
+        if (a.type === 'link' && !a.link) throw new Error(`${a.name}: which code does it link to?`);
+        if (a.default !== undefined) {
+          const r = S.checkAttr({ ...a, required: false }, a.default);
+          if (r.error) throw new Error(`Default: ${r.error}`);
+          a.default = r.value;
+        }
+      }
+      return rows.map((a) => ({ ...a }));
+    },
+  };
+}
+
+/**
+ * The symbol of a feature code: a 2D one (a component drawn flat) and a 3D one (a component, or a built-in tree, post or
+ * manhole), the attributes that drive it (scale, rotation, colour, height) and its variants: the value of one
+ * attribute (a TYPE list, say) picks other components. attrDefs() gives the code's attributes being edited.
+ * Returns { el, read() }: {} when there is none any more (the code then places nothing).
+ */
+export function symbolEditor(value, doc, attrDefs = () => []) {
+  const attrNames = () => attrDefs().map((a) => a.name);
+  const o = { ...(value || {}) };
+  const comps = Object.keys(doc.components || {});
+  const BUILT = ['tree', 'post', 'manhole'];
+  const built = o.type && o.type !== 'component' ? o.type : o.component ? 'component' : '';
+  const al = h('datalist', { id: 'symbol-attrs' });
+  const refresh = () => al.replaceChildren(...attrNames().map((n) => h('option', { value: n })));
+  const inp = (k, label, extra = {}) => h('label.attr-opt', {}, label, h('input', { value: o[k] ?? '', 'aria-label': `Symbol ${label}`, onfocus: refresh, onchange: (ev) => (ev.target.value.trim() === '' ? delete o[k] : (o[k] = extra.inputmode ? +ev.target.value : ev.target.value.trim())), ...extra }));
+  const comp = inp('component', 'Component', { list: 'symbol-comps', placeholder: comps[0] || 'a component of the model' });
+  const heights = h('span.attr-opts', {}, inp('height_attr', 'Height from', { list: 'symbol-attrs' }), inp('height', 'Height', { inputmode: 'decimal', class: 'form-num', placeholder: '4' }));
+  const show = () => ((comp.hidden = three.value !== 'component'), (heights.hidden = !BUILT.includes(three.value)));
+  const three = h('select', { 'aria-label': 'Symbol 3D symbol', onchange: show }, [['', 'None'], ['component', 'A component'], ['tree', 'Tree'], ['post', 'Post'], ['manhole', 'Manhole']].map(([v, l]) => h('option', { value: v, selected: v === built }, l)));
+  show();
+  // variants: one row per value of the variant attribute, each with its own 3D and 2D component
+  const vars = Object.entries(o.variants || {}).map(([value, x]) => ({ value, ...x }));
+  const varList = h('div.form-stack');
+  const drawVars = () =>
+    varList.replaceChildren(
+      ...vars.map((r, i) =>
+        h(
+          'div.attr-opts',
+          {},
+          ...[['value', 'When', 'value'], ['component', '3D', 'component'], ['plan', '2D', 'flat component']].map(([k, label, ph]) => h('label.attr-opt', {}, label, h('input', { value: r[k] || '', placeholder: ph, list: k === 'value' ? undefined : 'symbol-comps', 'aria-label': `Variant ${i + 1} ${label}`, onchange: (ev) => (r[k] = ev.target.value.trim()) }))),
+          h('button.icon-btn.sm', { type: 'button', title: 'Remove', 'aria-label': `Remove variant ${i + 1}`, onclick: () => (vars.splice(i, 1), drawVars()) }, icon('trash')),
+        ),
+      ),
+    );
+  drawVars();
+  const fromList = () => {
+    const a = attrDefs().find((x) => x.name === o.variant_attr);
+    if (!a?.options?.length) return void (varList.title = 'Variant from: choose a list attribute first');
+    for (const v of a.options) if (!vars.some((r) => r.value.toLowerCase() === String(v).toLowerCase())) vars.push({ value: String(v) });
+    drawVars();
+  };
+  const el = h(
+    'div.form-stack.symbol-ed',
+    {},
+    h('datalist', { id: 'symbol-comps' }, comps.map((c) => h('option', { value: c }))),
+    al,
+    h('div.attr-opts', {}, inp('plan', '2D symbol', { list: 'symbol-comps', placeholder: 'a flat component (CAD block)' })),
+    h('div.attr-opts', {}, h('label.attr-opt', {}, '3D symbol', three), comp, heights),
+    h('div.attr-opts', {}, inp('scale', 'Scale', { inputmode: 'decimal', class: 'form-num', placeholder: '1' }), inp('scale_attr', 'Scale from', { list: 'symbol-attrs', placeholder: 'attribute' }), inp('rotation_attr', 'Rotation from', { list: 'symbol-attrs', placeholder: 'attribute, °' }), inp('color_attr', 'Colour from', { list: 'symbol-attrs', placeholder: 'attribute' })),
+    h('div.attr-opts', {}, inp('variant_attr', 'Variant from', { list: 'symbol-attrs', placeholder: 'attribute, e.g. TYPE' }), h('button.btn.sm', { type: 'button', onclick: () => (vars.push({ value: '' }), drawVars()) }, icon('plus'), 'Variant'), h('button.btn.sm', { type: 'button', title: 'One variant per item of the list attribute', onclick: fromList }, icon('list-bullets'), 'From the list')),
+    varList,
+    comps.length ? null : h('p.small.muted', {}, 'Make a component first (select shapes, Make component) or insert one from the library: a code places linked copies of it.'),
+  );
+  return {
+    el,
+    read() {
+      const out = { ...o };
+      delete out.type;
+      if (three.value === 'component') {
+        if (!out.component) throw new Error('Which component is the 3D symbol?');
+        out.type = 'component';
+      } else {
+        delete out.component;
+        if (three.value) out.type = three.value;
+      }
+      if (!BUILT.includes(three.value)) delete out.height, delete out.height_attr;
+      if (out.scale !== undefined && !(out.scale > 0)) throw new Error('The scale is a number above 0.');
+      const vs = vars.filter((r) => r.value && (r.component || r.plan));
+      if (vs.length && !out.variant_attr) throw new Error('Variants: which attribute picks them (Variant from)?');
+      if (vs.length) out.variants = Object.fromEntries(vs.map(({ value, ...x }) => [value, Object.fromEntries(Object.entries(x).filter(([, s]) => s))]));
+      else delete out.variants;
+      if (out.type || out.plan || out.variants) return out;
+      return value ? {} : undefined;
+    },
+  };
+}
+
+/**
+ * One attribute's input, by its type: a number box (its min–max as the hint), a list, a yes / no box, a date, a time, a
+ * colour, an image (a path, Browse… in the desktop app) or a point of the linked code. Returns { el (the control), input
+ * (what takes the focus), read() → { value } | { error } } checked by S.checkAttr as you type.
+ */
+export function attrInput(a, value, doc) {
+  const kind = attrKind(a);
+  const label = `Attribute ${a.name}`;
+  const links = a.type === 'link' ? S.linkNames(doc, a.link) : null;
+  let input;
+  let get = () => input.value;
+  let el;
+  if (kind === 'boolean') {
+    input = h('input', { type: 'checkbox', checked: value === true || value === 'true', 'aria-label': label });
+    get = () => input.checked;
+  } else if (kind === 'list' && a.options?.length) {
+    input = h('select', { 'aria-label': label }, h('option', { value: '' }, a.required ? 'Choose…' : '—'), a.options.map((o) => h('option', { value: o, selected: String(value) === String(o) }, o)));
+  } else if (kind === 'color') {
+    const text = h('input', { value: value || '', placeholder: '#rrggbb', 'aria-label': label, class: 'form-color-text' });
+    const pick = h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#c8553d', tabindex: -1, title: 'Choose a colour', oninput: () => ((text.value = pick.value), text.dispatchEvent(new Event('input'))) });
+    input = text;
+    el = h('span.attr-input', {}, pick, text);
+  } else {
+    const type = kind === 'date' ? 'date' : kind === 'time' ? 'time' : 'text';
+    const hint = kind === 'number' || kind === 'integer' ? [a.min, a.max].every((x) => x !== undefined) ? `${a.min} – ${a.max}` : a.min !== undefined ? `≥ ${a.min}` : a.max !== undefined ? `≤ ${a.max}` : kind === 'integer' ? 'whole number' : 'number' : kind === 'image' ? 'image file' : kind === 'link' ? `a ${a.link} point` : '';
+    input = h('input', { type, value: value ?? '', placeholder: hint, 'aria-label': label, inputmode: kind === 'number' || kind === 'integer' ? 'decimal' : undefined, list: links ? `attr-link-${a.link}` : undefined, autocomplete: 'off', spellcheck: false });
+    if (links) el = h('span.attr-input', {}, input, h('datalist', { id: `attr-link-${a.link}` }, links.map((n) => h('option', { value: n }))));
+    if (kind === 'image' && window.native)
+      el = h('span.attr-input', {}, input, h('button.icon-btn.sm', { type: 'button', tabindex: -1, title: 'Browse for an image', 'aria-label': `Browse for ${a.name}`, onclick: async () => {
+        const p = await window.native.invoke('file:open-dialog', { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] });
+        if (p) (input.value = p), input.dispatchEvent(new Event('input'));
+      } }, icon('image')));
+  }
+  const read = () => S.checkAttr(a, get(), links);
+  return { el: el || input, input, read };
+}
+
 export const SWATCHES = ['#c8553d', '#e8bc5e', '#4c7a5a', '#2f6f86', '#1e3a4c', '#7a5c8c', '#b5492b', '#8a6d3b', '#9aa3ab', '#3c3f44', '#d9d4c7', '#ffffff'];
 const ENTITY_KEYS = new Set(['id', 'corridor', 'alignment', 'surface', 'existing', 'design', 'from_face', 'from', 'to', 'target', 'path', 'profile_from', 'parent', 'of', 'curve', 'outline']);
 const LAYER_KEYS = new Set(['tag', 'layer']);
@@ -43,7 +243,7 @@ const SNAP = 0.25; // m: a pick this close to a named point uses its name
 
 /** "line_weight" → "Line weight"; a few words people use instead of the API's. */
 export function human(k) {
-  const words = { id: 'Which one', ids: 'Which ones', epsg: 'EPSG code', crs: 'Coordinate system', fov: 'Field of view', ior: 'Index of refraction', vcb: 'Value', dof: 'Depth of field', ao: 'Ambient occlusion', n: 'Northing', e: 'Easting', z: 'Elevation', dz: 'Height difference' };
+  const words = { id: 'Which one', ids: 'Which ones', epsg: 'EPSG code', crs: 'Coordinate system', fov: 'Field of view', ior: 'Index of refraction', vcb: 'Value', dof: 'Depth of field', ao: 'Ambient occlusion', n: 'Northing', e: 'Easting', z: 'Elevation', dz: 'Height difference', attrs: 'Attributes', object: 'Symbol' };
   return words[k] || k.replace(/_/g, ' ').replace(/(\D)(\d)$/, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 }
 /** The unit at the start of a description ("m", "mm", "%", "degrees", "H:V"…), shown after a number. */
@@ -85,6 +285,7 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
   let mode = modes.reduce((best, m, i) => (filled(m) > filled(modes[best]) ? i : best), 0);
   const needed = (k) => req.has(k) || (modes.length && modes[mode].fields.includes(k) && (modes[mode].required || modes[mode].fields.slice(0, 1)).includes(k));
   const fields = {};
+  let attrsNames = null; // the attributes being edited, for the symbol field of the same code
 
   const tip = (s) => (s.description ? infoTip(s.description) : null);
   const field = (k, s) => {
@@ -110,7 +311,13 @@ export function buildForm(app, c, preset = {}, { pick, pickEntity } = {}) {
       inp.addEventListener('input', run);
       inp.addEventListener('blur', run);
     };
-    if (k === 'ids') {
+    if (s.ui?.kind === 'attrs') {
+      const ed = attrsEditor(v, doc);
+      (control = ed.el), (read = ed.read), (attrsNames = ed.defs);
+    } else if (s.ui?.kind === 'symbol') {
+      const ed = symbolEditor(v, doc, () => attrsNames?.() || preset.attrs || []);
+      (control = ed.el), (read = ed.read);
+    } else if (k === 'ids') {
       const sel = app.selection.length;
       const useSel = h('input', { type: 'checkbox', checked: v === undefined && sel > 0 });
       const list = h('input', { value: Array.isArray(v) ? v.join(', ') : '', list: L.entities, placeholder: 'names, separated by commas' });

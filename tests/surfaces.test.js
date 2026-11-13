@@ -117,3 +117,15 @@ test('smoothing keeps the surveyed points and the boundary; contours to a surfac
   nearArr(dm.mesh.v[0], [5, 100, -15]);
   assert.equal(dm.mesh.f.length, 2, 'no triangles over the hole');
 });
+
+test('slope arrows point downhill with the grade; a flat surface has none', () => {
+  const arrows = SF.slopeArrows(plane(), { spacing: 10 });
+  assert.equal(arrows.length, 16); // a 4 × 4 grid over 40 × 40 m
+  for (const a of arrows) {
+    near(a.grade, 10, 0.01); // 1 m per 10 m
+    assert.equal(a.bearing, 270); // the plane rises east, so downhill is west
+    assert.ok(a.pts[1][0] < a.pts[0][0], 'the head is west of the tail');
+    near(a.pts[1][1], 100 + a.pts[1][0] / 10 + 0.05, 1e-6); // on the surface, lifted
+  }
+  assert.equal(SF.slopeArrows(SF.gridMesh(40, 40, 2, 0)).length, 0);
+});

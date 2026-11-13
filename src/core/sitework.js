@@ -77,6 +77,8 @@ export function buildSurface(doc, p) {
   for (const l of [...src.breaklines, ...src.boundaries]) {
     const path = l.line ? S.lineworkPath(doc, l) : D.curvePoints(doc, l, 8);
     constrain(path, l.id);
+    // a breakline's offsets (a kerb back, a ditch bottom) are breaklines of the surface too, at their own heights
+    if (l.line?.kind === 'breakline') for (const o of S.lineworkOffsets(doc, l)) if (o.surface !== false) constrain(o.path, l.id);
     if (l.line?.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
   }
   // a drawn outline and voids in plan (#212), next to the boundaries made of points: each ring is draped on the
@@ -368,7 +370,7 @@ function stampOf(e) {
   return `${h.toFixed(3)}|${e.position.join(',')}|${e.mesh.f.length}`;
 }
 
-/** After every change: contour groups and analysis colours follow their surfaces. */
+/** After every change: contour groups, slope arrows and analysis colours follow their surfaces. */
 export function syncTerrain(doc) {
   const baseZ = S.geo(doc).base?.[2] ?? 0;
   for (const g of doc.entities.filter((x) => x.contours)) {
@@ -387,6 +389,18 @@ export function syncTerrain(doc) {
       }
     c.stamp = st;
     c.levels = levels.length;
+  }
+  for (const g of doc.entities.filter((x) => x.slopeArrows)) {
+    const s = D.getEntity(doc, g.slopeArrows.surface);
+    if (!s?.mesh) continue;
+    const st = `${stampOf(s)}|${g.slopeArrows.spacing}`;
+    if (g.slopeArrows.stamp === st) continue;
+    for (const old of D.childrenOf(doc, g.id)) D.removeEntity(doc, old);
+    for (const a of SF.slopeArrows(D.worldMesh(doc, s), { spacing: g.slopeArrows.spacing })) {
+      const { mesh, origin } = G.recenter({ v: a.pts.map(D.round3), f: [] });
+      D.addEntity(doc, { type: 'curve', parent: g.id, name: `${a.grade} %`, tag: g.tag, curve: { kind: 'polyline', points: mesh.v, closed: false }, position: D.round3(origin), material: { color: '#2f5f86' }, meta: { grade: a.grade, bearing: a.bearing } });
+    }
+    g.slopeArrows.stamp = st;
   }
   for (const e of doc.entities.filter((x) => x.analysis && x.mesh)) {
     const other = e.analysis.other && D.getEntity(doc, e.analysis.other);

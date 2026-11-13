@@ -42,13 +42,19 @@ export function drawLabels(app) {
     if (v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) return;
     const x = ((v.x + 1) / 2) * r.width + 6;
     const y = ((1 - v.y) / 2) * r.height - 6;
-    const w = g.measureText(text).width;
-    if (!free(x, y, w)) return;
+    // several lines (a point's attributes): the whole block must be free, or none of it is drawn
+    const lines = text.split('\n');
+    const w = Math.max(...lines.map((t) => g.measureText(t).width));
+    if (!lines.every((_, i) => free(x, y + i * 13, w))) return;
     g.lineWidth = 3;
     g.strokeStyle = 'rgba(255,255,255,0.85)';
-    g.strokeText(text, x, y);
-    g.fillStyle = color;
-    g.fillText(text, x, y);
+    lines.forEach((t, i) => {
+      g.font = i ? '400 11px "Open Sans", system-ui, sans-serif' : '600 11px "Open Sans", system-ui, sans-serif';
+      g.strokeText(t, x, y + i * 13);
+      g.fillStyle = color;
+      g.fillText(t, x, y + i * 13);
+    });
+    g.font = '600 11px "Open Sans", system-ui, sans-serif';
     n++;
   };
   if (mode !== 'none')
@@ -56,7 +62,7 @@ export function drawLabels(app) {
       if (n > MAX) break;
       if (e.type !== 'point' || !e.visible || tagOn.get(e.tag) === false) continue;
       const pt = e.point;
-      const text = mode === 'code' ? pt.code : mode === 'name_z' ? `${e.name}  ${pt.z.toFixed(3)}` : mode === 'all' ? `${e.name} ${pt.code} ${pt.z.toFixed(2)}` : e.name;
+      const text = mode === 'code' ? pt.code : mode === 'attrs' ? [pt.code, ...Object.entries(pt.attrs || {}).map(([k, x]) => `${k}: ${x === true ? 'yes' : x === false ? 'no' : String(x).split(/[\\/]/).pop().slice(0, 40)}`)].filter(Boolean).join('\n') : mode === 'name_z' ? `${e.name}  ${pt.z.toFixed(3)}` : mode === 'all' ? `${e.name} ${pt.code} ${pt.z.toFixed(2)}` : e.name;
       if (text) label(e.position, text, '#1e3a4c');
     }
   // major contours: their elevation at the middle of the line (#121)

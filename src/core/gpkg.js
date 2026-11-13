@@ -97,9 +97,10 @@ const colType = (vals) => (vals.every((x) => x === null || x === undefined || ty
 
 /**
  * Write features to a GeoPackage: { table, srs: { epsg, name, definition }, features: [{ geometry, properties }] }.
- * Several layers: pass layers: [{ table, features }]. Returns { path, tables, features }.
+ * Several layers: pass layers: [{ table, features }]. attributes: [{ table, rows, description }] are tables without
+ * geometry (GeoPackage data_type 'attributes'), for settings and lists. Returns { path, tables, features }.
  */
-export function writeGpkg(DatabaseSync, file, { table = 'features', srs = {}, features = [], layers = null, description = '' }) {
+export function writeGpkg(DatabaseSync, file, { table = 'features', srs = {}, features = [], layers = null, description = '', attributes = [] }) {
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA application_id = 1196444487; PRAGMA user_version = 10400;');
@@ -139,13 +140,25 @@ export function writeGpkg(DatabaseSync, file, { table = 'features', srs = {}, fe
       db.prepare('INSERT INTO gpkg_contents (table_name, data_type, identifier, description, min_x, min_y, max_x, max_y, srs_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(L.table, 'features', L.table, description, ...(feats.length ? env : [null, null, null, null]), srsId);
       db.prepare('INSERT INTO gpkg_geometry_columns VALUES (?, ?, ?, ?, ?, ?)').run(L.table, 'geom', gtype, srsId, hasZ ? 1 : 0, 0);
     }
-    return { path: file, tables: list.map((L) => L.table), features: count, standard: 'OGC GeoPackage 1.4 (12-128r19)' };
+    for (const A of attributes) {
+      const keys = [...new Set(A.rows.flatMap((r) => Object.keys(r)))].filter((k) => !/^fid$/i.test(k));
+      const types = Object.fromEntries(keys.map((k) => [k, colType(A.rows.map((r) => r[k]))]));
+      const q = A.table.replace(/'/g, "''");
+      db.exec(`DROP TABLE IF EXISTS ${ident(A.table)}; DELETE FROM gpkg_contents WHERE table_name = '${q}';`);
+      db.exec(`CREATE TABLE ${ident(A.table)} (fid INTEGER PRIMARY KEY AUTOINCREMENT${keys.map((k) => `, ${ident(k)} ${types[k]}`).join('')})`);
+      if (keys.length) {
+        const ins = db.prepare(`INSERT INTO ${ident(A.table)} (${keys.map(ident).join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`);
+        for (const r of A.rows) ins.run(...keys.map((k) => (r[k] === undefined || r[k] === null ? null : typeof r[k] === 'object' ? JSON.stringify(r[k]) : types[k] === 'TEXT' ? String(r[k]) : r[k])));
+      }
+      db.prepare('INSERT INTO gpkg_contents (table_name, data_type, identifier, description) VALUES (?, ?, ?, ?)').run(A.table, 'attributes', A.table, A.description || '');
+    }
+    return { path: file, tables: [...list.map((L) => L.table), ...attributes.map((A) => A.table)], features: count, standard: 'OGC GeoPackage 1.4 (12-128r19)' };
   } finally {
     db.close();
   }
 }
 
-/** Every feature table of a GeoPackage: { tables: [{ table, epsg, features: [{ geometry, properties }] }] }. */
+/** Every feature table of a GeoPackage: { tables: [{ table, epsg, features: [{ geometry, properties }] }], attributes: [{ table, rows }] }. */
 export function readGpkg(DatabaseSync, file) {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
@@ -162,6 +175,10 @@ export function readGpkg(DatabaseSync, file) {
             return { geometry: g ? fromGpkgBlob(g) : null, properties: props };
           }),
       })),
+      attributes: db
+        .prepare("SELECT table_name FROM gpkg_contents WHERE data_type = 'attributes'")
+        .all()
+        .map((t) => ({ table: t.table_name, rows: db.prepare(`SELECT * FROM ${ident(t.table_name)}`).all().map(({ fid, ...r }) => ({ ...r })) })),
     };
   } finally {
     db.close();
