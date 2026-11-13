@@ -36,6 +36,8 @@ export function drawLabels(app) {
   };
   const v = new THREE.Vector3();
   const tagOn = new Map(doc.tags.map((t) => [t.name, t.visible]));
+  // a label follows the timeline, or a survey replay would name points that have not been measured yet (#283)
+  const shown = (e) => ((vp.pose?.[e.id]?.visible ?? e.visible) !== false);
   let n = 0;
   const label = (p, text, color) => {
     v.set(p[0], p[1], p[2]).project(vp.camera);
@@ -60,7 +62,7 @@ export function drawLabels(app) {
   if (mode !== 'none')
     for (const e of doc.entities) {
       if (n > MAX) break;
-      if (e.type !== 'point' || !e.visible || tagOn.get(e.tag) === false) continue;
+      if (e.type !== 'point' || !shown(e) || tagOn.get(e.tag) === false) continue;
       const pt = e.point;
       const text = mode === 'code' ? pt.code : mode === 'attrs' ? [pt.code, ...Object.entries(pt.attrs || {}).map(([k, x]) => `${k}: ${x === true ? 'yes' : x === false ? 'no' : String(x).split(/[\\/]/).pop().slice(0, 40)}`)].filter(Boolean).join('\n') : mode === 'name_z' ? `${e.name}  ${pt.z.toFixed(3)}` : mode === 'all' ? `${e.name} ${pt.code} ${pt.z.toFixed(2)}` : e.name;
       if (text) label(e.position, text, '#1e3a4c');
