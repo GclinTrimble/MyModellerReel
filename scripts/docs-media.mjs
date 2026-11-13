@@ -1464,6 +1464,24 @@ const PAGES = {
     await shot('Fix: the rod height is corrected and P3 moves up 0.5 m; the edit keeps its original value');
     await clean();
   },
+  async 'replay-a-survey'() {
+    await fresh();
+    await run('import', { path: path.resolve('tests/fixtures/jxl/kerb-pickup.jxl') });
+    await run('set_style', { point_labels: 'name_z' });
+    await camera([-10, 9, 26], [6, 1, 4]);
+    const s = await run('survey_stats', {});
+    await shot(`survey_stats: ${s.points} points, ${s.points_per_hour} an hour, ${s.setups.length} setup, ${s.idle_minutes} idle minutes, ${s.walked} m walked`);
+    await run('replay_survey', { mode: 'event', seconds_per_point: 0.8, grow: true });
+    await run('playback', { action: 'seek', time: 2.4 });
+    await camera([7.5, 2.4, 5], [10, 0.8, 0]);
+    await shot('The instrument turned to the shot, down the line of sight, the rod at the height it was measured at');
+    await camera([-10, 9, 26], [6, 1, 4]);
+    await run('playback', { action: 'seek', time: 5.6 });
+    await shot('A dot per measurement on the timeline, a band per setup, and the surface growing behind the crew');
+    await camera([-2, 7, 13], [8, 0.8, 3]); // the kerb run across the frame, the instrument and rod both in it
+    await run('render_video', { path: path.join(dir, 'replay-a-survey.mp4'), width: 960, height: 540, fps: 24 });
+    await clean();
+  },
   async 'web-map-layers'() {
     await fresh();
     await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });

@@ -20,6 +20,8 @@ import { viewDirection } from '../core/layout.js';
 import { lineworkOffsets } from '../core/survey.js';
 
 const D2R = Math.PI / 180;
+/** Where a survey point waits while the timeline has it hidden (#283): off the model, but a real number. */
+const PARKED = 1e6;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
 const EDGE_COLOR = 0x1d262c;
 const PROPOSAL_COLOR = '#e8bc5e';
@@ -579,6 +581,27 @@ export class Viewport {
         o.material.depthWrite = !o.material.transparent;
         if (!o.userData.underlay && !o.userData.draped) o.material.color.set(p.color || (e.mesh?.fc ? '#ffffff' : L.colorOf(doc, e))); // colour maps show as given
         for (const c of o.children) if (c.userData.isEdges) c.material.opacity = op, (c.material.transparent = op < 1);
+      }
+    }
+    // survey points share one point cloud, so the timeline hides them by leaving them out of it (#283: a replay
+    // shows each point as it was measured). Only rebuilt when the set actually changes.
+    const cloud = this.modelRoot?.getObjectByName('Survey points');
+    if (cloud) {
+      // a hidden point is parked far away rather than taken out, so every index into the cloud stays what it was
+      // (selection colours, picking and snapping all go by index)
+      const pos = cloud.geometry.attributes.position;
+      cloud.userData.basePos ||= pos.array.slice();
+      let moved = false;
+      cloud.userData.pointIds.forEach((id, i) => {
+        const away = pose?.[id]?.visible === false;
+        if (away === (pos.array[i * 3 + 1] > PARKED / 2)) return;
+        pos.array.set(away ? [PARKED, PARKED, PARKED] : cloud.userData.basePos.subarray(i * 3, i * 3 + 3), i * 3);
+        moved = true;
+      });
+      if (moved) {
+        pos.needsUpdate = true;
+        cloud.frustumCulled = false; // its bounding sphere now holds the parked points
+        cloud.geometry.boundingSphere = null;
       }
     }
     const cam = pose?.camera;

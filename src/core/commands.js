@@ -56,6 +56,8 @@ import './dxf.js';
 import './ifc.js';
 import * as TB from './trimble.js';
 import * as FBK from './fieldbook.js';
+import * as RP from './replay.js';
+import * as INST from './instruments.js';
 import { readGeoJson, writeGeoJson } from './gis.js';
 import * as OGC from './ogc.js';
 import * as TR from './terrain.js';
@@ -127,7 +129,11 @@ export const GUIDE = `MyModellerReel conventions:
   of shots at another rod height, backsight residuals, weak GNSS); edit_survey_observations fixes them by names, setup,
   base or time range ("rod 1.8 not 2.0 from 10:05 to 10:40") and the points, surfaces and linework follow (one undo);
   list_survey, compare_survey (moved points), survey_report; export landxml (Survey) or infragml. Never change a
-  measurement without saying what and why.
+  measurement without saying what and why. survey_stats reads the book as a day's work (points per hour, a row per
+  setup, idle gaps, methods, GNSS quality, distance walked); replay_survey plays it on the timeline — the points
+  appear as they were stored, the total station turns down each line of sight at the heights that were measured,
+  the rod and rover stand, and with grow the TIN grows behind the crew. mode clock keeps the real gaps, mode event
+  spaces the shots evenly, speed multiplies both, and several surveys play on one clock. render_video exports it.
 - Web maps and features (OGC): list_service_layers reads a WMTS / WMS / WFS / OGC API address; add_map_layer streams
   tiles or features under the model in the project CRS; set_map_layer orders, styles (SLD) and filters (CQL2);
   query_service_features (touching: an alignment → the parcels it crosses), import_features brings them in with
@@ -1699,6 +1705,202 @@ function registerCore(reg, ctx) {
     const findings = FBK.reviewBook(e.survey, Object.fromEntries(['residual', 'precision', 'pdop'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]])));
     return { survey: e.name, findings: findings.length, list: findings.map((f) => (f.fix ? { ...f, fix: { survey: e.name, ...f.fix } } : f)) };
   });
+
+  // ---------------------------------------------------------------- survey replay (#282–#286)
+  def('terrain', 'survey_stats', 'How a survey day went, from its field book: time on site, points per hour, idle gaps, a row per station setup (shots, minutes, mean and longest sight), counts by method (prism, reflectorless, GNSS, keyed), GNSS precision / PDOP / satellites, the rod and antenna heights used, points per code, and the distance the rod travelled.', obj({ survey: OBS_FILTER.survey, gap: num('idle minutes that count as a gap (default 5)') }), (a) => {
+    const e = surveyOf(a.survey);
+    return { survey: e.name, ...RP.stats(e.survey, { gap: (a.gap ?? 5) * 60 }) };
+  });
+
+  const REPLAY_TAG = 'Survey replay';
+  const replays = () => (ctx.doc.animation.replays ||= []);
+  const clearReplay = () => {
+    const doc = ctx.doc;
+    const m = anim();
+    const gone = new Set();
+    for (const r of replays()) {
+      for (const id of r.targets || []) A.removeKeys(doc, id);
+      for (const id of r.entities || []) {
+        const e = D.getEntity(doc, id);
+        if (e) [e, ...D.descendants(doc, e.id)].forEach((x) => gone.add(x.id));
+      }
+    }
+    for (const id of gone) A.removeKeys(doc, id);
+    doc.entities = doc.entities.filter((e) => !gone.has(e.id));
+    m.captions = m.captions.filter((c) => !c.replay);
+    m.markers = m.markers.filter((x) => !x.replay);
+    doc.animation.replays = [];
+    return gone.size;
+  };
+
+  /** Build an instrument from its spec (instruments.js) as entities, and hand back every part by name. */
+  const buildRig = (spec) => {
+    const doc = ctx.doc;
+    const parts = new Map();
+    const walk = (s, parent) => {
+      const e = D.addEntity(doc, {
+        type: s.mesh ? 'mesh' : 'group',
+        name: D.uniqueName(doc, s.name),
+        parent,
+        position: s.position || [0, 0, 0],
+        scale: s.scale || [1, 1, 1],
+        visible: true,
+        tag: REPLAY_TAG,
+        ...(s.mesh ? { mesh: s.mesh } : {}),
+        material: { color: s.color || '#b9b4a8', roughness: 0.6, ...(s.material || {}) },
+      });
+      parts.set(s.name, e.id);
+      for (const c of s.children || []) walk(c, e.id);
+      return e;
+    };
+    const root = walk(spec, null);
+    return { root: root.id, parts, ids: [root.id, ...D.descendants(doc, root.id).map((e) => e.id)] };
+  };
+
+  def('terrain', 'replay_survey', 'Play a survey back on the timeline: the points appear in the order they were measured, the total station stands on its setup and turns to each shot down the line of sight its circle readings describe, the rod and the GNSS rover stand at the heights they were measured at, and the surface grows behind the crew. mode clock keeps the real time stamps (travel and waiting show); mode event spaces the shots evenly (a day in a minute). speed multiplies both. Pass several surveys to watch two crews at once. Calling it again rebuilds the replay; clear removes it.', obj({
+    surveys: { type: 'array', items: { type: 'string' }, description: 'the surveys to play (default: all of them)' },
+    mode: str('clock (real time stamps) or event (evenly spaced)', RP.MODES),
+    speed: num('playback speed, 1 is normal (2 is twice as fast)'),
+    seconds_per_hour: num('clock mode: timeline seconds for an hour in the field (default 90)'),
+    seconds_per_point: num('event mode: timeline seconds between shots (default 0.4)'),
+    instruments: bool('stand the total station, rod and rover in the model (default true)'),
+    grow: bool('grow a TIN of the points measured so far (default false)'),
+    grow_steps: num('how many stages the growing surface is built in (default 10)'),
+    clear: bool('remove the replay and everything it made'),
+  }), (a) => {
+    const doc = ctx.doc;
+    const m = anim();
+    if (a.clear) return { cleared: clearReplay() };
+    const books = a.surveys?.length ? a.surveys.map((r) => surveyOf(r)) : doc.entities.filter((e) => e.survey);
+    if (!books.length) throw new Error('No survey in the model: import a Trimble JobXML (.jxl) job first.');
+    clearReplay();
+
+    // one clock for every book, so two crews interleave the way they actually worked
+    const starts = books.map((e) => RP.live(e.survey).map((o) => Date.parse(o.time)).find(Number.isFinite)).filter(Number.isFinite);
+    const epoch = starts.length ? Math.min(...starts) : null;
+    const opts = { mode: a.mode || 'clock', speed: a.speed ?? 1, epoch, ...(a.seconds_per_hour ? { seconds_per_hour: a.seconds_per_hour } : {}), ...(a.seconds_per_point ? { seconds_per_point: a.seconds_per_point } : {}) };
+    const key = (target, property, t, v, ease = 'step') => A.setKey(doc, target, property, t, v, ease);
+    const out = [];
+    let duration = 0;
+
+    for (const se of books) {
+      const book = se.survey;
+      const pl = RP.plan(book, opts);
+      const flagged = new Set(FBK.reviewBook(book).flatMap((f) => f.ids || []));
+      const obs = new Map(book.observations.map((o) => [o.id, o]));
+      const posOf = (name) => book.results[name] || null;
+      const targets = new Set();
+      const entities = [];
+      const mark = (id) => (targets.add(id), id);
+
+      // the points appear as they were stored (the first shot that stored each one)
+      const pointOf = new Map();
+      for (const p of S.points(doc)) if (p.point.survey === se.id || (!pointOf.has(p.name) && !p.point.survey)) pointOf.set(p.name, p.id);
+      const first = new Map();
+      for (const d of pl.dots) if (!first.has(d.name)) first.set(d.name, d.t);
+      for (const [name, t] of first) {
+        const pid = pointOf.get(name);
+        if (!pid) continue;
+        key(mark(pid), 'visible', 0, false);
+        key(pid, 'visible', t, true);
+      }
+
+      // the instruments: a rig per book, so two crews each get their own
+      const kinds = new Set(pl.dots.map((d) => d.kind));
+      const wantTs = a.instruments !== false && (kinds.has('ts') || kinds.has('dr'));
+      const wantGnss = a.instruments !== false && kinds.has('gnss');
+      const ts = wantTs ? buildRig(INST.totalStation(Object.values(book.setups)[0]?.ih ?? 1.55)) : null;
+      const rod = wantTs ? buildRig(INST.prismRod(1.5)) : null;
+      const rover = wantGnss ? buildRig(INST.roverPole(1.8)) : null;
+      for (const rig of [ts, rod, rover]) {
+        if (!rig) continue;
+        entities.push(rig.root);
+        rig.ids.forEach((id) => targets.add(id));
+        key(rig.root, 'visible', 0, false);
+      }
+
+      for (const d of pl.dots) {
+        const o = obs.get(d.id);
+        const pose = RP.poseOf(book, o, posOf);
+        if (!pose) continue;
+        if (pose.kind === 'ts' && ts) {
+          key(ts.root, 'position', d.t, D.round3(S.toLocal(doc, pose.station)));
+          key(ts.root, 'visible', d.t, true);
+          key(ts.parts.get('Alidade'), 'rotation', d.t, [0, -pose.azimuth, 0], 'ease-in-out');
+          key(ts.parts.get('Telescope'), 'rotation', d.t, [90 - pose.zenith, 0, 0], 'ease-in-out');
+          const beam = ts.parts.get('Sight line');
+          key(beam, 'scale', d.t, [1, 1, Math.max(0.01, pose.distance)]);
+          key(beam, 'visible', 0, false);
+          key(beam, 'visible', d.t, true);
+          key(beam, 'visible', d.t + 0.3, false);
+          if (pose.beam && rod) {
+            key(rod.root, 'position', d.t, D.round3(S.toLocal(doc, pose.foot)), 'ease-in-out');
+            key(rod.parts.get('Pole'), 'scale', d.t, [1, Math.max(0.1, pose.height), 1]);
+            key(rod.parts.get('Prism'), 'position', d.t, [0, pose.height, 0]);
+            key(rod.root, 'visible', d.t, true);
+          } else if (rod) key(rod.root, 'visible', d.t, false);
+        } else if (pose.kind === 'gnss' && rover) {
+          key(rover.root, 'position', d.t, D.round3(S.toLocal(doc, pose.foot)), 'ease-in-out');
+          key(rover.parts.get('Pole'), 'scale', d.t, [1, Math.max(0.1, pose.height), 1]);
+          key(rover.parts.get('Receiver'), 'position', d.t, [0, pose.height, 0]);
+          key(rover.root, 'visible', d.t, true);
+          if (rod) key(rod.root, 'visible', d.t, false);
+        }
+      }
+
+      // the day as blocks of work: a marker and a caption per setup or base
+      for (const b of pl.bands) {
+        const name = b.kind === 'other' ? 'Keyed in' : `${b.kind === 'base' ? 'Base' : 'Station'} ${b.station || b.setup}`;
+        const taken = new Set(m.markers.map((x) => x.name.toLowerCase()));
+        let unique = name;
+        for (let i = 2; taken.has(unique.toLowerCase()); i++) unique = `${name} ${i}`;
+        m.markers.push({ name: unique, t: b.t0, replay: true });
+        m.captions.push({ id: nextId(m.captions, 'c'), text: `${se.name} · ${name}`, start: b.t0, end: Math.max(b.t0 + 0.5, b.t1), position: 'top-left', style: 'label', fade: 0.2, replay: true });
+      }
+      m.markers.sort((x, y) => x.t - y.t);
+
+      // the surface growing behind the crew: a TIN of the points measured so far, in stages
+      if (a.grow) {
+        const steps = Math.max(2, Math.min(40, a.grow_steps || 10));
+        const have = [];
+        const stageAt = [];
+        for (const [name, t] of [...first].sort((p, q) => p[1] - q[1])) {
+          const p = posOf(name);
+          if (p) have.push({ t, v: S.toLocal(doc, p) });
+        }
+        for (let k = 1; k <= steps; k++) {
+          const n = Math.round((have.length * k) / steps);
+          if (n < 3) continue;
+          const pts = have.slice(0, n).map((x) => x.v);
+          let faces;
+          try {
+            ({ faces } = TR.triangulate(pts));
+          } catch {
+            continue; // the first points are still in a line
+          }
+          if (!faces.length) continue;
+          const e = D.addEntity(doc, { name: D.uniqueName(doc, `${se.name} TIN ${k}`), mesh: { v: pts, f: faces }, tag: REPLAY_TAG, material: { color: '#8fae7a', roughness: 0.95 } });
+          entities.push(e.id);
+          targets.add(e.id);
+          stageAt.push({ id: e.id, t: have[n - 1].t });
+        }
+        stageAt.forEach((s, i) => {
+          key(s.id, 'visible', 0, false);
+          key(s.id, 'visible', s.t, true);
+          if (stageAt[i + 1]) key(s.id, 'visible', stageAt[i + 1].t, false);
+        });
+      }
+
+      duration = Math.max(duration, pl.duration);
+      replays().push({ survey: se.id, name: se.name, mode: pl.mode, speed: pl.speed, dots: pl.dots.map((d) => ({ ...d, flagged: flagged.has(d.id) })), bands: pl.bands, duration: pl.duration, targets: [...targets], entities });
+      out.push({ survey: se.name, mode: pl.mode, observations: pl.dots.length, points: first.size, setups: pl.bands.length, duration: pl.duration });
+    }
+    extend(duration);
+    doc.animation.duration = Math.max(1, Math.ceil(duration));
+    if (!doc.tags.some((t) => t.name === REPLAY_TAG)) doc.tags.push({ name: REPLAY_TAG, visible: true });
+    ctx.timeline?.open?.(); // the replay only poses the model while the timeline is open
+    return { surveys: out, mode: out[0].mode, speed: opts.speed, duration: doc.animation.duration };
+  }, true);
 
   const pointText = async (a) => {
     if (a.text) return a.text;
