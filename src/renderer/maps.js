@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 import * as GM from '../core/geomap.js';
 import * as OGC from '../core/ogc.js';
+import * as ELV from '../core/elevation.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { h, icon } from './ui.js';
 
 const TILE = 256;
@@ -312,6 +314,8 @@ export class MapLayers {
     this.textures = new Map(); // tile url → Promise<texture>
     this.features = new Map(); // layer id + area → GeoJSON
     this.errors = new Map(); // layer id → last error
+    this.elev = new Map(); // "z/x/y" → { width, height, values }: the heights every layer drapes on
+    this.elevTiles = new Map(); // tile url → Promise<heights | null>
     this.attrib = h('div.view-attrib.map-layers-attrib', { hidden: true });
     vp.canvas.parentElement.append(this.attrib);
     app.store.on(() => this.sync());
@@ -338,8 +342,8 @@ export class MapLayers {
       if (!g) this.groups.set(L.id, (g = { group: new THREE.Group(), key: null }));
       if (!g.group.parent) this.root.add(g.group);
       g.group.visible = L.visible !== false && !!pl;
-      g.group.renderOrder = -29 + i;
-      for (const m of g.group.children) for (const o of [m, ...m.children]) if (o.material) (o.material.opacity = (o.userData.alpha ?? 1) * (L.opacity ?? 1)), (o.material.transparent = true), (o.renderOrder = -29 + i);
+      g.group.renderOrder = L.kind === 'elevation' ? -40 : -29 + i; // the ground first: the others drape on it
+      for (const m of g.group.children) for (const o of [m, ...m.children]) if (o.material) (o.material.opacity = (o.userData.alpha ?? 1) * (L.opacity ?? 1)), (o.material.transparent = true), (o.renderOrder = g.group.renderOrder);
       if (g.key !== key) (g.key = key), (g.area = null);
     });
     for (const [id, g] of this.groups) if (!keep.has(id)) this.clear(g), g.group.removeFromParent(), this.groups.delete(id);
@@ -367,13 +371,13 @@ export class MapLayers {
       if (a && !force && g.pending) continue;
       g.area = { ...v, radius: L.kind === 'features' ? Math.min(v.radius * 1.2, 800) : v.radius * 1.5 };
       g.pending = true;
-      (L.kind === 'features' ? this.streamFeatures(L, g, pl) : this.streamTiles(L, g, pl))
+      (L.kind === 'features' ? this.streamFeatures(L, g, pl) : L.kind === 'elevation' ? this.streamElevation(L, g, pl) : this.streamTiles(L, g, pl))
         .then(() => this.errors.delete(L.id))
         .catch((e) => {
           if (!this.errors.has(L.id)) this.app.ui.toast(`${L.name}: ${e.message}`, 'danger');
           this.errors.set(L.id, e.message);
         })
-        .finally(() => ((g.pending = false), (this.app.viewport.dirty = true)));
+        .finally(() => ((g.pending = false), (this.app.viewport.dirty = true), this.follow())); // catch up if the view moved meanwhile
     }
   }
   texture(L, url) {
@@ -390,7 +394,93 @@ export class MapLayers {
           return tex;
         }),
       );
-    return this.textures.get(url);
+    const p = this.textures.get(url);
+    p.catch(() => this.textures.get(url) === p && this.textures.delete(url)); // a failed tile is asked again next time
+    return p;
+  }
+  /** Model height of the ground at a lon / lat from the streamed elevation (0 without any). */
+  ground(lon, lat) {
+    if (!this.elev.size) return 0;
+    const h = ELV.heightAt(this.elev, lon, lat);
+    return Number.isFinite(h) ? h - (this.app.store.doc.geo?.base?.[2] || 0) : 0;
+  }
+  /** Heights of one elevation tile, fetched once: GeoTIFF floats, or RGB-packed PNG. */
+  heights(L, url) {
+    if (!this.elevTiles.has(url))
+      this.elevTiles.set(
+        url,
+        this.app.io.ogcGet(url, { binary: true, service: L.service }).then(
+          async (r) => {
+            const bytes = r.bytes instanceof Uint8Array ? r.bytes : new Uint8Array(r.bytes);
+            if (L.encoding === 'geotiff') {
+              const d = await this.app.io.demRead(bytes);
+              return { width: d.width, height: d.height, values: ELV.cleanHeights(d.values, d.nodata) };
+            }
+            const img = await this.app.io.imageRgba(bytes);
+            return { width: img.width, height: img.height, values: ELV.decodeRgba(img.rgba, img.width, img.height, L.encoding) };
+          },
+          () => (this.elevTiles.delete(url), null), // asked again next time
+        ),
+      );
+    return this.elevTiles.get(url);
+  }
+  /** A grid mesh over web map tile (z, x, y), n cells a side, at the streamed heights (+ lift); holes where no data. */
+  tileGrid(pl, z, x, y, n, lift, holes) {
+    const pos = [];
+    const uv = [];
+    const ok = [];
+    for (let j = 0; j <= n; j++)
+      for (let i = 0; i <= n; i++) {
+        const [lon, lat] = GM.tileToLonLat(x + i / n, y + j / n, z);
+        const [px, pz] = pl.toLocal(lon, lat);
+        const h = this.elev.size ? ELV.heightAt(this.elev, lon, lat) : 0;
+        ok.push(!holes || Number.isFinite(h));
+        pos.push(px, (Number.isFinite(h) ? h - (this.app.store.doc.geo?.base?.[2] || 0) : 0) + lift, pz);
+        uv.push(i / n, 1 - j / n);
+      }
+    const idx = [];
+    const at = (i, j) => j * (n + 1) + i;
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        const [a, b, c, d] = [at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1)];
+        if (ok[a] && ok[c] && ok[b]) idx.push(a, c, b);
+        if (ok[b] && ok[c] && ok[d]) idx.push(b, c, d);
+      }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    return geo;
+  }
+  /** A DTM / DSM layer: its tiles as shaded ground the other layers drape on. */
+  async streamElevation(L, g, pl) {
+    const a = g.area;
+    const [lon, lat] = pl.toLonLat(a.x, a.z);
+    const t = GM.tilesAround(lon, lat, a.radius, 6, L.max_zoom ?? 17);
+    const n = 2 ** t.z;
+    const got = [];
+    const jobs = [];
+    for (let y = t.y0; y <= t.y1; y++)
+      for (let x = t.x0; x <= t.x1; x++) {
+        const xx = ((x % n) + n) % n;
+        const url = OGC.tileUrl(L, t.z, xx, y);
+        if (url) jobs.push(this.heights(L, url).then((tile) => tile && (this.elev.set(`${t.z}/${xx}/${y}`, tile), got.push([x, y]))));
+      }
+    await Promise.all(jobs);
+    if (!got.length) throw new Error('the service sent no heights here');
+    // shortcut: heights of old views stay in memory; drop them past a few hundred tiles, before a long walk over a region
+    if (this.elev.size > 600) for (const k of [...this.elev.keys()].slice(0, this.elev.size - 600)) this.elev.delete(k);
+    this.clear(g);
+    for (const [x, y] of got) {
+      const m = new THREE.Mesh(this.tileGrid(pl, t.z, x, y, 32, 0, true), new THREE.MeshStandardMaterial({ color: '#cfc6a8', roughness: 1, metalness: 0, transparent: true, opacity: L.opacity ?? 1, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
+      m.renderOrder = g.group.renderOrder;
+      g.group.add(m);
+    }
+    // the other layers follow the ground now
+    // the other layers follow the ground now: they stream again (not this one, or it would loop)
+    for (const M of this.list) if (M.id !== L.id && M.kind !== 'elevation' && this.groups.get(M.id)) this.groups.get(M.id).area = null;
+    this.follow();
   }
   async streamTiles(L, g, pl) {
     const a = g.area;
@@ -403,12 +493,9 @@ export class MapLayers {
       for (let x = t.x0; x <= t.x1; x++) {
         const url = OGC.tileUrl(L, t.z, ((x % n) + n) % n, y);
         if (!url) continue;
-        const c = [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]].map(([p, q]) => pl.toLocal(...GM.tileToLonLat(p, q, t.z)));
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(c.flatMap(([px, pz]) => [px, -0.003, pz]), 3));
-        geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
-        geo.setIndex([0, 3, 1, 1, 3, 2]);
-        const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ transparent: true, opacity: L.opacity ?? 1, depthWrite: false, toneMapped: false, visible: false }));
+        // on streamed heights the tile is a draped grid; else one flat quad just under the ground plane
+        const geo = this.elev.size ? this.tileGrid(pl, t.z, x, y, 16, 0.05, false) : this.tileGrid(pl, t.z, x, y, 1, -0.003, false);
+        const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ transparent: true, opacity: L.opacity ?? 1, depthWrite: false, toneMapped: false, visible: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }));
         m.renderOrder = g.group.renderOrder;
         meshes.push(m);
         jobs.push(this.texture(L, url).then((tex) => ((m.material.map = tex), (m.material.visible = true), (m.material.needsUpdate = true), (this.app.viewport.dirty = true)), () => null));
@@ -439,6 +526,7 @@ export class MapLayers {
     const lines = new Map(); // colour → positions
     const pts = new Map();
     const fills = [];
+    const solids = [];
     const labels = [];
     const local = (c) => pl.toLocal(c[0], c[1]);
     const add = (map, col, arr) => map.set(col, [...(map.get(col) || []), ...arr]);
@@ -450,16 +538,27 @@ export class MapLayers {
         const c = gm.coordinates;
         const ring = (r2) => {
           const p = r2.map(local);
-          add(lines, stroke, p.slice(1).flatMap((q, i) => [p[i][0], 0.02, p[i][1], q[0], 0.02, q[1]]));
+          const y = r2.map((q) => this.ground(q[0], q[1]) + 0.15);
+          add(lines, stroke, p.slice(1).flatMap((q, i) => [p[i][0], y[i], p[i][1], q[0], y[i + 1], q[1]]));
           return p;
         };
-        if (gm.type === 'Point' || gm.type === 'MultiPoint') for (const q of gm.type === 'Point' ? [c] : c) add(pts, s.point || stroke, [local(q)[0], 0.03, local(q)[1]]);
+        if (gm.type === 'Point' || gm.type === 'MultiPoint') for (const q of gm.type === 'Point' ? [c] : c) add(pts, s.point || stroke, [local(q)[0], this.ground(q[0], q[1]) + 0.2, local(q)[1]]);
         else if (gm.type === 'LineString') ring(c);
         else if (gm.type === 'MultiLineString') c.forEach(ring);
         else if (gm.type === 'Polygon' || gm.type === 'MultiPolygon')
           for (const poly of gm.type === 'Polygon' ? [c] : c) {
             const rings = poly.map(ring);
-            if (s.fill) fills.push({ rings, fill: s.fill, alpha: s.fill_opacity ?? 0.25 });
+            const ex = style.extrude;
+            if (ex) {
+              // a building: from its base to its top, absolute heights (attributes) or a height on the ground
+              const p = f.properties || {};
+              const num = (v) => (typeof v === 'number' ? v : typeof v === 'string' && p[v] !== null && p[v] !== '' && Number.isFinite(+p[v]) ? +p[v] : null);
+              const baseZ = this.app.store.doc.geo?.base?.[2] || 0;
+              const o = poly[0][0];
+              const b = num(ex.base) !== null ? num(ex.base) - baseZ : this.ground(o[0], o[1]);
+              const top = num(ex.top) !== null ? num(ex.top) - baseZ : num(ex.height) !== null ? b + num(ex.height) : null;
+              if (top !== null && top > b) solids.push({ rings, base: b, depth: top - b, color: s.fill || '#d9d4c7' });
+            } else if (s.fill) fills.push({ rings, fill: s.fill, alpha: s.fill_opacity ?? 0.25 });
           }
         if (s.label && f.properties?.[s.label] !== undefined) {
           const ring = gm.type === 'Polygon' ? c[0].slice(0, -1) : gm.type === 'MultiPolygon' ? c[0][0].slice(0, -1) : null;
@@ -473,9 +572,24 @@ export class MapLayers {
     for (const { rings, fill, alpha } of fills) {
       const shape = new THREE.Shape(rings[0].map(([x, z]) => new THREE.Vector2(x, -z)));
       shape.holes = rings.slice(1).map((r2) => new THREE.Path(r2.map(([x, z]) => new THREE.Vector2(x, -z))));
-      const geo = new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2).translate(0, 0.01, 0);
+      const [cx, cz] = rings[0][0];
+      const geo = new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2).translate(0, this.ground(...pl.toLonLat(cx, cz)) + 0.1, 0);
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: fill, transparent: true, opacity: alpha * (L.opacity ?? 1), depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
       m.userData.alpha = alpha;
+      m.renderOrder = order;
+      g.group.add(m);
+    }
+    // buildings: one mesh per colour (thousands of footprints stay one draw call each)
+    const byColor = new Map();
+    for (const { rings, base, depth, color } of solids) {
+      const shape = new THREE.Shape(rings[0].map(([x, z]) => new THREE.Vector2(x, -z)));
+      shape.holes = rings.slice(1).map((r2) => new THREE.Path(r2.map(([x, z]) => new THREE.Vector2(x, -z))));
+      byColor.set(color, [...(byColor.get(color) || []), new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false }).rotateX(-Math.PI / 2).translate(0, base, 0)]);
+    }
+    for (const [color, geos] of byColor) {
+      const geo = mergeGeometries(geos.map((x) => (x.deleteAttribute('uv'), x)));
+      geos.forEach((x) => x.dispose());
+      const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, transparent: true, opacity: L.opacity ?? 1 }));
       m.renderOrder = order;
       g.group.add(m);
     }

@@ -841,7 +841,7 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .map-pick:active { cursor: grabbing; }
 .map-tiles img { position: absolute; width: 256px; height: 256px; pointer-events: none; }
 .map-pin { position: absolute; transform: translate(-50%, -92%); font-size: 32px; line-height: 1; color: var(--axis-x); pointer-events: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.5)); }
-.map-attrib, .view-attrib { position: absolute; right: 0; bottom: 0; padding: 1px var(--my-space-1); font-size: 10px; color: var(--my-text); background: rgb(255 255 255 / 0.75); pointer-events: none; }
+.map-attrib, .view-attrib { position: absolute; right: 0; bottom: 0; padding: 1px var(--my-space-1); font-size: 10px; color: #1d2a33; /* on its own light strip, in both themes */ background: rgb(255 255 255 / 0.75); pointer-events: none; }
 .view-attrib { right: var(--my-space-1); bottom: var(--my-space-1); }
 .layer-chooser { position: absolute; left: var(--my-space-3); bottom: calc(var(--my-space-6) + 4px); display: flex; gap: var(--my-space-1); align-items: flex-start; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2); }
 .layer-tile { display: flex; flex-direction: column; align-items: center; gap: var(--my-space-0); width: 58px; padding: 0; border: 0; background: none; font-size: 10px; color: var(--my-text); cursor: pointer; }

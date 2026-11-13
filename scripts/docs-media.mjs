@@ -1413,6 +1413,36 @@ const PAGES = {
     await shot('They stream as you move, in the project coordinate system');
     await clean();
   },
+  async 'stream-terrain-and-buildings'() {
+    await fresh();
+    // the Port Hills above Lyttelton: AWS terrain tiles (Terrarium) with imagery draped on them
+    await run('set_coordinate_system', { epsg: 2193, name: 'NZGD2000 / NZTM 2000' });
+    await run('set_base_point', { latitude: -43.5935, longitude: 172.6855, z: 0 });
+    await camera([-1800, 1400, 2600], [0, 250, 0]);
+    await js("window.mmr.app.ui.show('maplayers', true); return 1;");
+    await run('add_map_layer', { url: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png', elevation: 'terrarium', max_zoom: 15, name: 'Terrain (AWS)', attribution: 'Terrain: Mapzen, AWS Open Data (LINZ, SRTM)' });
+    await run('add_map_layer', { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', name: 'World Imagery (Esri)', attribution: 'Imagery: Esri, Maxar, Earthstar Geographics' });
+    await wait(18000);
+    await camera([-1800, 1400, 2600], [0, 250, 0]); // repaint: a background window may not have drawn the tiles yet
+    await shot('Terrain tiles stream as ground (Terrarium heights), imagery drapes on them');
+    await run('elevation_to_surface', { layer: 'Terrain (AWS)', at: [0, 0], radius: 400, spacing: 5, name: 'Port Hills ground' });
+    await run('set_map_layer', { layer: 'World Imagery (Esri)', visible: false });
+    await run('set_map_layer', { layer: 'Terrain (AWS)', visible: false });
+    await camera([-700, 650, 900], [0, 250, 0]);
+    await shot('Save as surface: 800 × 800 m of heights every 5 m, an editable surface in the model');
+    // central Amsterdam: the AHN DTM (OGC WCS 2.0), imagery, and 3D BAG footprints standing on their ground and roof heights
+    await fresh();
+    await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });
+    await run('set_base_point', { latitude: 52.3727, longitude: 4.8937, z: 0 });
+    await camera([-220, 170, 260], [0, 0, 0]);
+    await js("window.mmr.app.ui.show('maplayers', true); return 1;");
+    await run('add_map_layer', { url: 'https://service.pdok.nl/rws/ahn/wcs/v1_0?SERVICE=WCS&REQUEST=GetCapabilities&VERSION=2.0.1', layer: 'dtm_05m', name: 'AHN DTM 0.5 m', attribution: 'AHN: Rijkswaterstaat, PDOK' });
+    await run('add_map_layer', { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', name: 'World Imagery (Esri)', attribution: 'Imagery: Esri, Maxar, Earthstar Geographics' });
+    await run('add_map_layer', { url: 'https://data.3dbag.nl/api/BAG3D/wfs?SERVICE=WFS&REQUEST=GetCapabilities&VERSION=2.0.0', layer: 'BAG3D:lod12', name: 'Buildings (3D BAG)', attribution: '3D BAG by tudelft3d and 3DGI', style: { stroke: '#6b5d4f', fill: '#e9e2d0', extrude: { base: 'b3_h_maaiveld', top: 'b3_h_70p' } } });
+    await wait(45000);
+    await shot('Buildings from a WFS stand on the DTM (OGC WCS 2.0) from their ground and roof heights');
+    await clean();
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

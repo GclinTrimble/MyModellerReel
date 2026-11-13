@@ -56,6 +56,8 @@ import * as TB from './trimble.js';
 import * as FBK from './fieldbook.js';
 import { readGeoJson, writeGeoJson } from './gis.js';
 import * as OGC from './ogc.js';
+import * as ELV from './elevation.js';
+import { ensureLayer } from './layers.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
 import * as SW from './sitework.js';
@@ -120,6 +122,10 @@ export const GUIDE = `MyModellerReel conventions:
   query_service_features (touching: an alignment → the parcels it crosses), import_features brings them in with
   attributes; save_map_service / apply_layer_set reuse the person's services (account); cache_map_area for offline;
   export_map_context (OWS Context), export_geopackage (OGC GeoPackage).
+- Elevation and buildings: a DTM / DSM streams as ground (add_map_layer with a WCS coverage, or tiles with elevation:
+  terrarium | mapbox | geotiff) and the other layers drape on it; elevation_to_surface saves an area as an editable
+  surface. A feature layer of footprints with style.extrude ({ base, top } attributes or a height) shows 3D buildings;
+  import_features brings them in as prisms with their attributes.
 - Drawings: import_pdf (scale "1:500") / import_image (world files, GeoTIFF) place underlays; calibrate_underlay
   (scale by a known distance, orient by a bearing, move onto a survey point) or add_control_pair + georeference_underlay
   (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
@@ -1238,7 +1244,7 @@ function registerCore(reg, ctx) {
     const tries = [url];
     if (!/request=getcapabilities/i.test(url) && !/\/collections/.test(url)) {
       if (!/[?&]f=json/.test(url)) tries.push(`${url.split('?')[0].replace(/\/$/, '')}/?f=json`);
-      for (const s of ['WMTS', 'WMS', 'WFS']) tries.push(`${url}${url.includes('?') ? '&' : '?'}SERVICE=${s}&REQUEST=GetCapabilities${s === 'WFS' ? '&VERSION=2.0.0' : s === 'WMS' ? '&VERSION=1.3.0' : ''}`);
+      for (const s of ['WMTS', 'WMS', 'WFS', 'WCS']) tries.push(`${url}${url.includes('?') ? '&' : '?'}SERVICE=${s}&REQUEST=GetCapabilities${s === 'WFS' ? '&VERSION=2.0.0' : s === 'WMS' ? '&VERSION=1.3.0' : s === 'WCS' ? '&VERSION=2.0.1' : ''}`);
     }
     let last = null;
     for (const u of tries) {
@@ -1260,27 +1266,33 @@ function registerCore(reg, ctx) {
         last = e;
       }
     }
-    throw new Error(`No WMTS, WMS, WFS or OGC API service answered at that address${last ? ` (${last.message})` : ''}.`);
+    throw new Error(`No WMTS, WMS, WFS, WCS or OGC API service answered at that address${last ? ` (${last.message})` : ''}.`);
   };
   const layerRow = (L) => ({ id: L.id, name: L.name, type: L.type, kind: L.kind, layer: L.layer, visible: L.visible !== false, opacity: L.opacity ?? 1, ...(L.style ? { style: L.style } : {}), ...(L.where ? { where: L.where } : {}), ...(L.cql ? { cql: L.cql } : {}), ...(L.service ? { service: L.service } : {}), url: L.url, attribution: L.attribution || '' });
-  const LAYER_STYLE = obj({ stroke: str('line colour #rrggbb'), width: num('line width, px'), fill: str('fill colour'), fill_opacity: num('0–1'), point: str('point colour'), size: num('point size, px'), label: str('attribute shown as a label'), rules: { type: 'array', items: obj({ where: obj({}, []), stroke: str('colour'), fill: str('colour'), point: str('colour') }, []), description: 'per attribute value: [{ where: { zone: "R1" }, fill: "#…" }]' } }, []);
+  const LAYER_STYLE = obj({ stroke: str('line colour #rrggbb'), width: num('line width, px'), fill: str('fill colour'), fill_opacity: num('0–1'), point: str('point colour'), size: num('point size, px'), label: str('attribute shown as a label'), extrude: obj({ base: { description: 'attribute with the absolute base height, or a number (default: the ground)' }, top: { description: 'attribute with the absolute top height (roof), or a number' }, height: { description: 'or: attribute or number, height above the base' }, name: str('attribute naming each building') }, []), rules: { type: 'array', items: obj({ where: obj({}, []), stroke: str('colour'), fill: str('colour'), point: str('colour') }, []), description: 'per attribute value: [{ where: { zone: "R1" }, fill: "#…" }]' } }, []);
   def('maps', 'list_service_layers', 'What a web map or feature service offers: paste its address (a WMTS, WMS or WFS GetCapabilities URL, an OGC API landing page, or an XYZ tile template with {z}/{x}/{y}). Lists the layers with their styles, formats and whether they can be drawn (WMTS needs a Web Mercator tile matrix set).', obj({ url: str('service address'), service: str('a saved map service whose key to use') }, ['url']), async (a) => {
     const c = await readService(a.url, a.service);
     return { kind: c.kind, title: c.title, provider: c.provider, version: c.version, layers: c.layers.slice(0, 300).map((l) => ({ id: l.id, title: l.title, ...(l.styles?.length ? { styles: l.styles.map((s) => s.id) } : {}), ...(c.kind === 'wmts' ? { drawable: l.sets.some((s) => c.sets[s]?.zooms), sets: l.sets } : {}), ...(c.kind === 'ogcapi' ? { features: l.features, tiles: l.tiles } : {}) })), more: Math.max(0, c.layers.length - 300) };
   });
-  def('maps', 'add_map_layer', 'Stream a web map or feature layer under the model (OGC WMTS, OGC API - Tiles, WMS, XYZ tiles; or WFS 2.0 / OGC API - Features as live vector features), in the project\'s coordinate system. Kept with the design; the map layers panel orders and styles them. Feature layers take a filter: where (attribute = value) or cql (CQL2 text, OGC API).', obj({ url: str('service address (capabilities, landing page or XYZ template)'), layer: str('layer id from list_service_layers (default: the only one)'), name: str('name in the layer list'), style: { description: 'map layers: the service style id; feature layers: a style object { stroke, fill, point, label, rules }' }, format: str('image format, e.g. image/png'), matrix_set: str('WMTS tile matrix set'), opacity: num('0–1, default 1'), where: obj({}, []), cql: str('CQL2 text filter (OGC API - Features)'), service: str('a saved map service (its key is used, list_map_services)'), attribution: str('attribution text for XYZ tiles') }, ['url']), async (a) => {
+  def('maps', 'add_map_layer', 'Stream a web map or feature layer under the model (OGC WMTS, OGC API - Tiles, WMS, XYZ tiles; or WFS 2.0 / OGC API - Features as live vector features), in the project\'s coordinate system. Kept with the design; the map layers panel orders and styles them. Feature layers take a filter: where (attribute = value) or cql (CQL2 text, OGC API).', obj({ url: str('service address (capabilities, landing page or XYZ template)'), layer: str('layer id from list_service_layers (default: the only one)'), name: str('name in the layer list'), style: { description: 'map layers: the service style id; feature layers: a style object { stroke, fill, point, label, rules }' }, format: str('image format, e.g. image/png'), matrix_set: str('WMTS tile matrix set'), opacity: num('0–1, default 1'), where: obj({}, []), cql: str('CQL2 text filter (OGC API - Features)'), service: str('a saved map service (its key is used, list_map_services)'), attribution: str('attribution text for XYZ tiles'), elevation: str('the tiles hold heights (a DTM or DSM): terrarium, mapbox (Terrain-RGB) or geotiff; a WCS coverage is elevation already', ['terrarium', 'mapbox', 'geotiff']), max_zoom: num('deepest zoom the service has (e.g. 15 for AWS terrain tiles)') }, ['url']), async (a) => {
     const c = await readService(a.url, a.service);
     let L;
     if (c.kind === 'xyz') L = { type: 'xyz', url: a.url, layer: 'tiles', attribution: a.attribution || '' };
     else L = OGC.layerFrom(c, { layer: a.layer, style: typeof a.style === 'string' ? a.style : undefined, format: a.format, set: a.matrix_set });
+    if (a.elevation) {
+      if (L.kind === 'features') throw new Error('A feature layer has no heights: elevation is for tile layers (WMTS, WMS, XYZ, OGC API) and WCS.');
+      Object.assign(L, { kind: 'elevation', encoding: a.elevation });
+    }
+    if (a.max_zoom !== undefined) L.max_zoom = a.max_zoom;
     if (L.type === 'wfs' && !L.json) throw new Error('That WFS cannot answer in GeoJSON; only GeoJSON output is read (GML 3.2 is not).');
     const list = mapLayers();
     const name = a.name || L.title || L.layer;
     const id = `ml${(ctx.doc.settings.map_layer_seq = (ctx.doc.settings.map_layer_seq || 0) + 1)}`;
+    if (a.attribution) L.attribution = a.attribution; // the caller's credit line wins over the service's
     const row = { id, name, kind: L.kind || 'map', ...L, visible: true, opacity: Math.max(0, Math.min(1, a.opacity ?? 1)), ...(a.service ? { service: a.service } : {}), ...(a.where ? { where: a.where } : {}), ...(a.cql ? { cql: a.cql } : {}), ...(L.kind === 'features' ? { style: typeof a.style === 'object' ? a.style : { stroke: '#d9480f', width: 2, point: '#d9480f', fill: '#d9480f', fill_opacity: 0.15 } } : {}) };
     delete row.title;
     list.push(row);
-    return { ...layerRow(row), standard: { wmts: 'OGC WMTS 1.0.0', wms: 'OGC WMS 1.3.0', wfs: 'OGC WFS 2.0', ogcapi: 'OGC API - Tiles', 'ogcapi-features': 'OGC API - Features', xyz: 'XYZ tiles' }[row.type], ...(placedOk() ? {} : { note: 'The model is not placed on Earth yet: the layer shows once it is (set_coordinate_system and a base point).' }) };
+    return { ...layerRow(row), standard: { wmts: 'OGC WMTS 1.0.0', wms: 'OGC WMS 1.3.0', wfs: 'OGC WFS 2.0', wcs: 'OGC WCS 2.0.1', ogcapi: 'OGC API - Tiles', 'ogcapi-features': 'OGC API - Features', xyz: 'XYZ tiles' }[row.type], ...(placedOk() ? {} : { note: 'The model is not placed on Earth yet: the layer shows once it is (set_coordinate_system and a base point).' }) };
   }, true);
   const placedOk = () => {
     try {
@@ -1365,8 +1377,99 @@ function registerCore(reg, ctx) {
     const when = new Date().toISOString();
     for (const f of fc.features) f.properties = { ...f.properties, source: `${L.name} (${L.url.split('?')[0]})`, retrieved: when };
     const report = F.newReport();
+    const ex = L.style?.extrude;
+    if (ex) {
+      // buildings: each footprint a prism from its base to its top (absolute heights, or a height on the base), editable
+      const doc = ctx.doc;
+      const layer = a.to_layer || L.name;
+      const val = (v, p) => (typeof v === 'number' ? v : typeof v === 'string' && p[v] !== null && p[v] !== '' && Number.isFinite(+p[v]) ? +p[v] : null);
+      const baseZ = S.geo(doc).base?.[2] || 0;
+      let n = 0;
+      for (const ft of fc.features) {
+        const g = ft.geometry;
+        const polys = g?.type === 'Polygon' ? [g.coordinates] : g?.type === 'MultiPolygon' ? g.coordinates : [];
+        const p = ft.properties || {};
+        const b = val(ex.base, p) ?? 0;
+        const top = val(ex.top, p) ?? (val(ex.height, p) !== null ? b + val(ex.height, p) : null);
+        if (top === null || top <= b) {
+          report.skip('building', 'no height');
+          continue;
+        }
+        for (const poly of polys) {
+          const outer = poly[0].length > 1 && poly[0][0].join() === poly[0].at(-1).join() ? poly[0].slice(0, -1) : poly[0];
+          const ring = outer.map(([E, N]) => S.toLocal(doc, { e: E, n: N, z: 0 }));
+          if (ring.length < 3) continue;
+          const [cx, cz] = [ring.reduce((t, q) => t + q[0], 0) / ring.length, ring.reduce((t, q) => t + q[2], 0) / ring.length];
+          const r = reg.commands.get('create_prism').run({ points: ring.map((q) => [Math.round((q[0] - cx) * 1000) / 1000, Math.round((q[2] - cz) * 1000) / 1000]), height: Math.round((top - b) * 1000) / 1000, position: D.round3([cx, b - baseZ, cz]), name: String(p[ex.name] ?? p.identificatie ?? p.name ?? ft.id ?? 'Building'), color: L.style.fill || '#d9d4c7' });
+          const e = D.getEntity(doc, r.id);
+          e.meta = { ...(e.meta || {}), ...Object.fromEntries(Object.entries(p).filter(([, v]) => v === null || typeof v !== 'object')) };
+          e.tag = ensureLayer(doc, layer).name;
+          n++;
+        }
+      }
+      report.add('buildings', n);
+      return report.done({ features: fc.features.length, buildings: n, layer });
+    }
     readGeoJson(fc, { doc: ctx.doc, report, opts: { layer: a.to_layer || L.name, force: true } });
     return report.done({ features: fc.features.length, layer: a.to_layer || L.name });
+  }, true);
+  // ---------------------------------------------------------------- streamed elevation (DTM / DSM) and buildings
+  /** Elevation tiles of a layer over a lon / lat box at zoom z: Map "z/x/y" → { width, height, values }. */
+  const elevationTiles = async (L, bbox, z) => {
+    const list = ELV.tilesIn(bbox, z);
+    if (list.length > 400) throw new Error(`That needs ${list.length} elevation tiles: use a larger spacing or a smaller area.`);
+    const tiles = new Map();
+    await Promise.all(
+      list.map(async ({ x, y }) => {
+        const url = OGC.tileUrl(L, z, x, y);
+        if (!url) return;
+        let r;
+        try {
+          r = await needIO().ogcGet(url, { binary: true, service: L.service });
+        } catch {
+          return; // a missing tile is a hole in the surface, not a failure
+        }
+        const bytes = r.bytes instanceof Uint8Array ? r.bytes : new Uint8Array(r.bytes);
+        if (L.encoding === 'geotiff') {
+          if (!ctx.io?.demRead) throw new Error('Reading GeoTIFF needs the desktop app.');
+          const g = await ctx.io.demRead(bytes);
+          tiles.set(`${z}/${x}/${y}`, { width: g.width, height: g.height, values: ELV.cleanHeights(g.values, g.nodata) });
+        } else {
+          const img = await needIO().imageRgba(bytes);
+          tiles.set(`${z}/${x}/${y}`, { width: img.width, height: img.height, values: ELV.decodeRgba(img.rgba, img.width, img.height, L.encoding) });
+        }
+      }),
+    );
+    return tiles;
+  };
+  def('maps', 'elevation_to_surface', 'Save the heights of an elevation layer (a streamed DTM or DSM: WCS, or Terrarium / Terrain-RGB / GeoTIFF tiles) over an area as a surface in the model, to edit like any surface (sculpt, pads, cut / fill against a design). Area: around a model point or inside an entity; spacing between samples in metres (default from the area, finer costs more tiles).', obj({ layer: str('elevation layer id or name'), at: { type: 'array', items: { type: 'number' }, description: 'model point [x, z] (default: what the view looks at)' }, radius: num('metres around it (default 150)'), within: str('or: inside this boundary or entity'), spacing: num('m between samples'), name: common.name }, ['layer']), async (a) => {
+    const L = layerRef(a.layer);
+    if (L.kind !== 'elevation') throw new Error(`${L.name} has no heights: add an elevation layer (a WCS coverage, or tiles with elevation: terrarium | mapbox | geotiff).`);
+    const pl = placed();
+    const doc = ctx.doc;
+    const g = S.geo(doc);
+    const base = g.base || [0, 0, 0];
+    let box;
+    if (a.within) {
+      const b = D.worldBox(doc, D.resolve(doc, a.within)[0]);
+      box = [base[0] + b.min[0], base[1] - b.max[2], base[0] + b.max[0], base[1] - b.min[2]];
+    } else {
+      const t = ctx.view?.getCamera?.()?.target;
+      const [x, z] = a.at || (t ? [t[0], t[2]] : [0, 0]);
+      const r = a.radius ?? 150;
+      box = [base[0] + x - r, base[1] - z - r, base[0] + x + r, base[1] - z + r];
+    }
+    const toLonLat = (E, N) => pl.toLonLat(E - base[0], -(N - base[1]));
+    const corners = [toLonLat(box[0], box[1]), toLonLat(box[2], box[3]), toLonLat(box[0], box[3]), toLonLat(box[2], box[1])];
+    const bbox = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))];
+    const lat = (bbox[1] + bbox[3]) / 2;
+    const spacing = a.spacing ?? Math.max(0.5, Math.min(30, Math.max(box[2] - box[0], box[3] - box[1]) / 150));
+    const z = ELV.zoomFor(spacing, lat, L.max_zoom ?? 18);
+    const tiles = await elevationTiles(L, bbox, z);
+    if (!tiles.size) throw new Error(`${L.name} sent no heights for that area.`);
+    const grid = ELV.areaGrid(box, spacing, toLonLat, (lon, la) => ELV.heightAt(tiles, lon, la, z));
+    const e = terrainEntity(grid, a.name || D.uniqueName(doc, `Ground (${L.name})`), { source: `${L.name} (${String(L.url).split('?')[0]})`, retrieved: new Date().toISOString() });
+    return { ...summary(doc, e), spacing, zoom: z, tiles: tiles.size, samples: grid.found, triangles: e.mesh.f.length, pixel: Math.round(ELV.pixelSize(z, lat) * 100) / 100 };
   }, true);
   def('maps', 'export_map_context', 'Save the design\'s map and feature layers as an OGC OWS Context GeoJSON document (14-055r2), with their styles as SE, to open in another OWS Context reader or share. Without path, returns it.', obj({ path: str('absolute .json path'), title: str('document title') }), async (a) => {
     const pl = placedOk() ? placed() : null;
@@ -5078,6 +5181,7 @@ function registerCore(reg, ctx) {
     return needIO().publish(a.path);
   });
   reg.commands.get('import').compound = true;
+  reg.commands.get('import_features').compound = true; // buildings: one create_prism each
   reg.commands.get('generate_texture').compound = true;
   for (const n of ['inset_face', 'create_rectangle', 'import_2d', 'curves_to_faces', 'insert_asset', 'read_drawing', 'import_asset', 'generate_mesh', 'reference_file', 'reload_reference']) reg.commands.get(n).compound = true;
   // symmetry while editing (#27): the mirror-image push_pull / move_elements across the shape's middle
@@ -5458,18 +5562,24 @@ function registerCore(reg, ctx) {
       grid = await ctx.io.demRead(new Uint8Array(await ctx.io.readBinary(a.path)));
       if (!grid.affine) throw new Error('That TIFF has no georeferencing (no GeoTIFF tags).');
     }
+    const e = terrainEntity(grid, a.name || D.uniqueName(doc, String(a.path).split(/[\\/]/).pop().replace(/\.\w+$/, '')), {}, { step: a.step || 1, max_points: a.max_points || 250000 });
+    return { ...summary(doc, e), samples: `${grid.width} × ${grid.height}`, step: e.meta.step, triangles: e.mesh.f.length };
+  }, true);
+  /** A surface from a grid of heights in project coordinates: a DEM file, or a streamed elevation area. */
+  const terrainEntity = (grid, name, meta = {}, { step = 1, max_points = 250000 } = {}) => {
+    const doc = ctx.doc;
     const g = S.geo(doc);
     if (!g.base) {
       const [cx, cy] = [grid.affine[0] * grid.width / 2 + grid.affine[2], grid.affine[4] * grid.height / 2 + grid.affine[5]];
       const vals = [...grid.values].filter((x) => x !== grid.nodata && Number.isFinite(x) && x > -1e30);
       g.base = [Math.round(cx / 100) * 100, Math.round(cy / 100) * 100, Math.round(vals.reduce((s, x) => s + x, 0) / (vals.length || 1))];
     }
-    const { mesh, step } = SF.demMesh(grid, (E, N, Z) => S.toLocal(doc, { e: E, n: N, z: Z }), { step: a.step || 1, max_points: a.max_points || 250000 });
+    const { mesh, step: used } = SF.demMesh(grid, (E, N, Z) => S.toLocal(doc, { e: E, n: N, z: Z }), { step, max_points });
     const { mesh: m, origin } = G.recenter(mesh);
-    const e = D.addEntity(doc, { name: a.name || D.uniqueName(doc, String(a.path).split(/[\\/]/).pop().replace(/\.\w+$/, '')), mesh: m, position: D.round3(origin), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true, source: 'DEM' } });
+    const e = D.addEntity(doc, { name, mesh: m, position: D.round3(origin), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true, source: 'DEM', ...meta, step: used } });
     ctx.selection.set([e.id]);
-    return { ...summary(doc, e), samples: `${grid.width} × ${grid.height}`, step, triangles: m.f.length };
-  }, true);
+    return e;
+  };
   def('terrain', 'drape_image', 'Lay a placed image or PDF page (an underlay) onto a surface, like an aerial photo on the ground. "none" takes it off.', obj({ surface: str('the surface'), underlay: str('underlay id / name, or "none"') }, ['surface', 'underlay']), (a) => {
     const e = surfaceOf(a.surface);
     if (a.underlay === 'none') {
