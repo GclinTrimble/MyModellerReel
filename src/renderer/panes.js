@@ -296,8 +296,11 @@ export class Panes {
     }
     this.toolbar ||= h('div.pane-toolbar', { role: 'toolbar', 'aria-label': 'View' });
     this.toolbar.replaceChildren(this.head(p, L), vb);
-    Object.assign(this.toolbar.style, { right: `calc(${pct(1 - r.x - r.w)} + 8px)`, top: `calc(${pct(r.y)} + 8px)`, maxWidth: `calc(${pct(r.w)} - 16px)` });
+    // a pane on the right edge keeps clear of the panel tabs, as the single view's bar does (.viewbar's right)
+    const gap = r.x + r.w > 1 - 1e-6 ? 'calc(2 * var(--my-space-3) + var(--my-control-md) + 2 * var(--my-space-1) + 2px)' : '8px';
+    Object.assign(this.toolbar.style, { right: `calc(${pct(1 - r.x - r.w)} + ${gap})`, top: `calc(${pct(r.y)} + 8px)`, maxWidth: `calc(${pct(r.w)} - 8px - ${gap})` });
     if (!this.toolbar.isConnected) this.wrap.append(this.toolbar);
+    this.app.ui.renderViewbar?.(); // it fits its buttons to this pane's width
   }
 
   markCustom(cfg, camera, controls) {
@@ -376,30 +379,17 @@ export class Panes {
     const run = (name, args) => this.app.reg.run(name, args).catch((e) => this.app.ui.toast(e.message, 'danger'));
     const n = p.i + 1;
     const cfg = L.panes[p.i];
-    const shown = this.vp.store.doc.settings.layout?.camera_mark === true;
-    const scenes = this.vp.store.doc.scenes || [];
-    const roads = !p.main && this.vp.store.doc.entities.some((e) => e.derived?.generator === 'corridor');
     const flat = is2D(cfg);
-    const select = h(
-      'select.pane-view',
-      { 'aria-label': `View ${n}`, onchange: (e) => (e.target.value.startsWith('scene:') ? run('set_pane', { pane: n, scene: e.target.value.slice(6) }) : run('set_pane', { pane: n, view: e.target.value })) },
-      ...LY.VIEWS.filter((v) => roads || !LY.ROAD_VIEWS.includes(v) || v === cfg.view).map((v) => h('option', { value: v, selected: cfg.view === v }, LABEL[v])),
-      ...(['custom', 'scene'].includes(cfg.view) ? [h('option', { value: cfg.view, selected: true, disabled: true }, cfg.view === 'scene' ? cfg.scene : LABEL.custom)] : []),
-      ...scenes.map((s) => h('option', { value: `scene:${s.name}` }, `Scene: ${s.name}`)),
-    );
-    const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
+    const name = cfg.view === 'scene' ? cfg.scene : LABEL[cfg.view] || cfg.view;
+    const btn = (ic, label, onclick) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick }, icon(ic));
+    // the pane's number and, for a road drawing, its stepping buttons; the view, projection, maximise, window and
+    // camera mark are in the view bar beside it (as buttons when there is room, else in its Views menu)
     const el = h(
       'div.pane-head',
-      { ondblclick: (e) => !e.target.closest('select, button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: 'Double-click to maximise or restore' },
-      h('span.pane-num', {}, String(n)),
-      select,
-      ...(cfg.view === 'section'
-        ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))]
-        : []),
+      { ondblclick: (e) => !e.target.closest('button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: `View ${n}: ${name}. Double-click to maximise or restore` },
+      h('span.pane-num', { 'aria-label': `View ${n}: ${name}` }, String(n)),
+      ...(cfg.view === 'section' ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))] : []),
       ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
-      btn(L.max === p.i ? 'corners-in' : 'corners-out', L.max === p.i ? 'Restore the views' : 'Maximise this view', () => run('set_layout', { max: L.max === p.i ? 0 : n })),
-      ...(p.main ? [] : [btn('arrow-square-out', 'Move to its own window', () => run('detach_pane', { pane: n }))]),
-      btn('video-camera', 'Show the main camera in the other views', () => run('set_layout', { show_camera: !shown }), shown),
       h('span.sep'),
     );
     return el;
