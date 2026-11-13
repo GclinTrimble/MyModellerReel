@@ -1238,7 +1238,7 @@ test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens i
   await w.click('[data-tab="materials"]');
   assert.equal(await hidden(), false);
   assert.equal(await w.locator('#dock-tabs [data-tab="materials"]').getAttribute('aria-selected'), 'true');
-  await w.click('.dock-toggle');
+  await w.click('#dock-tabs .dock-retract'); // the strip's top button hides the panel
   assert.equal(await hidden(), true);
   await w.locator('#viewbar button[aria-label="Side panel (Ctrl+B)"]').click();
   assert.equal(await hidden(), false);

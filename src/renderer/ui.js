@@ -2569,16 +2569,65 @@ export class UI {
     };
     const recipes = Object.entries(doc.recipes || {});
     // the component library (#45): click to place at the view's centre, or drag into the view
-    const assets = h('div.assets', { ondragover: (e) => e.dataTransfer.types.includes('Files') && e.preventDefault(), ondrop: (e) => e.dataTransfer.files.length && (e.preventDefault(), e.stopPropagation(), app.dropFiles(e.dataTransfer.files, { library: true })) }, h('p.muted.small', {}, 'Loading…'));
+    // groups fold, the search finds a name, group or tag, Ctrl-click picks several to group and tag in the bar below
+    const lib = (this.libState ||= { q: '', picked: new Set() });
+    const assets = h('div.assets-wrap', { ondragover: (e) => e.dataTransfer.types.includes('Files') && e.preventDefault(), ondrop: (e) => e.dataTransfer.files.length && (e.preventDefault(), e.stopPropagation(), app.dropFiles(e.dataTransfer.files, { library: true })) }, h('p.muted.small', {}, 'Loading…'));
+    const organize = (names, meta) => run('organize_library', { names, ...meta });
     app.io.listLibrary().then((list) => {
+      const q = lib.q.trim().toLowerCase();
+      const shown = list.filter((f) => !q || [f.name, f.group, ...f.tags].some((x) => x.toLowerCase().includes(q)));
+      const groups = [...new Set(list.map((f) => f.group).filter(Boolean))].sort();
+      lib.picked = new Set([...lib.picked].filter((n) => list.some((f) => f.name === n)));
+      const tile = (f) => {
+        const img = h('img', { alt: '' });
+        app.io.libraryThumb(f.name).then((src) => (img.src = src)).catch(() => {});
+        const place = (position) => app.reg.run('insert_asset', { name: f.name, position }).then((r) => r?.id && app.tools.place([r.id])).catch((e) => this.toast(e.message, 'danger'));
+        const tags = f.tags.length ? ` · ${f.tags.join(', ')}` : '';
+        return h(
+          'button.asset',
+          {
+            title: `${f.name}${tags}: click to place, drag into the view, Ctrl-click to pick several`,
+            'aria-pressed': String(lib.picked.has(f.name)),
+            draggable: true,
+            ondragstart: (e) => e.dataTransfer.setData('text/x-mmr-asset', f.name),
+            onclick: (e) => {
+              if (!(e.ctrlKey || e.metaKey)) return place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100)));
+              lib.picked.has(f.name) ? lib.picked.delete(f.name) : lib.picked.add(f.name);
+              this.renderDock();
+            },
+          },
+          img,
+          h('span', {}, f.name.replace(/\.\w+$/, '')),
+        );
+      };
+      // a tile dragged onto a group's title moves into that group
+      const section = (name, items) =>
+        h(
+          'details.lib-group',
+          { open: true },
+          h('summary', { ondragover: (e) => e.dataTransfer.types.includes('text/x-mmr-asset') && e.preventDefault(), ondrop: (e) => (e.preventDefault(), organize([e.dataTransfer.getData('text/x-mmr-asset')], { group: name === 'Ungrouped' ? '' : name })) }, `${name} (${items.length})`),
+          h('div.assets', {}, items.map(tile)),
+        );
+      const byGroup = [...groups.map((g) => [g, shown.filter((f) => f.group === g)]), ['Ungrouped', shown.filter((f) => !f.group)]].filter(([, items]) => items.length);
+      const picked = [...lib.picked];
+      const gIn = h('input', { placeholder: 'Group', list: 'lib-groups', 'aria-label': 'Group' });
+      const tIn = h('input', { placeholder: 'Tags, comma separated', 'aria-label': 'Tags' });
       assets.replaceChildren(
-        ...(list.length ? list : []).map((f) => {
-          const img = h('img', { alt: '' });
-          app.io.libraryThumb(f.name).then((src) => (img.src = src)).catch(() => {});
-          const place = (position) => app.reg.run('insert_asset', { name: f.name, position }).then((r) => r?.id && app.tools.place([r.id])).catch((e) => this.toast(e.message, 'danger'));
-          return h('button.asset', { title: `${f.name}: click to place, or drag into the view`, draggable: true, ondragstart: (e) => e.dataTransfer.setData('text/x-mmr-asset', f.name), onclick: () => place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100))) }, img, h('span', {}, f.name.replace(/\.\w+$/, '')));
-        }),
-        ...(list.length ? [] : [h('p.muted.small', {}, 'Put GLB or glTF files in the library folder.')]),
+        h('input.lib-search', { type: 'search', value: lib.q, placeholder: 'Search name, group or tag', 'aria-label': 'Search the library', oninput: (e) => ((lib.q = e.target.value), clearTimeout(this.libT), (this.libT = setTimeout(() => (this.renderDock(), this.$('dock-body').querySelector('.lib-search')?.focus()), 200))) }),
+        h('datalist', { id: 'lib-groups' }, groups.map((g) => h('option', { value: g }))),
+        picked.length
+          ? h(
+              'div.lib-organize',
+              {},
+              h('strong', {}, `${picked.length} picked`),
+              gIn,
+              tIn,
+              h('button.btn.sm.primary', { onclick: () => organize(picked, { ...(gIn.value.trim() ? { group: gIn.value.trim() } : {}), ...(tIn.value.trim() ? { add_tags: tIn.value.split(',').map((s) => s.trim()).filter(Boolean) } : {}) }).then(() => lib.picked.clear()) }, icon('check'), 'Apply'),
+              h('button.btn.sm', { onclick: () => (lib.picked.clear(), this.renderDock()) }, 'Clear'),
+            )
+          : '', // replaceChildren would print null
+        ...byGroup.map(([g, items]) => section(g, items)),
+        ...(list.length ? [] : [h('p.muted.small', {}, 'Add models, or drop model files here.')]),
       );
     });
     return h(
@@ -2587,7 +2636,7 @@ export class UI {
       h('h3', {}, 'Components'),
       h('p.muted.small', {}, 'Drop a model file here to add it to the library, or into the view to place it.'),
       assets,
-      h('div.row.wrap', {}, h('button.btn.sm', { title: 'Add a GLB, glTF, OBJ, STL or FBX model to the library', onclick: () => run('add_to_library', {}).then((r) => r?.added && this.toast(`Added ${r.added}`)) }, icon('plus'), 'Add model…'), h('button.btn.sm', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder'), h('button.btn.sm', { onclick: () => ((app.io.thumbs = null), this.renderDock()) }, icon('arrows-clockwise'), 'Refresh')),
+      h('div.row.wrap', {}, h('button.btn.sm', { title: 'Add GLB, glTF, OBJ, STL or FBX models to the library (pick several)', onclick: () => run('add_to_library', {}).then((r) => r?.added?.length && this.toast(`Added ${r.added.length} model${r.added.length > 1 ? 's' : ''}${r.failed ? ` (${r.failed.length} failed)` : ''}`)) }, icon('plus'), 'Add models…'), h('button.btn.sm', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder'), h('button.btn.sm', { onclick: () => ((app.io.thumbs = null), this.renderDock()) }, icon('arrows-clockwise'), 'Refresh')),
       h('h3', {}, 'Profiles'),
       h('p.muted.small', {}, path ? `Click a profile to sweep it along "${path.name}".` : 'Select a curve (Curve tool, U) and click a profile to sweep it along. Parameters can be changed later in the Entity panel.'),
       h(

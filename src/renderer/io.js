@@ -93,10 +93,10 @@ export class IO {
     this.app = app;
   }
 
-  async pick(kind, save, suggested) {
+  async pick(kind, save, suggested, multi = false) {
     return save
       ? native().invoke('file:save-dialog', { defaultPath: suggested, filters: FILTERS[kind] })
-      : native().invoke('file:open-dialog', { filters: FILTERS[kind] });
+      : native().invoke('file:open-dialog', { filters: FILTERS[kind], multi });
   }
 
   /** Export scene + baked animation clip. withDoc keeps the editable document inside (our save format). */
@@ -223,19 +223,32 @@ export class IO {
     return r;
   }
 
-  /** Copy a model file into the component library (other formats are converted to GLB). */
-  async addToLibrary(path) {
-    path ||= await this.pick('models', false);
-    if (!path) return { cancelled: true };
-    let data;
-    if (/\.glb$/i.test(path)) data = await native().invoke('file:read', path);
-    else {
-      const gltf = await this.load(path);
-      data = await new GLTFExporter().parseAsync(gltf.scene, { binary: true });
+  /** Copy model files into the component library (other formats become GLB), with a group and tags. No paths: a dialog that takes many. */
+  async addToLibrary(paths, meta = null) {
+    paths = [].concat(paths || (await this.pick('models', false, '', true)) || []);
+    if (!paths.length) return { cancelled: true };
+    const added = [];
+    const failed = [];
+    for (const path of paths) {
+      try {
+        let data;
+        if (/\.glb$/i.test(path)) data = await native().invoke('file:read', path);
+        else data = await new GLTFExporter().parseAsync((await this.load(path)).scene, { binary: true });
+        added.push(await native().invoke('library:add', base(path), data, meta));
+      } catch (e) {
+        failed.push(`${base(path)}: ${e.message}`);
+      }
     }
-    const name = await native().invoke('library:add', base(path), data);
+    this.thumbs = null;
     if (this.app.ui.tab === 'library') this.app.ui.renderDock();
-    return { added: name };
+    return { added, ...(failed.length ? { failed } : {}) };
+  }
+  /** Set the group and / or tags of library models. */
+  async organizeLibrary(names, meta) {
+    const out = [];
+    for (const n of names) out.push({ name: n, ...(await native().invoke('library:meta', n, meta)) });
+    if (this.app.ui.tab === 'library') this.app.ui.renderDock();
+    return out;
   }
 
   /** Convert any three.js object tree into editable shapes inside one group (world transforms baked in). */

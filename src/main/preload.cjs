@@ -5,7 +5,7 @@ const CHANNELS = new Set([
   'app:info', 'app:close-confirmed', 'settings:get', 'settings:set', 'window:title', 'shell:open-path', 'shell:open-url',
   'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:read-binary', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat', 'ai:abort', 'update:check', 'update:install', 'help:read',
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
-  'ai:image', 'library:list', 'library:path', 'library:add', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
+  'ai:image', 'library:list', 'library:path', 'library:add', 'library:meta', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
   'ai:setup-status', 'ai:ollama-start', 'ai:ollama-install', 'ai:ollama-pull', 'ai:ollama-pull-cancel', 'ai:builtin-download', 'ai:builtin-delete', 'ref:watch',
   'mytools:list', 'mytools:write', 'mytools:delete', 'codelib:call', 'feedback:save', 'feedback:list', 'feedback:share', 'feedback:export',
 ]);

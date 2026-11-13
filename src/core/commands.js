@@ -3559,7 +3559,7 @@ function registerCore(reg, ctx) {
     return e ? summary(ctx.doc, e) : r;
   }, true);
 
-  def('scene', 'list_assets', 'The component library: GLB / glTF files in the library folder (put your own there).', obj({}), async () => {
+  def('scene', 'list_assets', 'The component library: GLB / glTF files in the library folder (put your own there), with their group and tags.', obj({}), async () => {
     if (!ctx.io?.listLibrary) throw new Error('The component library needs the desktop app.');
     return ctx.io.listLibrary();
   });
@@ -4605,7 +4605,20 @@ function registerCore(reg, ctx) {
     return ctx.io;
   };
   def('file', 'save', 'Save the model as .glb (geometry + materials + animation; reopens with full editability). Without path it asks.', obj({ path: str('absolute .glb path') }), (a) => needIO().save(a.path));
-  def('file', 'add_to_library', 'Copy a 3D model (glb, gltf, obj, stl, fbx; others become GLB) into the component library, to place it again in any model (insert_asset).', obj({ path: str('absolute path (default: a file dialog)') }), (a) => needIO().addToLibrary(a.path));
+  const LIBMETA = { group: str('library group, e.g. "Trees" or "Street furniture"'), tags: { type: 'array', items: { type: 'string' }, description: 'labels to find it by' } };
+  def('file', 'add_to_library', 'Copy 3D models (glb, gltf, obj, stl, fbx; others become GLB) into the component library, in a group and with tags, to place them again in any model (insert_asset).', obj({ path: str('absolute path'), paths: { type: 'array', items: { type: 'string' }, description: 'several files' }, ...LIBMETA }), (a) => needIO().addToLibrary(a.paths || a.path, a.group || a.tags ? { group: a.group, tags: a.tags } : null));
+  def('file', 'organize_library', 'Put library models in a group and / or give them tags (tags replace theirs; add_tags adds). list_assets shows groups and tags.', obj({ names: { type: 'array', items: { type: 'string' }, description: 'library file names (list_assets)' }, ...LIBMETA, add_tags: { type: 'array', items: { type: 'string' }, description: 'tags to add to theirs' } }, ['names']), async (a) => {
+    if (!ctx.io?.organizeLibrary) throw new Error('The component library needs the desktop app.');
+    const all = await ctx.io.listLibrary();
+    const out = [];
+    for (const n of a.names) {
+      const cur = all.find((x) => x.name.toLowerCase() === n.toLowerCase() || x.name.replace(/\.\w+$/, '').toLowerCase() === n.toLowerCase());
+      if (!cur) throw new Error(`No "${n}" in the library. list_assets shows them.`);
+      const tags = a.add_tags ? [...cur.tags, ...a.add_tags] : a.tags;
+      out.push(...(await ctx.io.organizeLibrary([cur.name], { ...(a.group !== undefined ? { group: a.group } : {}), ...(tags ? { tags } : {}) })));
+    }
+    return { organized: out };
+  });
   def('file', 'open', 'Open a .glb/.gltf (MyModellerReel files reopen fully editable).', obj({ path: str('absolute path') }), (a) => needIO().open(a.path));
   // ---------------------------------------------------------------- files: models and exchange formats (#152)
   const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'stl', 'usdz', 'png', 'video'];

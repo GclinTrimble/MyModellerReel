@@ -284,14 +284,39 @@ try {
 } catch (e) {
   console.error('library:', e);
 }
-ipcMain.handle('library:list', () => fs.readdirSync(LIBRARY).filter((f) => /\.(glb|gltf)$/i.test(f)).map((f) => ({ name: f, size: fs.statSync(path.join(LIBRARY, f)).size })));
+// groups and tags of library models: library.json beside them ({ "Tree.glb": { group, tags } })
+const LIB_META = path.join(LIBRARY, 'library.json');
+const libMeta = () => {
+  try {
+    return JSON.parse(fs.readFileSync(LIB_META, 'utf8'));
+  } catch {
+    return {};
+  }
+};
+const cleanMeta = (m = {}) => ({ ...(m.group ? { group: String(m.group).slice(0, 60) } : {}), ...(Array.isArray(m.tags) && m.tags.length ? { tags: [...new Set(m.tags.map((t) => String(t).trim().slice(0, 40)).filter(Boolean))].slice(0, 20) } : {}) });
+const setMeta = (name, m) => {
+  const all = libMeta();
+  all[name] = cleanMeta({ ...all[name], ...m });
+  fs.writeFileSync(LIB_META, JSON.stringify(all, null, 1));
+  return all[name];
+};
+ipcMain.handle('library:list', () => {
+  const meta = libMeta();
+  return fs.readdirSync(LIBRARY).filter((f) => /\.(glb|gltf)$/i.test(f)).map((f) => ({ name: f, size: fs.statSync(path.join(LIBRARY, f)).size, group: meta[f]?.group || '', tags: meta[f]?.tags || [] }));
+});
+ipcMain.handle('library:meta', (_, name, m) => {
+  const f = path.basename(String(name));
+  if (!fs.existsSync(path.join(LIBRARY, f))) throw new Error(`No "${f}" in the component library.`);
+  return setMeta(f, m || {});
+});
 // a model added to the library: GLB bytes (the page converts other formats first), never over an existing file
-ipcMain.handle('library:add', (_, name, data) => {
+ipcMain.handle('library:add', (_, name, data, meta) => {
   const stem = path.basename(String(name)).replace(/\.\w+$/, '').replace(/[^\w .()-]+/g, '_').slice(0, 80) || 'Model';
   if (!(data instanceof ArrayBuffer || ArrayBuffer.isView(data)) || data.byteLength > 300e6) throw new Error('A library model is GLB bytes under 300 MB.');
   let file = `${stem}.glb`;
   for (let k = 2; fs.existsSync(path.join(LIBRARY, file)); k++) file = `${stem} ${k}.glb`;
   fs.writeFileSync(path.join(LIBRARY, file), Buffer.from(data instanceof ArrayBuffer ? data : data.buffer));
+  if (meta) setMeta(file, meta);
   return file;
 });
 ipcMain.handle('library:path', (_, name) => {
@@ -333,9 +358,9 @@ ipcMain.handle('file:save-dialog', async (_, { defaultPath, filters }) => {
   const r = await dialog.showSaveDialog(win, { defaultPath, filters });
   return r.canceled ? null : r.filePath;
 });
-ipcMain.handle('file:open-dialog', async (_, { filters }) => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters });
-  return r.canceled ? null : r.filePaths[0];
+ipcMain.handle('file:open-dialog', async (_, { filters, multi }) => {
+  const r = await dialog.showOpenDialog(win, { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters });
+  return r.canceled ? null : multi ? r.filePaths : r.filePaths[0];
 });
 ipcMain.handle('file:read', (_, p) => {
   if (!MODEL_EXT.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only model files.`);

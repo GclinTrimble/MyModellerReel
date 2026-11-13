@@ -761,6 +761,15 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .panel-sec[open] > summary::before { transform: rotate(45deg); }
 .panel-sec > summary > * { margin: 0; }
 .panel-sec > summary > h3 { font-size: var(--my-text-md, 1rem); }
+/* the component library: groups, search, picking several to group and tag */
+.assets-wrap { display: flex; flex-direction: column; gap: var(--my-space-2); }
+.lib-search { width: 100%; }
+.lib-group > summary { cursor: pointer; font-weight: var(--my-weight-semibold); font-size: var(--my-text-sm); padding: 2px 0; border-radius: var(--my-radius-sm); }
+.lib-group > summary:hover { background: var(--my-accent-tint); }
+.lib-group > .assets { margin-top: var(--my-space-1); }
+.asset[aria-pressed='true'] { outline: 2px solid var(--my-accent); outline-offset: -2px; background: var(--my-accent-tint); }
+.lib-organize { display: flex; flex-wrap: wrap; align-items: center; gap: var(--my-space-1); padding: var(--my-space-2); border: 1px solid var(--my-accent); border-radius: var(--my-radius-md); background: var(--my-accent-tint); }
+.lib-organize input { flex: 1 1 120px; min-width: 0; }
 /* COGO panel (#228) */
 .cogo { gap: var(--my-space-3); }
 .cogo-calcs { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--my-space-1); }
