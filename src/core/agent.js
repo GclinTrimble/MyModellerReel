@@ -217,6 +217,7 @@ export async function runTurn({ protocol, chat, run, list, history, system, tool
     return stats;
   } finally {
     stats.ms = Math.round(now() - t0);
-    stats.tokens_per_s = stats.tokens_out && stats.model_ms ? Math.round(stats.tokens_out / (stats.model_ms / 1000)) : 0;
+    const r = stats.tokens_out && stats.model_ms ? stats.tokens_out / (stats.model_ms / 1000) : 0;
+    stats.tokens_per_s = r >= 10 ? Math.round(r) : Math.round(r * 10) / 10; // a slow local model still shows, e.g. 0.3
   }
 }

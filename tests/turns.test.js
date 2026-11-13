@@ -45,6 +45,9 @@ test('a turn records model and tool time, steps, tokens and a trace, live and af
   const broken = newStats();
   await assert.rejects(runTurn({ protocol: 'ollama', chat: async () => ((clock += 500), Promise.reject(new Error('Stopped.'))), run: () => {}, list: () => [], history: [], system: 's', stats: broken, now }), /Stopped/);
   assert.deepEqual([broken.steps, broken.model_ms, broken.ms], [1, 500, 500]);
+  const slow = newStats();
+  await runTurn({ protocol: 'ollama', chat: async () => ((clock += 530000), { message: { role: 'assistant', content: 'ok' }, eval_count: 151 }), run: () => {}, list: () => [], history: [], system: 's', stats: slow, now });
+  assert.equal(slow.tokens_per_s, 0.3, 'a slow model still shows its rate');
 });
 
 test('tokens from each provider’s reply', () => {
