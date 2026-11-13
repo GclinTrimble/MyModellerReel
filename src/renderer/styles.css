@@ -884,14 +884,11 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .map-attrib, .view-attrib { position: absolute; right: 0; bottom: 0; padding: 1px var(--my-space-1); font-size: 10px; color: var(--my-text); background: rgb(255 255 255 / 0.75); pointer-events: none; }
 .view-attrib { right: var(--my-space-1); bottom: var(--my-space-1); }
 /* the selection bar: bottom centre of the view while something is selected */
-.selection-bar { position: absolute; left: 50%; bottom: var(--my-space-3); transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2); }
+.selection-bar { position: absolute; left: 50%; bottom: var(--my-space-3); transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-pill); box-shadow: var(--my-shadow-2); }
 .selection-bar[hidden] { display: none; }
-.sel-btn { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 52px; padding: 3px var(--my-space-1); border: 0; border-radius: var(--my-radius-sm); background: none; color: var(--my-text-secondary); font: inherit; font-size: var(--my-text-xs); cursor: pointer; }
-.sel-btn .ph { font-size: 18px; color: var(--my-text); }
-.sel-btn:hover { background: var(--my-accent-tint); }
-.sel-btn[aria-pressed='true'] { background: var(--my-accent); color: var(--my-on-accent); }
-.sel-btn[aria-pressed='true'] .ph { color: var(--my-on-accent); }
-.sel-sep { width: 1px; align-self: stretch; margin: 2px var(--my-space-1); background: var(--my-border); }
+.proposal-bar:not([hidden]) ~ .selection-bar { bottom: calc(var(--my-space-3) + 56px); } /* an AI proposal keeps the bottom centre */
+.sel-sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--my-border); }
+.icon-btn.sm.drop .ph-caret-up { font-size: 9px; opacity: 0.7; }
 .layer-chooser { position: absolute; left: var(--my-space-3); bottom: calc(var(--my-space-6) + 4px); display: flex; gap: var(--my-space-1); align-items: flex-start; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-lg); box-shadow: var(--my-shadow-2); }
 .layer-tile { display: flex; flex-direction: column; align-items: center; gap: var(--my-space-0); width: 58px; padding: 0; border: 0; background: none; font-size: 10px; color: var(--my-text); cursor: pointer; }
 .layer-thumb { width: 52px; height: 52px; border-radius: var(--my-radius-xs); border: 2px solid transparent; object-fit: cover; display: grid; place-items: center; background: var(--my-surface-2); font-size: 22px; }

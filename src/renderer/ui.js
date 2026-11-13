@@ -984,7 +984,7 @@ export class UI {
     pop.hidden = false;
     const w = pop.offsetWidth;
     const left = side === 'right' ? r.right + 6 : Math.min(r.left, innerWidth - w - 8);
-    const top = Math.max(8, Math.min(side === 'right' ? r.top : r.bottom + 4, innerHeight - pop.offsetHeight - 8)); // stays on screen
+    const top = Math.max(8, Math.min(side === 'right' ? r.top : side === 'above' ? r.top - pop.offsetHeight - 4 : r.bottom + 4, innerHeight - pop.offsetHeight - 8)); // stays on screen
     Object.assign(pop.style, { left: `${left}px`, top: `${top}px` });
   }
   addPluginButton({ icon: ic = 'puzzle-piece', label, run }) {
@@ -1520,10 +1520,11 @@ export class UI {
     bar.hidden = !ents.length;
     if (!ents.length) return bar.replaceChildren();
     const go = (name, args) => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
-    const b = (label, ic, run, on) => h('button.sel-btn', { type: 'button', title: t(label), 'aria-pressed': on === undefined ? undefined : String(on), onclick: run }, icon(ic), h('span', {}, t(label)));
+    // icons only: the name is the tooltip
+    const b = (label, ic, run) => h('button.icon-btn.sm', { type: 'button', title: t(label), 'aria-label': t(label), onclick: run }, icon(ic));
     const items = [
       b('Details', 'info', () => (this.setSidePanel(true), this.show('entity'))),
-      b('Zoom', 'magnifying-glass-plus', () => this.actions.zoomSel.run()),
+      b('Zoom to selection', 'magnifying-glass-plus', () => this.actions.zoomSel.run()),
       b('Ask', 'chat-teardrop-dots', () => {
         const r = bar.getBoundingClientRect();
         app.agents.askAt(r.left, r.top - 6, null, true);
@@ -1534,22 +1535,27 @@ export class UI {
     const lines = all.filter((e) => S.isLinework(e) || e.curve);
     if (pts.length >= 3) {
       const ids = (kind) => lines.filter((e) => (e.line?.kind || 'breakline') === kind).map((e) => e.id);
-      items.push(h('span.sel-sep'), b('Surface', 'mountains', () => go('create_surface', { points: pts.map((e) => e.id), breaklines: ids('breakline'), boundaries: ids('boundary') }).then((r) => r?.id && app.select([r.id]))));
+      items.push(h('span.sel-sep'), b('Create a surface from the selection', 'mountains', () => go('create_surface', { points: pts.map((e) => e.id), breaklines: ids('breakline'), boundaries: ids('boundary') }).then((r) => r?.id && app.select([r.id]))));
     }
     const s = ents.length === 1 && isSurface(ents[0]) ? ents[0] : null;
     if (s) {
-      const colour = (label, ic, kind) => b(label, ic, () => go('analyze_surface', { id: s.id, kind: s.analysis?.kind === kind ? 'none' : kind }), s.analysis?.kind === kind);
-      const arrows = doc.entities.some((x) => x.slopeArrows?.surface === s.id);
-      const contours = doc.entities.find((x) => x.contours?.surface === s.id);
-      items.push(
-        h('span.sel-sep'),
-        b('Triangles', 'triangle', () => go('show_triangles', { ids: [s.id], show: !s.show_triangles }), !!s.show_triangles),
+      // one button opens the surface display list (icon and name each, ticked when on); it stays open while you pick
+      const cur = () => app.entity(s.id) || s;
+      const colour = (label, ic, kind) => ({ label, icon: ic, checked: () => cur().analysis?.kind === kind, run: () => go('analyze_surface', { id: s.id, kind: cur().analysis?.kind === kind ? 'none' : kind }), keep: true });
+      const has = (k) => app.store.doc.entities.some((x) => x[k]?.surface === s.id);
+      const display = () => [
+        'Show on the surface',
+        { label: 'Triangles', icon: 'triangle', checked: () => !!cur().show_triangles, run: () => go('show_triangles', { ids: [s.id], show: !cur().show_triangles }), keep: true },
+        { label: 'Contours', icon: 'wave-sine', checked: () => has('contours'), run: () => go('surface_contours', { id: s.id, show: !has('contours') }), keep: true },
+        { label: 'Slope arrows', icon: 'arrow-down-right', checked: () => has('slopeArrows'), run: () => go('slope_arrows', { id: s.id, show: !has('slopeArrows') }), keep: true },
+        'Colour by',
         colour('Elevation', 'chart-bar', 'elevation'),
         colour('Slope', 'chart-line-up', 'slope'),
-        colour('Facing', 'compass', 'aspect'),
-        b('Arrows', 'arrow-down-right', () => go('slope_arrows', { id: s.id, show: !arrows }), arrows),
-        b('Contours', 'wave-sine', () => go('surface_contours', { id: s.id, show: !contours }), !!contours),
-      );
+        colour('Facing (aspect)', 'compass', 'aspect'),
+      ];
+      const d = h('button.icon-btn.sm.drop', { type: 'button', title: t('Surface display'), 'aria-label': t('Surface display'), 'aria-haspopup': 'menu' }, icon('stack'), icon('caret-up'));
+      d.onclick = () => this.popAt(d, display(), { side: 'above' });
+      items.push(h('span.sel-sep'), d);
     }
     bar.replaceChildren(...items);
   }
