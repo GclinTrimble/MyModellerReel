@@ -5,7 +5,8 @@ import * as L from '../core/layers.js';
 export { MATERIALS };
 import { listProfiles, profilePoints, profileSvg, ANCHORS } from '../core/profiles.js';
 import { getGenerator } from '../core/derived.js';
-import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt } from './tools.js';
+import { TOOLS, TOOLBAR, SNAPS, SNAP_LABELS, fmt, BRUSH } from './tools.js';
+import * as TK from '../core/takeoff.js';
 import * as TX from '../core/textures.js';
 import { buildForm, SWATCHES, codeGrid } from './forms.js';
 import { pickSteps } from '../core/fields.js';
@@ -33,6 +34,48 @@ export function h(sel, attrs = {}, ...kids) {
   }
   for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) el.append(k.nodeType ? k : String(k));
   return el;
+}
+/**
+ * Calm panels: a panel's explanation paragraphs become an (i) tooltip on their heading, and each section under a heading
+ * (h3 or overline) folds, remembered per panel. Paragraphs with links or buttons stay as they are. The first h3 is the
+ * panel's title and stays open.
+ */
+export function tidyPanel(panel, tab, label = tab) {
+  if (!panel?.classList?.contains('panel')) return panel;
+  const isHead = (el) => el.tagName === 'H3' || el.classList.contains('overline');
+  const kids = [...panel.children];
+  const title = kids[0]?.tagName === 'H3' && kids[0].textContent.trim().toLowerCase() === String(label).toLowerCase() ? kids[0] : null;
+  let head = title;
+  const tip = (el, text) => {
+    let i = el.querySelector(':scope > .info-tip');
+    if (!i) el.append((i = h('i.ph.ph-info.info-tip', { tabIndex: 0, role: 'img' })));
+    i.title = i.title ? `${i.title}\n\n${text}` : text;
+    i.setAttribute('aria-label', i.title);
+  };
+  for (const el of kids) {
+    if (isHead(el)) head = el;
+    else if (head && el.matches('p.muted') && !el.querySelector('a, button, input, select')) tip(head, el.textContent.trim()), el.remove();
+  }
+  let open = {};
+  try {
+    open = JSON.parse(localStorage.getItem('mymodellerreel.sections') || '{}');
+  } catch {}
+  let sec = null;
+  for (const el of [...panel.children]) {
+    if (el === title) continue;
+    if (isHead(el)) {
+      const key = `${tab}:${el.textContent.trim()}`;
+      sec = h('details.panel-sec', { open: open[key] !== false, ontoggle: (e) => {
+        open[key] = e.target.open;
+        try {
+          localStorage.setItem('mymodellerreel.sections', JSON.stringify(open));
+        } catch {}
+      } });
+      el.replaceWith(sec);
+      sec.append(h('summary', {}, el));
+    } else if (sec) sec.append(el);
+  }
+  return panel;
 }
 export const icon = (name, fill = false) => h(`i.ph${fill ? '-fill' : ''}.ph-${name}`, { 'aria-hidden': 'true' });
 /**
@@ -80,7 +123,8 @@ export class UI {
     this.buildToolbar();
     try {
       const r = JSON.parse(localStorage.getItem('mymodellerreel.ribbon') || 'null');
-      if (r?.name) queueMicrotask(() => this.setRibbon(r.name, r.tab));
+      // each launch opens the last ribbon used, or the Site ribbon
+      queueMicrotask(() => this.setRibbon(r?.name || 'Site', r?.tab));
       if (localStorage.getItem('mymodellerreel.toolbar') === '0') document.body.classList.add('no-toolbar');
       if (localStorage.getItem('mymodellerreel.dock') === '0') document.body.classList.add('no-dock');
     } catch {}
@@ -599,6 +643,7 @@ export class UI {
       exportShp: { label: 'Export Shapefile…', icon: 'export', run: run('export', { format: 'shp' }) },
       cutFill: { label: 'Cut / fill…', icon: 'chart-bar', run: form('cut_fill') },
       volumeReport: { label: 'Volume report…', icon: 'table', run: form('volume_report') },
+      materialManager: { label: 'Material manager', icon: 'stack', run: () => this.materialManager() },
       alignment: { label: 'Alignment…', icon: 'path', run: form('create_alignment') },
       corridor: { label: 'Corridor…', icon: 'road-horizon', run: form('create_corridor') },
       editCorridor: { label: 'Change the corridor (template, ditch, benches, layers)…', icon: 'sliders-horizontal', run: form('set_corridor', () => ({ id: this.firstCorridor() })) },
@@ -628,6 +673,7 @@ export class UI {
       agents: { label: 'Agents…', icon: 'users-three', run: () => this.show('agents') },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
       aiPanel: { label: 'Ask Plumb', icon: 'sparkle', run: () => this.show('ai') },
+      aiFeedback: { label: 'Copilot feedback…', icon: 'thumbs-up', run: () => this.feedbackDialog() },
       aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
       insights: { label: 'My achievements', icon: 'trophy', run: () => ((this.app.learning.insightsOpen = true), (this.app.help.page = null), this.show('help')) },
       splitLine: { label: 'Split a line', icon: 'scissors', run: () => this.app.tools.set('split') },
@@ -650,7 +696,7 @@ export class UI {
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
       Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
-      AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiSettings'],
+      AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiFeedback', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
     };
     const bar = this.$('menubar');
@@ -928,6 +974,7 @@ export class UI {
       );
     };
     this.renderViewbar = render;
+    new ResizeObserver(() => render()).observe(vb.parentElement);
   }
 
   /**
@@ -1196,10 +1243,20 @@ export class UI {
       ['help', 'Help', 'question'],
       ['tool', 'Tool', 'crosshair'], // shown while a command picks (#235)
     ];
+    // a vertical strip on the right (#user: horizontal tabs were hard to track); the top button retracts it all
     this.$('dock-tabs').replaceChildren(
-      ...this.tabs.map(([id, label, ic]) => h('button', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => (this.setSidePanel(true), this.show(id)), dataset: { tab: id }, 'aria-label': t(label), title: t(label), hidden: id === 'tool' && !this.app.pickFirst?.active }, icon(ic), t(label))),
-      h('button.dock-toggle', { title: 'Hide or show the side panel (Ctrl+B)', 'aria-label': 'Hide or show the side panel', onclick: () => this.actions.sidePanel.run() }, icon('sidebar-simple')),
+      // the side panel's hide / show (Ctrl+B): the strip stays, like the tools on the left
+      h('button.icon-btn.dock-retract', { title: t('Hide the panels (Ctrl+B)'), 'aria-label': t('Hide the panels'), onclick: () => this.actions.sidePanel.run() }, icon('caret-double-right')),
+      h('hr'),
+      ...this.tabs.map(([id, label, ic]) => h('button.icon-btn', { role: 'tab', 'aria-selected': String(id === this.tab), onclick: () => (this.setSidePanel(true), this.show(id)), dataset: { tab: id }, 'aria-label': t(label), title: t(label), hidden: id === 'tool' && !this.app.pickFirst?.active }, icon(ic))),
     );
+    this.retractIcon();
+  }
+  /** The strip's top button says what it does: hide the panels, or show them again. */
+  retractIcon() {
+    const on = !document.body.classList.contains('no-dock');
+    const b = this.$('dock-tabs')?.querySelector('.dock-retract');
+    if (b) (b.firstChild.className = `ph ph-caret-double-${on ? 'right' : 'left'}`), (b.title = t(on ? 'Hide the panels (Ctrl+B)' : 'Show the panels (Ctrl+B)')), b.setAttribute('aria-label', b.title);
   }
   /** The Tool tab (#235): shown and opened while a command picks, then back to the tab before. */
   toolTab(on, back = 'ai') {
@@ -1235,7 +1292,7 @@ export class UI {
     // keep where the panel was scrolled to, and inner lists too (#204): a re-render no longer jumps to the top
     this.dockScroll ||= {};
     if (body.dataset.tab === this.tab) this.dockScroll[this.tab] = [body.scrollTop, ...[...body.querySelectorAll('.qty, .outline-tree')].map((x) => x.scrollTop)];
-    const panel = this[`panel_${this.tab}`]();
+    const panel = tidyPanel(this[`panel_${this.tab}`](), this.tab, t(this.tabs?.find((x) => x[0] === this.tab)?.[1] || this.tab));
     body.replaceChildren(panel);
     body.dataset.tab = this.tab;
     const [top = 0, ...inner] = this.dockScroll[this.tab] || [];
@@ -1247,6 +1304,8 @@ export class UI {
     this.renderViewbar();
     this.renderProposal();
     this.renderMacro();
+    this.renderManager();
+    this.app.tools?.tool?.renderBar?.(); // the in-view bar of a tool follows the library and the selection
     const chip = this.$('context-chip');
     const ctx = this.app.context && this.app.entity(this.app.context);
     chip.hidden = !ctx;
@@ -1286,6 +1345,7 @@ export class UI {
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
       Earthworks: ['cutFill', 'volumeReport', 'corridorVolumes', 'corridorSolids'],
+      Materials: ['tool:matbrush', 'materialManager'],
     },
     Drawings: {
       '1 Bring in': ['importPdf', 'importImage', 'readDrawing', 'vectorise'],
@@ -1328,6 +1388,7 @@ export class UI {
       localStorage.setItem('mymodellerreel.dock', on ? '1' : '0');
     } catch {}
     this.renderViewbar?.();
+    this.retractIcon();
     this.app.viewport.dirty = true;
   }
   /** Show or hide the side toolbar (#209): with a ribbon open, its tools are there. */
@@ -1342,7 +1403,7 @@ export class UI {
     let el = this.$('ribbon');
     if (!el) {
       el = h('div.ribbon', { id: 'ribbon', role: 'toolbar', 'aria-label': 'Ribbon' });
-      document.querySelector('.stage').prepend(el);
+      document.querySelector('.workspace').prepend(el);
     }
     el.hidden = !this.ribbon;
     if (!this.ribbon) return void (this.app.viewport.dirty = true);
@@ -1594,7 +1655,7 @@ export class UI {
   /** The guided tour (#109): a highlight and a card per step, Back / Next / Skip, Esc to leave. */
   tour(i = 0) {
     const STEPS = [
-      ['#viewport', 'The model', 'Orbit with the middle mouse, pan with the right, zoom with the wheel. Z drags a zoom window; Shift+Z fits everything.'],
+      ['#viewport', 'The model', 'Orbit with the middle mouse (Alt + drag on a touchpad), pan with the right (Alt + Shift + drag), zoom with the wheel or a pinch. Z drags a zoom window; Shift+Z fits everything.'],
       ['#toolbar', 'Tools', 'Draw (L, R, C, A…), push / pull (P), move (M), rotate (Q), measure (T). Hover a tool to see its key. While a tool works, type numbers: they go to the Measurements box.'],
       ['#vcb', 'Measurements box', 'Type exact values while drawing or moving: 2.5, 3,2, 150mm, 45°, x5 for five copies.'],
       ['#menubar', 'Menus', 'Everything has a menu entry: Site for survey and terrain, Drawings for PDFs and images, Animate for the timeline and videos.'],
@@ -2005,6 +2066,29 @@ export class UI {
   }
 
   /** A read-only result in a dialog (counts, text lists). */
+  /** Copilot feedback report (#232): how it is rated, what goes wrong, per model; export and share. */
+  async feedbackDialog() {
+    const app = this.app;
+    let r;
+    try {
+      r = await app.reg.run('list_ai_feedback', {});
+    } catch (e) {
+      return this.toast(e.message, 'danger');
+    }
+    const stat = (v, label) => h('div.ins-stat', {}, h('strong', {}, String(v)), h('span.small.muted', {}, label));
+    const body = h(
+      'div.panel',
+      { style: { padding: 0, minWidth: '420px' } },
+      h('p.small.muted', {}, "Your ratings of the copilot's answers, kept on this PC as training data for a better modelling copilot.", r.sharing ? ' Sharing is on: they also go to the suite under your account.' : ' Sharing is off (Settings › AI).'),
+      h('div.ins-stats', {}, stat(r.rated, 'answers rated'), stat(r.good_rate == null ? '–' : `${r.good_rate} %`, 'good'), stat(r.with_comment, 'with a comment'), stat(r.shared, 'shared')),
+      r.top_tags.length ? h('div', {}, h('div.overline', {}, 'What goes wrong most'), ...r.top_tags.slice(0, 6).map((t) => h('div.row.small', {}, h('span.grow', {}, t.tag), h('span.muted', {}, String(t.count))))) : null,
+      r.by_model.length ? h('div', {}, h('div.overline', {}, 'By model'), ...r.by_model.map((m) => h('div.row.small', {}, h('span.grow', {}, m.model), h('span.muted', {}, `${m.good} / ${m.rated} good`)))) : null,
+      r.recent.length ? h('div', {}, h('div.overline', {}, 'Latest'), ...r.recent.map((x) => h('div.row.small', { title: x.comment || '' }, icon(x.rating === 'good' ? 'thumbs-up' : x.rating === 'bad' ? 'thumbs-down' : 'circle'), h('span.grow', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, x.prompt), x.shared ? icon('cloud-check') : null))) : h('p.muted', {}, 'Nothing rated yet: use the thumbs under a copilot answer.'),
+    );
+    const act = await this.modal('Copilot feedback', body, [['Export JSONL…', 'export'], ['Close', null]]);
+    if (act === 'export') app.reg.run('export_ai_feedback', {}).then((x) => x.path && this.toast(`${x.records} records: ${x.path}`)).catch((e) => this.toast(e.message, 'danger'));
+  }
+
   infoDialog(title, data) {
     this.modal(title, h('pre.small.info-pre', {}, typeof data === 'string' ? data : JSON.stringify(data, null, 1)));
   }
@@ -2280,6 +2364,8 @@ export class UI {
       'div.panel',
       {},
       h('h3', {}, 'Materials'),
+      this.surfaceMaterials(),
+      h('div.overline', {}, 'Look'),
       h('p.muted.small', {}, 'Click a swatch: it paints the selection, or arms the Paint Bucket (B) when nothing is selected. Alt-click in the model samples a colour.'),
       h('div.overline', {}, 'Textured'),
       // textured materials made in the app (#186): colour, relief and roughness, at real size
@@ -2300,6 +2386,125 @@ export class UI {
       h('div.overline', {}, 'Colours'),
       h('div.swatches', {}, MATERIALS.map((m) => h('button.swatch', { 'aria-pressed': String(!this.paint.material && this.paint.color === m.color), onclick: () => set(m) }, h('i', { style: { background: m.color, opacity: m.opacity ?? 1 } }), m.name))),
       h('label.row', {}, h('span.small', {}, 'Custom'), h('input', { type: 'color', value: this.paint.color, onchange: (ev) => set({ ...this.paint, name: 'Custom', color: ev.target.value }) })),
+    );
+  }
+  /** Surface materials for takeoff, compact: show / hide, colour, name, painted area, the brush. The details are in the manager. */
+  surfaceMaterials() {
+    const app = this.app;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    const doc = app.store.doc;
+    const rep = TK.takeoff(doc);
+    const byName = new Map(rep.rows.map((r) => [r.material, r]));
+    const f = (x) => (x ? x.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '');
+    const t = rep.totals;
+    return h(
+      'details.surface-mats',
+      { open: true },
+      h('summary.overline', {}, icon('stack'), ' Surface materials · takeoff'),
+      h(
+        'div.mat-list',
+        {},
+        TK.library(doc).map((m) =>
+          h(
+            `div.mat-line${m.hidden ? '.off' : ''}`,
+            { title: `${m.code || 'no code'} · ${m.thickness || 0} m · ${m.density || 0} kg/m³ · ${m.cost || 0}/m²` },
+            h('button.icon-btn.sm', { title: m.hidden ? 'Show its faces' : 'Hide its faces', 'aria-label': `${m.hidden ? 'Show' : 'Hide'} ${m.name}`, 'aria-pressed': String(!m.hidden), onclick: () => run('show_surface_materials', { names: [m.name], visible: !!m.hidden }) }, icon(m.hidden ? 'eye-slash' : 'eye')),
+            h('input.mat-color', { type: 'color', value: m.color, 'aria-label': `${m.name} colour`, onchange: (ev) => run('define_surface_material', { name: m.name, color: ev.target.value }) }),
+            h('span.mat-name', {}, m.name),
+            h('span.small.muted', {}, byName.get(m.name) ? `${f(byName.get(m.name).area)} m²` : ''),
+            h('button.icon-btn.sm', { title: `Paint ${m.name} with the brush`, 'aria-label': `Paint ${m.name}`, onclick: () => ((BRUSH.material = m.name), app.tools.set('matbrush')) }, icon('paint-brush')),
+          ),
+        ),
+      ),
+      rep.rows.length ? h('p.small', {}, `Painted ${f(t.area)} m² · ${f(t.volume)} m³ · ${f(t.weight_t)} t · cost ${f(t.cost)}`) : h('p.muted.small', {}, 'Paint faces with the material brush to measure them.'),
+      h('div.row.wrap', {}, h('button.btn.sm.primary', { onclick: () => this.materialManager() }, icon('table'), 'Material manager'), h('button.btn.sm', { onclick: () => run('show_surface_materials', { all: true }) }, icon('eye'), 'Show all')),
+    );
+  }
+  /**
+   * The material manager: a floating window over the view (drag it by its title) with the whole library and the
+   * takeoff, edited in place. It stays open while you paint and follows every change.
+   */
+  materialManager(open = true) {
+    let win = this.$('mat-manager');
+    if (!open) return win?.remove();
+    if (!win) {
+      win = h('section.float-win', { id: 'mat-manager', role: 'dialog', 'aria-label': 'Material manager' });
+      document.body.append(win);
+    }
+    this.renderManager();
+  }
+  renderManager() {
+    const win = this.$('mat-manager');
+    if (!win) return;
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (n, a) => app.reg.run(n, a).catch((e) => this.toast(e.message, 'danger'));
+    const rep = TK.takeoff(doc);
+    const byName = new Map(rep.rows.map((r) => [r.material, r]));
+    const f = (x) => (x ? x.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '–');
+    const set = (m, k, v) => run('define_surface_material', { name: m.name, [k]: v });
+    const num = (m, k, step) => h('input.num', { type: 'number', min: 0, step, value: m[k] ?? 0, 'aria-label': `${m.name} ${k}`, onchange: (ev) => set(m, k, +ev.target.value) });
+    const newName = (k = 1) => (TK.find(doc, `Material ${k}`) ? newName(k + 1) : `Material ${k}`);
+    const file = async (kind, save, name, cmd) => {
+      const p = await app.io.pick(kind, save, name);
+      if (p) run(cmd, { path: p }).then((r) => r && this.toast(save ? `Wrote ${p}` : `Read ${r.imported} materials`));
+    };
+    const head = h('header', {}, icon('stack'), h('strong.grow', {}, 'Material manager'), h('button.icon-btn.sm', { title: 'Close', 'aria-label': 'Close', onclick: () => this.materialManager(false) }, icon('x')));
+    // drag the window by its title bar
+    head.onpointerdown = (e) => {
+      if (e.target.closest('button')) return;
+      const r = win.getBoundingClientRect();
+      const dx = e.clientX - r.left;
+      const dy = e.clientY - r.top;
+      const mv = (ev) => Object.assign(win.style, { left: `${Math.max(0, ev.clientX - dx)}px`, top: `${Math.max(0, ev.clientY - dy)}px`, right: 'auto' });
+      const up = () => (removeEventListener('pointermove', mv), removeEventListener('pointerup', up));
+      addEventListener('pointermove', mv);
+      addEventListener('pointerup', up);
+    };
+    const cols = ['', 'Colour', 'Material', 'Code', 'Thick m', 'kg/m³', 'Cost/m²', 'Area m²', 'Plan m²', 'Volume m³', 'Weight t', 'Cost', ''];
+    const t = rep.totals;
+    win.replaceChildren(
+      head,
+      h('p.small.muted', {}, 'Codes follow your classification (MasterFormat, Uniclass, a Trimble Business Center material code). Volume = painted area × thickness, weight = volume × density.'),
+      h(
+        'div.float-body',
+        {},
+        h(
+          'table.qty.mat-table',
+          {},
+          h('thead', {}, h('tr', {}, ...cols.map((x) => h('th', {}, x)))),
+          h(
+            'tbody',
+            {},
+            TK.library(doc).map((m) => {
+              const r = byName.get(m.name) || {};
+              return h(
+                `tr${m.hidden ? '.off' : ''}`,
+                {},
+                h('td', {}, h('button.icon-btn.sm', { title: m.hidden ? 'Show' : 'Hide', 'aria-pressed': String(!m.hidden), onclick: () => run('show_surface_materials', { names: [m.name], visible: !!m.hidden }) }, icon(m.hidden ? 'eye-slash' : 'eye'))),
+                h('td', {}, h('input.mat-color', { type: 'color', value: m.color, 'aria-label': `${m.name} colour`, onchange: (ev) => set(m, 'color', ev.target.value) })),
+                h('td', {}, h('input.name', { value: m.name, 'aria-label': 'Name', onchange: (ev) => ev.target.value.trim() && run('define_surface_material', { name: m.name, rename: ev.target.value.trim() }) })),
+                h('td', {}, h('input.code', { value: m.code || '', 'aria-label': `${m.name} code`, onchange: (ev) => set(m, 'code', ev.target.value) })),
+                h('td', {}, num(m, 'thickness', 0.01)),
+                h('td', {}, num(m, 'density', 50)),
+                h('td', {}, num(m, 'cost', 1)),
+                ...[r.area, r.plan_area, r.volume, r.weight_t, r.cost].map((x) => h('td.n', {}, f(x))),
+                h('td', {}, h('button.icon-btn.sm', { title: `Paint ${m.name}`, onclick: () => ((BRUSH.material = m.name), app.tools.set('matbrush')) }, icon('paint-brush')), h('button.icon-btn.sm', { title: `Delete ${m.name} (its faces become unpainted)`, onclick: () => run('delete_surface_material', { name: m.name }) }, icon('trash'))),
+              );
+            }),
+          ),
+          h('tfoot', {}, h('tr', {}, h('th', { colSpan: 7 }, 'Total'), ...[t.area, t.plan_area, t.volume, t.weight_t, t.cost].map((x) => h('th.n', {}, f(x))), h('th'))),
+        ),
+      ),
+      h(
+        'div.row.wrap',
+        {},
+        h('button.btn.sm', { onclick: () => run('define_surface_material', { name: newName(), color: '#7f8c8d' }) }, icon('plus'), 'New material'),
+        h('button.btn.sm', { title: 'Read a library (JSON or CSV)', onclick: () => file('matlib', false, '', 'import_surface_materials') }, icon('upload-simple'), 'Import library'),
+        h('button.btn.sm', { title: 'Save the library (JSON or CSV)', onclick: () => file('matlib', true, 'materials.json', 'export_surface_materials') }, icon('download-simple'), 'Export library'),
+        h('span.grow'),
+        h('button.btn.sm.primary', { title: 'CSV, JSON, or GeoJSON (OGC API Features encoding: painted faces as polygons)', onclick: () => file('takeoff', true, 'takeoff.csv', 'material_takeoff') }, icon('export'), 'Export takeoff'),
+      ),
     );
   }
   /** A small picture of a library material, made once. */
@@ -2364,7 +2569,7 @@ export class UI {
     };
     const recipes = Object.entries(doc.recipes || {});
     // the component library (#45): click to place at the view's centre, or drag into the view
-    const assets = h('div.assets', {}, h('p.muted.small', {}, 'Loading…'));
+    const assets = h('div.assets', { ondragover: (e) => e.dataTransfer.types.includes('Files') && e.preventDefault(), ondrop: (e) => e.dataTransfer.files.length && (e.preventDefault(), e.stopPropagation(), app.dropFiles(e.dataTransfer.files, { library: true })) }, h('p.muted.small', {}, 'Loading…'));
     app.io.listLibrary().then((list) => {
       assets.replaceChildren(
         ...(list.length ? list : []).map((f) => {
@@ -2380,8 +2585,9 @@ export class UI {
       'div.panel',
       {},
       h('h3', {}, 'Components'),
+      h('p.muted.small', {}, 'Drop a model file here to add it to the library, or into the view to place it.'),
       assets,
-      h('div.row', {}, h('button.btn.sm', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder'), h('button.btn.sm', { onclick: () => ((app.io.thumbs = null), this.renderDock()) }, icon('arrows-clockwise'), 'Refresh')),
+      h('div.row.wrap', {}, h('button.btn.sm', { title: 'Add a GLB, glTF, OBJ, STL or FBX model to the library', onclick: () => run('add_to_library', {}).then((r) => r?.added && this.toast(`Added ${r.added}`)) }, icon('plus'), 'Add model…'), h('button.btn.sm', { onclick: () => window.native.invoke('shell:open-path', 'library') }, icon('folder-open'), 'Library folder'), h('button.btn.sm', { onclick: () => ((app.io.thumbs = null), this.renderDock()) }, icon('arrows-clockwise'), 'Refresh')),
       h('h3', {}, 'Profiles'),
       h('p.muted.small', {}, path ? `Click a profile to sweep it along "${path.name}".` : 'Select a curve (Curve tool, U) and click a profile to sweep it along. Parameters can be changed later in the Entity panel.'),
       h(
@@ -2486,6 +2692,8 @@ export class UI {
       h('h3', {}, 'AI'),
       ai.provider === 'ollama' || ai.provider === 'builtin' ? app.ai.setupCard() : null,
       prov === 'builtin' ? null : this.aiFinder(), // finding other models matters once you leave the built-in one
+      // copilot feedback (#232): kept on this PC; shared only when ticked
+      h('label.row.small', { title: 'Rated answers (the request, what the copilot did and the model) upload to the MyStudioReel suite under your account, to train a better modelling copilot. Off: they stay on this PC.' }, h('input', { type: 'checkbox', checked: !!ai.shareFeedback, onchange: (e) => app.reg.run('share_ai_feedback', { on: e.target.checked }).then(() => this.toast(e.target.checked ? 'Feedback will be shared' : 'Feedback stays on this PC')).catch((err) => this.toast(err.message, 'danger')) }), 'Share my copilot feedback to improve it'),
       h(
         'label.field',
         {},
@@ -2906,7 +3114,7 @@ export class UI {
   }
   shortcutsDialog() {
     const rows = Object.values(this.actions).filter((a) => a.key);
-    return this.modal('Keyboard shortcuts', h('div.panel', { style: { padding: 0, gap: '4px' } }, rows.map((a) => h('div.row', {}, h('span.grow', {}, a.label), h('kbd', {}, a.key))), h('p.small.muted', {}, 'While a tool is active, just type numbers: they go to the Measurements box (bottom right). Arrow keys lock an axis: → red, ← green, ↑ blue. Middle mouse orbits, right mouse pans, the wheel zooms.')));
+    return this.modal('Keyboard shortcuts', h('div.panel', { style: { padding: 0, gap: '4px' } }, rows.map((a) => h('div.row', {}, h('span.grow', {}, a.label), h('kbd', {}, a.key))), h('p.small.muted', {}, 'While a tool is active, just type numbers: they go to the Measurements box (bottom right). Arrow keys lock an axis: → red, ← green, ↑ blue. Middle mouse (or Alt + drag) orbits, right mouse (or Alt + Shift + drag) pans, the wheel or a pinch zooms.')));
   }
   aboutDialog() {
     return this.modal(

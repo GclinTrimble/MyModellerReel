@@ -1,13 +1,13 @@
 // The only bridge from the page to the system. Each channel is checked in main.cjs.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const CHANNELS = new Set([
   'app:info', 'app:close-confirmed', 'settings:get', 'settings:set', 'window:title', 'shell:open-path', 'shell:open-url',
   'file:save-dialog', 'file:open-dialog', 'file:read', 'file:read-text', 'file:read-binary', 'file:write', 'plugins:list', 'plugins:write', 'ai:chat', 'ai:abort', 'update:check', 'update:install', 'help:read',
   'account:status', 'account:sign-in', 'account:cancel', 'account:sign-out', 'account:take-over', 'startup:get', 'startup:set',
-  'ai:image', 'library:list', 'library:path', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
+  'ai:image', 'library:list', 'library:path', 'library:add', 'glb:compress', 'net:json', 'net:download', 'mesh:generate', 'voice:transcribe', 'autosave:write', 'autosave:list', 'autosave:read', 'ai:detect',
   'ai:setup-status', 'ai:ollama-start', 'ai:ollama-install', 'ai:ollama-pull', 'ai:ollama-pull-cancel', 'ai:builtin-download', 'ai:builtin-delete', 'ref:watch',
-  'mytools:list', 'mytools:write', 'mytools:delete', 'codelib:call',
+  'mytools:list', 'mytools:write', 'mytools:delete', 'codelib:call', 'feedback:save', 'feedback:list', 'feedback:share', 'feedback:export',
 ]);
 
 contextBridge.exposeInMainWorld('native', {
@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('native', {
     if (!CHANNELS.has(ch)) throw new Error(`Unknown channel ${ch}`);
     return ipcRenderer.invoke(ch, ...args);
   },
+  pathOf: (file) => webUtils.getPathForFile(file), // a file dropped on the page
   onBeforeClose: (fn) => ipcRenderer.on('app:before-close', () => fn()),
   onAccount: (fn) => ipcRenderer.on('account:status', (_, s) => fn(s)),
   onAiDelta: (fn) => ipcRenderer.on('ai:delta', (_, t, id) => fn(t, id)),

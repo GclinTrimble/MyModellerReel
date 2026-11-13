@@ -1040,13 +1040,13 @@ const PAGES = {
     await shot('A shorter toolbar: variants share a button; right-click (or click again) to choose');
     await clean();
     await click('#viewbar .drop', 0);
-    await shot('The view bar: standard views, navigation, zoom extents, panes, display and snaps');
+    await shot('Views: standard views, projection, wireframe and panes, for the pane you work in');
     await clean();
-    await click('#viewbar .drop', 3);
+    await click('#viewbar .drop', 2);
     await shot('Display: switch edges, x-ray, style… on and off; the list stays open');
     await clean();
-    await click('#viewbar .drop', 4);
-    await shot('Snaps: choose what the drawing tools snap to');
+    await click('#viewbar .drop', 1);
+    await shot('Navigate: on a touchpad, Alt + drag orbits and Alt + Shift + drag pans');
     await clean();
     const [x, y] = await js("const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(0, 1.5, 2)); return [Math.round(s.x), Math.round(s.y)];");
     await req('POST', '/api/input', { events: [{ type: 'mouseMove', x, y }, { type: 'mouseDown', x, y, button: 'right', clickCount: 1 }, { type: 'mouseUp', x, y, button: 'right', clickCount: 1 }, { type: 'wait', ms: 300 }] });
@@ -1353,6 +1353,32 @@ const PAGES = {
     await run('select', { ids: [b.id] });
     await panel('entity');
     await shot('Edit: its parameters; change a number and it rebuilds');
+  },
+  async 'teach-the-copilot'() {
+    await fresh();
+    await run('use_ai_model', { provider: 'ollama', base_url: 'http://127.0.0.1:11434', model: 'mistral' });
+    await camera([16, 10, 18], [0, 1.5, 0]);
+    await js("window.mmr.app.ai.reset(); window.mmr.app.ui.show('ai'); return 1;");
+    // a question from the copilot: the same ask_user it calls (not awaited here, the click answers it)
+    const msg = (c, t) => `window.mmr.app.ai.add(Object.assign(document.createElement('div'), { className: '${c}', textContent: ${JSON.stringify(t)} }));`;
+    await js(`${msg('msg user', 'Add a roof to the building')} window.mmr.app.reg.run('ask_user', { question: 'Which kind of roof?', choices: ['Pitched', 'Hip', 'Flat'] }); return 1;`);
+    await shot('The copilot asks when it is not sure: click an answer');
+    await js("[...document.querySelectorAll('.ask-card button')].find((b) => b.textContent === 'Hip').click(); return 1;");
+    // a form it fills for you
+    await js("window.mmr.app.reg.run('show_form', { command: 'create_box', values: { width: 10, height: 3, depth: 6, name: 'Building' } }); return 1;");
+    await shot('Or it opens a form with what it knows: adjust it and Run');
+    await js("document.querySelector('#modal .btn.primary, #modal button')?.click(); return 1;");
+    await wait(800);
+    await clean();
+    // its answer, rated: the same record the chat keeps for every turn
+    await js(`const ai = window.mmr.app.ai; ${msg('msg assistant', 'Done: a 10 × 6 × 3 m building with a hip roof.')} const t = { schema: 1, id: 'tdocs' + Date.now().toString(36), at: new Date().toISOString(), prompt: 'Add a roof to the building', steps: [{ name: 'create_box', args: { width: 10 } }], answer: 'Done.', provider: 'ollama', model: 'mistral', rating: null, comment: '', tags: [], shared: false }; ai.turns.push(t); ai.add(ai.feedbackRow(t)); return 1;`);
+    await js("const f = [...document.querySelectorAll('.feedback')].at(-1); f.querySelector('[aria-label=\"Not right\"]').click(); [...f.querySelectorAll('.chip')].find((c) => c.textContent === 'wrong size').click(); f.querySelector('textarea').value = 'The roof overhang should be 600 mm'; return 1;");
+    await shot('Not right? Say what should be different: it becomes training data');
+    await js("[...document.querySelectorAll('.feedback')].at(-1).querySelector('.fb-more .btn.primary').click(); return 1;");
+    await wait(600);
+    await js('window.mmr.app.ui.feedbackDialog(); return 1;');
+    await shot('AI › Copilot feedback: how it is doing, what goes wrong, export');
+    await clean();
   },
   async 'check-for-clashes'() {
     await fresh();

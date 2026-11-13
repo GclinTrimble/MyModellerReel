@@ -17,7 +17,7 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   `agent.js` (provider protocols and the turn loop shared by Plumb and `npm run eval`), `usd.js` (the .usda writer, live references and their overrides), `curves.js` (curves,
   sweep), `profiles.js` (sweep profile library), `derived.js` (generators and the live dependency graph), `csg.js`,
   `quantities.js`, `review.js` (design-review checks), `skills.js` (domain skills and MCP workflow prompts),
-  `materials.js` (the material catalogue), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
+  `materials.js` (the material catalogue), `takeoff.js` (surface materials painted on faces, their takeoff), `topology.js` (imprint, offset, repair, moving vertices), `components.js`
   (linked instances: `syncComponents` after every change, `stripForSave` / `hydrate` for files), `survey.js` (points,
   coordinates, codes, point files), `terrain.js` (TIN triangulation, sampling, cut/fill, alignments, corridors),
   `planar.js` (drawing over a flat face splits it), `textures.js` (the textured material library: maps and PNG), `learning.js` (learning modules, points, guided steps), `crs.js` (coordinate systems for a
@@ -65,6 +65,11 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
 
 - Metres, Y up. Mesh faces are CCW around their outward normal. Primitives have their pivot at the base centre.
 - Darkroom tokens only in CSS (`tokens.css` is the family file; app colours in `styles.css` `:root`).
+- Open formats and OGC standards (https://www.ogc.org/standards/) by default for anything that leaves the app or comes
+  in: GeoJSON (OGC API Features), CityGML / CityJSON, LandXML, IFC, EPSG CRS URNs, CSV with headers. A new import or
+  export follows the matching standard and says which one; the GUIDE in `commands.js` carries the same rule for the AIs.
+- Surface materials (`takeoff.js`): a library on `doc.surfaceMaterials`, paint per face on `e.fm` (kept on the entity,
+  so live surfaces keep it), colours written to `mesh.fc` by `syncPaint`; `fc[i] === 'none'` is a hidden face.
 - Icons: Phosphor class names (`ph ph-…`). Check a name exists in `node_modules/@phosphor-icons/web/src/regular/style.css`.
 
 ## Check your work

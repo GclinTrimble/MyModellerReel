@@ -284,7 +284,7 @@ test('drawings: a PDF sheet on screen, calibrated and georeferenced with the mou
   assert.equal((await ok('list_layers', { name: 'PDF Kerbs' }))[0].locked, true);
   await ok('select', { mode: 'none' });
   const vp = await w.locator('#viewport').boundingBox();
-  await w.mouse.move(vp.x + 30, vp.y + 30);
+  await w.mouse.move(vp.x + 80, vp.y + 30); // clear of the floating toolbar
   await w.mouse.down();
   await w.mouse.move(vp.x + vp.width - 30, vp.y + vp.height - 30, { steps: 4 });
   await w.mouse.up();

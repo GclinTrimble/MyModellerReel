@@ -57,6 +57,7 @@ function meshPart(o) {
   return { mesh, position: D.round3(origin), material: { color: color ? `#${color.getHexString()}` : D.DEFAULT_COLOR, opacity: m.opacity ?? 1, metalness: +((m.metalness ?? 0) * (metal ? metal[2] : 1)).toFixed(2), roughness: +((m.roughness ?? 0.85) * (rough ? rough[1] : 1)).toFixed(2) } };
 }
 const FILTERS = {
+  jsonl: [{ name: 'Training records (JSONL)', extensions: ['jsonl'] }],
   glb: [{ name: 'GLB 3D model', extensions: ['glb'] }],
   gltf: [{ name: 'glTF (JSON)', extensions: ['gltf'] }],
   obj: [{ name: 'Wavefront OBJ', extensions: ['obj'] }],
@@ -82,6 +83,8 @@ const FILTERS = {
   '3mf': [{ name: '3MF', extensions: ['3mf'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
+  takeoff: [{ name: 'CSV table', extensions: ['csv'] }, { name: 'GeoJSON (painted faces, OGC API Features)', extensions: ['geojson'] }, { name: 'JSON', extensions: ['json'] }],
+  matlib: [{ name: 'Material library', extensions: ['json', 'csv'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
 };
 
@@ -199,19 +202,40 @@ export class IO {
     }
     this.app.store.replace(D.newDoc());
     const r = this.insert(gltf.scene, base(path));
+    this.app.store.changed(); // the parts were added after replace() redrew the empty model
+    if (!r.parts) this.app.ui.toast(`${base(path)} has no meshes to show.`, 'warning');
     this.app.afterOpen(path.replace(/\.\w+$/, '.glb'));
     return { opened: path, ...r, editable: 'imported as shapes' };
   }
 
-  async importModel(path) {
+  /** Bring a model into this one. at: a world point its base centre lands on (a drop), else it is framed. */
+  async importModel(path, at = null) {
     path ||= await this.pick('models', false);
     if (!path) return { cancelled: true };
     const gltf = await this.load(path);
     this.app.store.checkpoint();
     const r = this.insert(gltf.scene, base(path));
     this.app.store.changed();
-    this.app.reg.run('zoom_extents', { ids: [r.group] });
+    if (!r.parts) this.app.ui.toast(`${base(path)} has no meshes to show.`, 'warning');
+    if (at && r.parts) {
+      await this.app.reg.run('move', { ids: [r.group], to: at.map((x) => Math.round(x * 1000) / 1000) });
+    } else this.app.reg.run('zoom_extents', { ids: [r.group] });
     return r;
+  }
+
+  /** Copy a model file into the component library (other formats are converted to GLB). */
+  async addToLibrary(path) {
+    path ||= await this.pick('models', false);
+    if (!path) return { cancelled: true };
+    let data;
+    if (/\.glb$/i.test(path)) data = await native().invoke('file:read', path);
+    else {
+      const gltf = await this.load(path);
+      data = await new GLTFExporter().parseAsync(gltf.scene, { binary: true });
+    }
+    const name = await native().invoke('library:add', base(path), data);
+    if (this.app.ui.tab === 'library') this.app.ui.renderDock();
+    return { added: name };
   }
 
   /** Convert any three.js object tree into editable shapes inside one group (world transforms baked in). */
@@ -401,6 +425,10 @@ export class IO {
   /** Local AI setup (#224): one call per step. */
   aiSetup(step, arg) {
     return native().invoke({ status: 'ai:setup-status', start: 'ai:ollama-start', install: 'ai:ollama-install', pull: 'ai:ollama-pull', download: 'ai:builtin-download', delete: 'ai:builtin-delete', cancel: 'ai:ollama-pull-cancel' }[step], arg);
+  }
+  /** Copilot feedback (#232): save | list | share | export. */
+  feedback(step, ...args) {
+    return native().invoke(`feedback:${step}`, ...args);
   }
   transcribe(input, lang) {
     return native().invoke('voice:transcribe', input, lang);

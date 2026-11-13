@@ -5,6 +5,7 @@ import { protocolOf, systemPrompt, runTurn, userMessage, newStats, shortArgs, sp
 import { crewRun, DEFAULT_AGENT } from '../core/agents.js';
 import { h, icon, infoTip } from './ui.js';
 import { sketchPad } from './sketch.js';
+import * as FB from '../core/feedback.js';
 
 /** A picture made small enough for a model to read cheaply (longest side 1568 px), as a data URL. */
 export function fitPicture(url, max = 1568) {
@@ -43,6 +44,7 @@ export class Assistant {
     this.queue = []; // tasks waiting while a turn runs: { text, done }
     this.history = [];
     this.turns = []; // the last turns' timings (ai_turns)
+    this.feedbackTurns = []; // this session's turns as training records (#232), newest last
     this.protocol = null;
     this.propose = localStorage.getItem('mymodellerreel.propose') === '1';
     this.el = this.build();
@@ -306,9 +308,71 @@ export class Assistant {
   }
   stop() {
     this.stopped = true;
+    this.pendingAsk?.(null);
     this.queue.splice(0).forEach((q) => q.done(''));
     window.native?.invoke('ai:abort', this.profile.id);
     this.agents.changed();
+  }
+
+  /** A question from the copilot (#233): choice buttons and / or a box; resolves with the answer (null: stopped). */
+  askUser({ question, choices = [], allowText = true }) {
+    this.app.ui.show('ai');
+    return new Promise((resolve) => {
+      const done = (answer) => {
+        this.pendingAsk = null;
+        card.querySelectorAll('button, input').forEach((b) => (b.disabled = true));
+        if (answer != null) this.add(h('div.msg.user', {}, answer));
+        resolve(answer);
+      };
+      const typed = () => box.value.trim() && done(box.value.trim());
+      const box = allowText ? h('input', { placeholder: 'Your answer…', 'aria-label': 'Your answer', onkeydown: (e) => e.key === 'Enter' && typed() }) : null;
+      const card = h(
+        'div.ask-card',
+        { role: 'group', 'aria-label': 'The copilot asks' },
+        h('div.row', {}, icon('chat-circle-dots'), h('strong.grow', {}, question)),
+        choices.length ? h('div.row.wrap', {}, ...choices.map((c) => h('button.btn.sm', { onclick: () => done(c) }, c))) : null,
+        box ? h('div.row', {}, box, h('button.btn.sm.primary', { onclick: typed }, 'Answer')) : null,
+      );
+      this.pendingAsk?.(null);
+      this.pendingAsk = done;
+      this.add(card);
+      (box || card.querySelector('button'))?.focus();
+    });
+  }
+
+  /** Rate a turn (#232): a thumb saves it at once; tags and what should be different can follow. */
+  feedbackRow(turn) {
+    const app = this.app;
+    const tags = new Set();
+    let rating = null;
+    const status = h('span.small.muted', { role: 'status' });
+    const comment = h('textarea', { rows: 2, placeholder: 'What should be different? (optional)', 'aria-label': 'What should be different' });
+    const save = async (more) => {
+      try {
+        const r = await app.reg.run('rate_ai_turn', { turn: turn.id, rating, comment: comment.value.trim(), tags: [...tags] });
+        status.textContent = r.shared ? 'Thanks: saved and shared.' : r.share_error ? `Saved on this PC (not shared: ${r.share_error})` : 'Thanks: saved on this PC.';
+        if (more) extra.hidden = true;
+      } catch (e) {
+        status.textContent = e.message;
+      }
+    };
+    const thumb = (r, ic, label) =>
+      h('button.icon-btn.sm.fb-thumb', { title: label, 'aria-label': label, 'aria-pressed': 'false', onclick: () => {
+        rating = r;
+        row.querySelectorAll('.fb-thumb').forEach((b) => b.setAttribute('aria-pressed', String(b.title === label)));
+        extra.hidden = false;
+        void save(false);
+      } }, icon(ic));
+    const share = h('input', { type: 'checkbox', checked: !!this.settings.shareFeedback, onchange: (e) => app.reg.run('share_ai_feedback', { on: e.target.checked }).catch((err) => app.ui.toast(err.message, 'danger')) });
+    const extra = h(
+      'div.fb-more',
+      { hidden: true },
+      h('div.row.wrap', {}, ...FB.TAGS.map((t) => h('button.chip.sm', { 'aria-pressed': 'false', onclick: (e) => (tags.has(t) ? tags.delete(t) : tags.add(t), e.currentTarget.setAttribute('aria-pressed', String(tags.has(t)))) }, t))),
+      comment,
+      h('div.row', {}, h('label.small.row', { title: 'Rated answers, with the request and the model, upload to the MyStudioReel suite under your account to train a better modelling copilot.' }, share, 'Share to improve the copilot'), h('span.grow'), h('button.btn.sm.primary', { onclick: () => save(true) }, 'Send')),
+    );
+    const row = h('div.feedback', { role: 'group', 'aria-label': 'Rate this answer' }, h('div.row', {}, h('span.small.muted', {}, 'Was this right?'), thumb('good', 'thumbs-up', 'Good answer'), thumb('bad', 'thumbs-down', 'Not right'), status), extra);
+    return row;
   }
 
   add(node) {
@@ -405,6 +469,10 @@ export class Assistant {
     const turnLength = this.history.length;
     (ctx.turnStarts ||= []).push(app.store.doc.journal?.length || 0); // "save what we just did as a tool" (#242)
     const had = new Set(app.store.doc.entities.map((e) => e.id));
+    // the turn as a training record once rated (#232)
+    const before = structuredClone(app.store.doc);
+    const steps = [];
+    const answers = [];
     // text streams into a live bubble, reasoning (<think>) folded above it with a live preview; the final text
     // replaces the streamed one so nothing shows twice
     this.delta = (t) => {
@@ -447,6 +515,7 @@ export class Assistant {
           stopped: () => this.stopped,
           onThinking: (on) => on && say('Thinking…'),
           onText: (t) => {
+            answers.push(t);
             reply = t;
             if (!this.live) return this.add(h('div.msg.assistant', {}, t));
             this.live.lastChild.textContent = t;
@@ -459,11 +528,15 @@ export class Assistant {
             say(`Running ${c.name}…`);
             tick();
             const args = shortArgs(c.args);
-            return this.add(h('details.toolcall.running', {}, h('summary', { title: JSON.stringify(c.args) }, h('span.tc-icon', { 'aria-hidden': 'true' }), h('b', {}, c.name), args ? ` ${args}` : '')));
+            steps.push({ name: c.name, args: c.args });
+            const row = this.add(h('details.toolcall.running', {}, h('summary', { title: JSON.stringify(c.args) }, h('span.tc-icon', { 'aria-hidden': 'true' }), h('b', {}, c.name), args ? ` ${args}` : '')));
+            row.step = steps.at(-1);
+            return row;
           },
           onResult: (row, c, result, isError, ms) => {
             row.classList.remove('running');
             row.classList.add(isError ? 'err' : 'ok');
+            if (row.step) isError ? (row.step.error = result?.error || result) : (row.step.result = result);
             const sum = row.querySelector('summary');
             if (isError) sum.append(h('span.tc-err', {}, ` · ${String(result.error).slice(0, 140)}`));
             sum.append(h('span.muted', {}, ` · ${ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`}`));
@@ -505,6 +578,11 @@ export class Assistant {
       // what it drafted, ready to change by hand (#225)
       const made = app.store.doc.entities.filter((e) => !had.has(e.id) && !e.parent && e.type !== 'point');
       if (made.length) this.add(this.madeList(made));
+      if (steps.length || reply) {
+        const turn = FB.turnRecord({ prompt: typed, steps, answer: answers.join('\n'), before, after: app.store.doc, provider: this.provider(), model: this.modelName(), app_version: app.info?.version || '', seconds: (performance.now() - t0) / 1000, tokens: { in: stats.tokens_in, out: stats.tokens_out }, selection: [...(app.selection || [])] });
+        this.feedbackTurns = [...this.feedbackTurns.slice(-19), turn];
+        this.add(this.feedbackRow(turn));
+      }
       if (proposing && app.store.proposalDiff()?.empty) app.store.acceptProposal(); // nothing to review
       app.store.changed();
       this.busy = false;

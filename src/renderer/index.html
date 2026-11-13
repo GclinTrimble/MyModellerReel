@@ -45,10 +45,11 @@
     </header>
 
     <main class="workspace">
-      <nav class="toolbar" id="toolbar" aria-label="Tools"></nav>
       <section class="stage">
         <div class="viewport-wrap">
           <canvas id="viewport" tabindex="0" aria-label="3D model view"></canvas>
+          <nav class="toolbar" id="toolbar" aria-label="Tools" aria-orientation="vertical"></nav>
+          <div class="tabs" id="dock-tabs" role="tablist" aria-label="Panels" aria-orientation="vertical"></div>
           <canvas id="label-layer" aria-hidden="true"></canvas>
           <canvas id="caption-layer" aria-hidden="true"></canvas>
           <div id="snap-label" hidden></div>
@@ -61,7 +62,6 @@
         <section class="timeline" id="timeline" hidden></section>
       </section>
       <aside class="dock">
-        <div class="tabs" id="dock-tabs" role="tablist"></div>
         <div class="dock-body" id="dock-body"></div>
       </aside>
     </main>

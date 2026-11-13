@@ -38,6 +38,21 @@ dates. Use realistic sizes: an excavator ~10 × 3 × 3 m, a truck ~8 × 2.5 × 3
       { title: 'Truck along the road', code: "await api.animate_along_path({ target: 'Truck', path: 'Road centre', start: 0, end: 8 });" },
     ],
   },
+  takeoff: {
+    label: 'Surface materials and takeoff',
+    description: 'Paint asphalt, turf, gravel, concrete on surfaces; areas, volumes, weights, costs',
+    prompt: `Domain: material takeoff. Surface materials (a library with code, colour, thickness m, density kg/m³, cost
+per m²) are painted on the faces of a surface or mesh with paint_surface: inside a closed boundary curve (car parks,
+lawns), fill from a seed face stopped by breaklines (kerbs, edges of seal) and by other paint, a brush (at + radius),
+or all faces. Paint the big area first (all → Turf), then the details on top. material_takeoff gives 3D area, plan
+area, volume (area × thickness), weight (× density) and cost; give a path for CSV, JSON or GeoJSON (OGC API Features
+encoding, project coordinates, EPSG). Typical layers: asphalt 0.04–0.1 m at 2350 kg/m³, crushed rock base 0.15–0.3 m
+at 2100, concrete 0.1–0.2 m at 2400, topsoil 0.1–0.15 m at 1600, turf 0.03 m. Set real values with
+define_surface_material before reporting. show_surface_materials hides or isolates a material to check the paint.`,
+    examples: [
+      { title: 'Turf everywhere, asphalt in the car park, takeoff', code: "await api.paint_surface({ id: 'Site', material: 'Turf', all: true });\nawait api.paint_surface({ id: 'Site', material: 'Asphalt', inside: 'Car park boundary' });\nreturn await api.material_takeoff({ format: 'csv' });" },
+    ],
+  },
   survey: {
     label: 'Survey and COGO',
     description: 'Field book calculations: inverses, traverses, intersections, stations and offsets, curves, parcel areas, deed mapchecks',

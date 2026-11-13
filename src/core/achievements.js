@@ -2,7 +2,7 @@
 // the model or sent anywhere) and shown back as numbers to be proud of and tracks with tiers. Pure, Node-tested.
 
 export const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum'];
-const READS = /^(list_|get_|query_)|^(select|screenshot|measure|bounds_of|raycast|what_is_at|model_info|find_free_space|complete_lesson|my_insights|ai_setup_status|undo|redo|run_script)$/;
+const READS = /^(list_|get_|query_)|^(select|screenshot|measure|bounds_of|raycast|what_is_at|model_info|find_free_space|complete_lesson|my_insights|ai_setup_status|undo|redo|run_script|ask_user|show_form|show_panel|pick_in_view|list_ai_feedback|export_ai_feedback|share_ai_feedback)$/;
 /** By hand, a command Plumb ran would have taken about this long (s): the "time saved" estimate. */
 export const SECONDS_PER_CALL = 30;
 const IDLE = 5 * 60e3; // a gap longer than this is not modelling time
@@ -23,6 +23,7 @@ export const TRACKS = [
   { id: 'director', label: 'Director', icon: 'film-slate', what: 'animations and videos', tiers: [1, 10, 50, 200], value: sumOf(['render_video', 'build_sequence', 'animate', 'add_keyframe', 'turntable']) },
   { id: 'sharer', label: 'Sharer', icon: 'share-network', what: 'saves and exports', tiers: [1, 10, 50, 200], value: sumOf(['save', 'export', 'export_web_viewer', 'export_points']) },
   { id: 'pilot', label: 'AI pilot', icon: 'sparkle', what: 'requests to Plumb', tiers: [1, 10, 50, 250], value: (s) => s.ai?.requests || 0 },
+  { id: 'trainer', label: 'Trainer', icon: 'thumbs-up', what: 'copilot answers rated (teaching it)', tiers: [1, 10, 50, 200], value: sumOf(['rate_ai_turn']) },
   { id: 'explorer', label: 'Explorer', icon: 'compass', what: 'different commands used', tiers: [10, 25, 50, 100], value: (s) => Object.keys(s.commands || {}).length },
   { id: 'regular', label: 'Regular', icon: 'flame', what: 'days in a row (longest streak)', tiers: [2, 5, 10, 30], value: (s) => streaks(s.days).longest },
   { id: 'learner', label: 'Learner', icon: 'graduation-cap', what: 'lessons and tutorials completed', tiers: [1, 5, 10, 25], value: (s, l = {}) => (l.lessons || 0) + (l.tutorials || 0) },
