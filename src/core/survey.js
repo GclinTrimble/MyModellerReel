@@ -3,6 +3,7 @@
 // their full-precision Northing/Easting/Elevation, so real-world coordinates (N 5 400 000) never reach 32-bit floats.
 // Pure module, Node-tested.
 import * as D from './document.js';
+import * as DR from './drafting.js';
 
 export const UNITS = { m: 1, ft: 0.3048, usft: 1200 / 3937 };
 
@@ -236,6 +237,22 @@ export const isLinework = (e) => e.type === 'linework';
 
 /** The (still existing) point entities of a linework, in order. */
 export const lineworkPoints = (doc, l) => l.line.points.map((id) => D.getEntity(doc, id)).filter(Boolean);
+
+/**
+ * A linework's offset lines, worked out from its points every time (so they follow them): each { h, v } is a parallel
+ * line h m right (+) or left (−) of its direction seen from above, v m up (+) or down (−). Returns [{ ...offset, path }].
+ */
+export function lineworkOffsets(doc, l) {
+  const offs = l.line?.offsets || [];
+  const path = offs.length ? lineworkPath(doc, l) : [];
+  const closed = !!l.line?.closed && path.length > 3;
+  const ring = closed ? path.slice(0, -1) : path;
+  if (ring.length < 2) return [];
+  return offs.map((o) => {
+    const q = DR.lift(DR.offset(DR.flat(ring), -o.h, closed), ring, closed).map((p) => [p[0], p[1] + (o.v || 0), p[2]]);
+    return { ...o, path: closed ? [...q, q[0]] : q };
+  });
+}
 
 /** Local points of a linework (smooth lines densified as a Catmull-Rom curve at roughly `chord` metres). */
 export function lineworkPath(doc, l, chord = 0.5) {

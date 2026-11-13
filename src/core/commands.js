@@ -1812,7 +1812,7 @@ function registerCore(reg, ctx) {
     if (a.action === 'append') L.points.push(...ids);
     else if (a.action === 'insert') L.points.splice(a.at ?? 0, 0, ...ids);
     else if (a.action === 'remove') L.points = L.points.filter((x) => !ids.includes(x));
-    else if (a.action === 'reverse') L.points.reverse();
+    else if (a.action === 'reverse') L.points.reverse(), L.offsets?.forEach((o) => (o.h = -o.h)); // offsets stay on their side
     else if (a.action === 'set') L.points = ids;
     else if (a.action === 'smooth') L.smooth = a.smooth !== false;
     else if (a.action === 'split') {
@@ -1830,6 +1830,15 @@ function registerCore(reg, ctx) {
     }
     if (L.points.length < 2) throw new Error('A line needs at least 2 points.');
     return summary(doc, l);
+  }, true);
+
+  def('terrain', 'set_line_offsets', "Offset lines that follow a breakline / line: each h m right (+) or left (−) of its direction seen from above and v m up (+) or down (−), e.g. a kerb back h 0.15 v 0.15, a ditch bottom h −2 v −0.5. Several at once; they rebuild when its points move, and a breakline's offsets go into the surfaces built on it (surface: false leaves one out). An empty list removes them.", obj({ id, offsets: { type: 'array', description: 'the whole list (replaces the old one)', items: obj({ h: num('horizontal offset, m: + right, − left'), v: num('vertical offset, m: + up, − down (default 0)'), name: str('label, e.g. "Back of kerb"'), surface: bool('into the surface when the line is a breakline (default true)') }, ['h']) } }, ['id', 'offsets']), (a) => {
+    const [l] = D.resolve(ctx.doc, a.id);
+    if (!S.isLinework(l)) throw new Error(`${l.name} is not linework.`);
+    for (const o of a.offsets) if (!Number.isFinite(o.h) || (o.v !== undefined && !Number.isFinite(o.v))) throw new Error('Each offset needs h (and v) in metres.');
+    if (a.offsets.length) l.line.offsets = a.offsets.map((o) => ({ h: o.h, v: o.v || 0, ...(o.name ? { name: o.name } : {}), ...(o.surface === false ? { surface: false } : {}) }));
+    else delete l.line.offsets;
+    return { ...summary(ctx.doc, l), offsets: S.lineworkOffsets(ctx.doc, l).map(({ path, ...o }) => ({ ...o, start: D.round3(path[0]), end: D.round3(path.at(-1)) })) };
   }, true);
 
   const surfaceParams = (a) => {

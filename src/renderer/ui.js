@@ -2353,6 +2353,7 @@ export class UI {
         {},
         h('div.overline', {}, `${e.line.kind}${e.line.boundary ? ` · ${e.line.boundary}` : ''} · ${e.line.points.length} points`),
         h('div.row.wrap', {}, h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'reverse' }) }, icon('arrows-left-right'), 'Reverse'), h('button.btn', { onclick: () => run('edit_linework', { id: e.id, action: 'smooth', smooth: !e.line.smooth }) }, icon('bezier-curve'), e.line.smooth ? 'Straight' : 'Smooth')),
+        this.lineOffsetsEditor(e),
       );
     if (e.derived?.report && e.mesh) {
       const tri = e.mesh.f.length;
@@ -2639,6 +2640,24 @@ export class UI {
         ),
       ),
     );
+  }
+
+  /** A linework's offset lines (H right +, V up +), edited as rows and applied in one set_line_offsets. */
+  lineOffsetsEditor(e) {
+    const rows = (e.line.offsets || []).map((o) => ({ ...o }));
+    const box = h('div.form-stack', {});
+    const num = (o, k, label) => h('input', { type: 'number', step: '0.01', value: o[k] ?? 0, 'aria-label': label, style: { width: '58px' }, oninput: (ev) => (o[k] = +ev.target.value) });
+    const draw = () =>
+      box.replaceChildren(
+        h('div.overline', {}, 'Offsets · H right +, V up +'),
+        rows.length
+          ? h('table.qty', {}, h('tr', {}, h('th', {}, 'H (m)'), h('th', {}, 'V (m)'), h('th', {}, 'Label'), h('th', { title: 'In the surface' }, 'TIN'), h('th', {})),
+              rows.map((o, i) => h('tr', {}, h('td', {}, num(o, 'h', `Offset ${i + 1} horizontal`)), h('td', {}, num(o, 'v', `Offset ${i + 1} vertical`)), h('td', {}, h('input', { value: o.name || '', placeholder: 'Back of kerb', 'aria-label': `Offset ${i + 1} label`, style: { width: '100%', minWidth: '50px' }, oninput: (ev) => (o.name = ev.target.value) })), h('td', {}, h('input', { type: 'checkbox', checked: o.surface !== false, 'aria-label': `Offset ${i + 1} in the surface`, onchange: (ev) => (o.surface = ev.target.checked) })), h('td', {}, h('button.icon-btn.sm', { title: 'Remove', 'aria-label': `Remove offset ${i + 1}`, onclick: () => (rows.splice(i, 1), draw()) }, icon('trash'))))))
+          : h('p.small.muted', {}, 'No offsets. Add one for a kerb back, a ditch bottom or an edge of pavement: it follows the line, and a breakline\'s offsets go into its surfaces.'),
+        h('div.row.wrap', {}, h('button.btn.sm', { onclick: () => (rows.push({ h: rows.length ? rows.at(-1).h + 1 : 1, v: 0 }), draw()) }, icon('plus'), 'Add offset'), h('button.btn.sm.primary', { onclick: () => this.app.reg.run('set_line_offsets', { id: e.id, offsets: rows }).catch((err) => this.toast(err.message, 'danger')) }, icon('check'), 'Apply')),
+      );
+    draw();
+    return box;
   }
 
   /** Library: sweep profiles (#135), recipes and macros (#93, #92), plugins. */

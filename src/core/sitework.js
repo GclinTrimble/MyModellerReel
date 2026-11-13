@@ -77,6 +77,8 @@ export function buildSurface(doc, p) {
   for (const l of [...src.breaklines, ...src.boundaries]) {
     const path = l.line ? S.lineworkPath(doc, l) : D.curvePoints(doc, l, 8);
     constrain(path, l.id);
+    // a breakline's offsets (a kerb back, a ditch bottom) are breaklines of the surface too, at their own heights
+    if (l.line?.kind === 'breakline') for (const o of S.lineworkOffsets(doc, l)) if (o.surface !== false) constrain(o.path, l.id);
     if (l.line?.kind === 'boundary') (l.line.boundary === 'hole' ? holes : outer).push(path.map((q) => [q[0], q[2]]));
   }
   // a drawn outline and voids in plan (#212), next to the boundaries made of points: each ring is draped on the

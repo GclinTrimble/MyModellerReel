@@ -16,6 +16,7 @@ import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
 import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
 import { invert as invertAffine } from '../core/underlay.js';
 import { viewDirection } from '../core/layout.js';
+import { lineworkOffsets } from '../core/survey.js';
 
 const D2R = Math.PI / 180;
 export const AXIS_COLORS = { x: 0xd2453c, y: 0x2f6fb8, z: 0x3c9a4e }; // red, blue (up), green
@@ -176,6 +177,7 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
       const pts = e.line.points.map((id) => doc.entities.find((x) => x.id === id)).filter(Boolean).map((p) => new THREE.Vector3(...p.position));
       if (e.line.closed && pts.length > 2) pts.push(pts[0]);
       o = styledLine(doc, e, pts.map((p) => p.toArray()), clipping, fat);
+      for (const off of lineworkOffsets(doc, e)) o.add(styledLine(doc, e, off.path, clipping, fat)); // they follow its points
       o.userData.isCurve = true;
     } else if (e.curve) {
       const sp = samplePoints(e.curve);
