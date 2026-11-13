@@ -1,5 +1,6 @@
 // Eval tasks: a prompt, an optional starting scene, a score from the resulting scene (0..1), and a reference solution
 // (the calls a good model would make; the "mock" model replays it, which also checks that every scorer can reach 1).
+import fs from 'node:fs';
 import * as D from '../src/core/document.js';
 
 const ents = (doc) => doc.entities;
@@ -125,3 +126,72 @@ export const TASKS = [
     solution: [['select_where', { name: 'Window*' }], ['set_metadata', { values: { role: 'window' } }], ['set_material', { color: '#b8dbe2' }]],
   },
 ];
+
+// Civil tasks: a gently sloping existing ground of survey points (N, E, Z) to work on.
+const GROUND = [];
+for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) GROUND.push(['add_point', { name: `G${i}${j}`, n: 1000 + i * 30, e: 5000 + j * 30, z: 10 + i * 0.6 + j * 0.3, code: 'NS' }]);
+const SURFACE = [...GROUND, ['create_surface', { name: 'Existing ground' }]];
+const gen = (doc, g) => ents(doc).filter((e) => e.derived?.generator === g);
+const yOf = (doc, z) => z - (doc.geo?.base?.[2] || 0);
+
+TASKS.push(
+  {
+    name: 'survey-surface',
+    prompt: 'Make an existing ground surface called "Existing ground" from all the survey points.',
+    setup: GROUND,
+    check: (doc) => {
+      const s = gen(doc, 'surface')[0];
+      return checks([['a TIN surface', !!s], ['named Existing ground', s?.name === 'Existing ground'], ['built from the 16 points', s?.derived?.report?.points === 16]]);
+    },
+    solution: [['create_surface', { name: 'Existing ground' }]],
+  },
+  {
+    name: 'pipe-trench',
+    prompt: 'Survey points MH1 and MH2 are manholes. Dig a trench from MH1 to MH2 cut from "Existing ground": 1.2 m deep at MH1, falling at 1 %, 0.6 m bottom width, 1:1 side slopes. Name it "Trench MH1-MH2".',
+    setup: [...SURFACE, ['add_point', { name: 'MH1', n: 1030, e: 5015, z: 10.75, code: 'MH' }], ['add_point', { name: 'MH2', n: 1030, e: 5065, z: 11.25, code: 'MH' }]],
+    check: (doc) => {
+      const t = byName(doc, /trench/i).find((e) => e.mesh);
+      const b = t && D.worldBox(doc, t);
+      return checks([['a trench', !!t], ['named Trench MH1-MH2', t?.name === 'Trench MH1-MH2'], ['about 50 m long', !!b && close(Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2]), 50, 0.15)], ['bottom at the 1 % invert', !!b && close(b.min[1], yOf(doc, 10.75 - 1.2 - 0.5), 0.02)]]);
+    },
+    solution: [['design_trench', { from: 'MH1', to: 'MH2', depth: 1.2, grade: 1, bottom: 0.6, side_slope: 1, surface: 'Existing ground', name: 'Trench MH1-MH2' }]],
+  },
+  {
+    name: 'road-corridor',
+    prompt: 'Design an access road through points G00, G11 and G33 (a 60 m radius curve at G11) following "Existing ground": two 3.5 m lanes at 2.5 % crossfall, 1 m shoulders at 4 %, cut batters 1:2 and fill batters 1:3. Call the corridor "Access Road".',
+    setup: SURFACE,
+    check: (doc) => {
+      const c = gen(doc, 'corridor')[0];
+      const t = c?.derived?.params?.template || {};
+      const lanes = t.lanes || [];
+      return checks([['a corridor', !!c], ['named Access Road', /access road/i.test(c?.name || '')], ['3.5 m lanes at 2.5 %', lanes.length > 0 && lanes.every((l) => close(l.width, 3.5) && close(l.crossfall, 2.5))], ['1 m shoulders at 4 %', close(t.shoulder?.width ?? 0, 1) && close(t.shoulder?.crossfall ?? 0, 4)], ['batters 2 and 3', close(t.cut_slope ?? 0, 2) && close(t.fill_slope ?? 0, 3)], ['an alignment with the curve', ents(doc).some((e) => e.alignment && (e.alignment.radii || []).some((r) => close(r, 60)))]]);
+    },
+    solution: [
+      ['create_alignment', { name: 'Access Road centreline', points: ['G00', 'G11', 'G33'], radii: [0, 60, 0], surface: 'Existing ground' }],
+      ['create_corridor', { alignment: 'Access Road centreline', surface: 'Existing ground', name: 'Access Road', template: { lanes: [{ width: 3.5, crossfall: 2.5 }, { width: 3.5, crossfall: 2.5 }], shoulder: { width: 1, crossfall: 4 }, cut_slope: 2, fill_slope: 3 } }],
+    ],
+  },
+  {
+    name: 'level-cut-fill',
+    prompt: 'Work out the earthworks to level "Existing ground" at elevation 11.0 m, with a bulking factor of 1.25. Show the cut/fill map.',
+    setup: SURFACE,
+    check: (doc) => {
+      const m = ents(doc).find((e) => e !== byName(doc, /^existing ground$/i)[0] && e.mesh && /cut|fill/i.test(e.name));
+      return checks([['a cut/fill map', !!m]]);
+    },
+    solution: [['cut_fill', { existing: 'Existing ground', elevation: 11, bulking: 1.25 }]],
+  },
+  {
+    name: 'survey-rod-bust',
+    prompt: 'I imported my kerb pickup job. Check it for field mistakes and fix what you find.',
+    setup: [['import', { text: fs.readFileSync(new URL('../tests/fixtures/jxl/kerb-pickup.jxl', import.meta.url), 'utf8'), format: 'jxl' }]],
+    check: (doc) => {
+      const book = ents(doc).find((e) => e.survey)?.survey;
+      const p3 = book?.observations.find((o) => o.name === 'P3');
+      const others = book?.observations.filter((o) => o.kind === 'ts' && o.name !== 'P3') || [];
+      const z = ents(doc).find((e) => e.name === 'P3')?.point?.z;
+      return checks([['P3 rod height fixed to 1.5 m', !!p3 && close(p3.th, 1.5, 0.001)], ['P3 moved up 0.5 m', z !== undefined && close(z, 10.1, 0.002)], ['the other shots untouched', others.every((o) => !Object.keys(o.edits).length)]]);
+    },
+    solution: [['review_survey', {}], ['edit_survey_observations', { names: ['P3'], target_height: 1.5 }]],
+  },
+);

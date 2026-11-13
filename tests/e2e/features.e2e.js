@@ -119,38 +119,38 @@ test('the copilot end to end (stubbed provider): routed tools, a proposal to acc
   // The provider is stubbed in the main process: a scripted local model that calls two tools, then answers.
   await app.evaluate(({ ipcMain }) => {
     const script = [
-      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_box', arguments: { width: 2, height: 1, depth: 1, name: 'AI box' } } }] },
-      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_sphere', arguments: '{"radius": "0.3", "name": "AI ball"}' } }] },
-      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'place_on', arguments: { ids: ['AI ball'], target: 'AI box' } } }] },
-      { role: 'assistant', content: 'Done: a box with a ball on it.' },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_box', arguments: { width: 2, height: 1, depth: 1, name: 'AI pit' } } }] },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'create_cylinder', arguments: '{"radius": "0.3", "height": "0.05", "name": "AI lid"}' } }] },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'place_on', arguments: { ids: ['AI lid'], target: 'AI pit' } } }] },
+      { role: 'assistant', content: 'Done: a stormwater pit with its lid.' },
     ];
     globalThis.requests = [];
     ipcMain.removeHandler('ai:chat');
     ipcMain.handle('ai:chat', (_, body) => {
       globalThis.requests.push(body);
-      if (body.messages.some((m) => m.images)) return { provider: 'ollama', data: { message: { role: 'assistant', content: '- AI ball sits on AI box: good.' } } };
+      if (body.messages.some((m) => m.images)) return { provider: 'ollama', data: { message: { role: 'assistant', content: '- AI lid sits on AI pit: good.' } } };
       return { provider: 'ollama', data: { message: script.shift() } };
     });
   });
-  await ok('use_skill', { name: 'furniture' });
+  await ok('use_skill', { name: 'drainage' });
   await w.click('[data-tab="ai"]');
   await w.evaluate(() => window.mmr.app.ai.setPropose(true));
-  await w.fill('.chat-input textarea', 'Put a ball on a box');
+  await w.fill('.chat-input textarea', 'Put a stormwater pit 2 m by 1 m, 1 m deep, with a 600 mm lid on top');
   await w.keyboard.press('Enter');
-  await w.locator('.msg.assistant', { hasText: 'Done: a box with a ball on it.' }).waitFor();
+  await w.locator('.msg.assistant', { hasText: 'Done: a stormwater pit with its lid.' }).waitFor();
   const reqs = await app.evaluate(() => globalThis.requests);
   assert.ok(reqs[0].tools.length <= 18, 'a small model gets a routed tool list');
-  assert.ok(reqs[0].messages[0].content.includes('Domain: furniture'), 'the skill is in the system prompt');
+  assert.ok(reqs[0].messages[0].content.includes('Domain: stormwater'), 'the skill is in the system prompt');
   const bar = w.locator('#proposal-bar');
   await bar.getByText('2 new').waitFor();
   await bar.getByRole('button', { name: 'Accept' }).click();
-  const ball = await ok('get_entity', { id: 'AI ball' });
-  assert.equal(ball.min[1], 1);
+  const lid = await ok('get_entity', { id: 'AI lid' });
+  assert.equal(lid.min[1], 1);
   assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length > 0), true);
   await w.evaluate(() => window.mmr.app.ai.setPropose(false));
   const review = await ok('review_model', { include_images: true });
   assert.equal(review.images.length, 4);
-  assert.match(review.critique, /sits on AI box/);
+  assert.match(review.critique, /sits on AI pit/);
 });
 
 test('modelling depth with the mouse: a rectangle drawn on a face imprints it, the Arc tool draws an arc; components share geometry', async () => {
@@ -1242,4 +1242,81 @@ test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens i
   assert.equal(await hidden(), true);
   await w.locator('#viewbar button[aria-label="Side panel (Ctrl+B)"]').click();
   assert.equal(await hidden(), false);
+});
+
+test('field book (#257–#262): a Trimble job, Check the survey, Fix, a rod height typed in a cell; photos stay with the job', async () => {
+  await ok('new_model');
+  const r = await ok('import', { path: path.resolve('tests/fixtures/jxl/kerb-pickup.jxl') });
+  assert.equal(r.created['survey setups'], 2);
+  await w.click('[data-tab="survey"]');
+  await w.locator('.survey-views button', { hasText: 'Field book' }).click();
+  await w.locator('#dock-body', { hasText: 'Station S1' }).waitFor();
+  await w.locator('#dock-body button', { hasText: 'Check the survey' }).click();
+  const finding = w.locator('.fb-findings .card', { hasText: 'P3' });
+  await finding.waitFor();
+  await finding.locator('button', { hasText: 'Fix' }).click();
+  await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'P3').point.z - 10.1) < 1e-6);
+  // the shots under a setup, and a rod height typed in its cell
+  await w.locator('.fb-setup', { hasText: 'Station S1' }).getByRole('button', { name: 'Show the shots' }).click();
+  const cell = w.locator('input.cell[aria-label="Rod height of P4"]');
+  await cell.fill('1.4');
+  await cell.press('Enter');
+  await cell.blur();
+  await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'P4').point.z - 10.2) < 1e-6);
+  assert.ok(await w.locator('td.edited input.cell[aria-label="Rod height of P4"]').count(), 'the edited cell is marked');
+  const edits = await ok('list_survey', { edits: true });
+  assert.deepEqual(edits.edits.map((e) => e.label.split(' ')[0]).sort(), ['P3', 'P4']);
+  await w.locator('#dock-body button', { hasText: 'Undo all edits' }).click();
+  await w.waitForFunction(() => Math.abs(window.mmr.doc.entities.find((e) => e.name === 'P3').point.z - 9.6) < 1e-6);
+  // the field book is in the saved design
+  assert.ok(await w.evaluate(() => JSON.stringify(window.mmr.doc).includes('"backsights"')));
+});
+
+test('map layers (#264–#267): a WMTS and a WFS layer from services stubbed in the main process stream under the model', async () => {
+  await ok('new_model');
+  await app.evaluate(({ ipcMain }) => {
+    // a 1 × 1 orange PNG for every tile, the capabilities, and two parcels around the base point (lon 172.6, lat −43.53)
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+    const wmts = '<?xml version="1.0"?><Capabilities xmlns="http://www.opengis.net/wmts/1.0" xmlns:ows="http://www.opengis.net/ows/1.1" version="1.0.0"><ows:ServiceIdentification><ows:Title>Test imagery</ows:Title></ows:ServiceIdentification><Contents><Layer><ows:Title>Aerial</ows:Title><ows:Identifier>aerial</ows:Identifier><Style isDefault="true"><ows:Identifier>default</ows:Identifier></Style><Format>image/png</Format><TileMatrixSetLink><TileMatrixSet>WebMercatorQuad</TileMatrixSet></TileMatrixSetLink><ResourceURL format="image/png" resourceType="tile" template="https://tiles.test/aerial/{TileMatrix}/{TileCol}/{TileRow}.png"/></Layer><TileMatrixSet><ows:Identifier>WebMercatorQuad</ows:Identifier><ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>' +
+      Array.from({ length: 21 }, (_, z) => `<TileMatrix><ows:Identifier>${z}</ows:Identifier><ScaleDenominator>${559082264.0287178 / 2 ** z}</ScaleDenominator><TopLeftCorner>-20037508.3427892 20037508.3427892</TopLeftCorner><TileWidth>256</TileWidth><TileHeight>256</TileHeight><MatrixWidth>${2 ** z}</MatrixWidth><MatrixHeight>${2 ** z}</MatrixHeight></TileMatrix>`).join('') +
+      '</TileMatrixSet></Contents></Capabilities>';
+    const wfs = '<?xml version="1.0"?><WFS_Capabilities version="2.0.0" xmlns="http://www.opengis.net/wfs/2.0" xmlns:ows="http://www.opengis.net/ows/1.1"><ows:ServiceIdentification><ows:Title>Cadastre</ows:Title></ows:ServiceIdentification><ows:OperationsMetadata><ows:Operation name="GetFeature"><ows:Parameter name="outputFormat"><ows:AllowedValues><ows:Value>application/json</ows:Value></ows:AllowedValues></ows:Parameter></ows:Operation></ows:OperationsMetadata><FeatureTypeList><FeatureType><Name>cad:parcels</Name><Title>Parcels</Title><DefaultCRS>urn:ogc:def:crs:OGC:1.3:CRS84</DefaultCRS></FeatureType></FeatureTypeList></WFS_Capabilities>';
+    const sq = (x, y, d) => [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]];
+    const parcels = { type: 'FeatureCollection', features: [{ type: 'Feature', id: 'p1', properties: { lot: 'Lot 1', zone: 'R1' }, geometry: { type: 'Polygon', coordinates: sq(172.6, -43.53, 0.0005) } }, { type: 'Feature', id: 'p2', properties: { lot: 'Lot 2', zone: 'B2' }, geometry: { type: 'Polygon', coordinates: sq(172.6006, -43.53, 0.0005) } }] };
+    globalThis.ogcHits = [];
+    ipcMain.removeHandler('ogc:get');
+    ipcMain.handle('ogc:get', (_, url, opts = {}) => {
+      globalThis.ogcHits.push(url);
+      if (/tiles\.test/.test(url)) return { status: 200, type: 'image/png', bytes: png };
+      if (/GetFeature/i.test(url)) return { status: 200, type: 'application/json', text: JSON.stringify(parcels) };
+      if (/wfs/i.test(url)) return { status: 200, type: 'text/xml', text: wfs };
+      if (/wmts/i.test(url)) return { status: 200, type: 'text/xml', text: wmts };
+      throw new Error('no service here');
+    });
+  });
+  await ok('set_coordinate_system', { epsg: 2193, name: 'NZGD2000 / NZTM 2000' });
+  await ok('set_base_point', { latitude: -43.53, longitude: 172.6, z: 0 });
+  await ok('add_map_layer', { url: 'https://maps.test/wmts?SERVICE=WMTS&REQUEST=GetCapabilities', layer: 'aerial' });
+  await ok('add_map_layer', { url: 'https://maps.test/wfs?SERVICE=WFS&REQUEST=GetCapabilities', name: 'Parcels', style: { stroke: '#d9480f', fill: '#d9480f', label: 'lot' } });
+  await ok('set_camera', { position: [40, 300, 60], target: [40, 0, -40] });
+  await w.waitForFunction(() => {
+    const ml = window.mmr.app.mapLayers;
+    const [tiles, feats] = window.mmr.doc.settings.map_layers.map((L) => ml.groups.get(L.id)?.group);
+    return tiles?.children.some((m) => m.material.map) && feats?.children.some((o) => o.isLineSegments);
+  }, null, { timeout: 15000 });
+  const hits = await app.evaluate(() => globalThis.ogcHits);
+  assert.ok(hits.some((u) => /tiles\.test\/aerial\/\d+\/\d+\/\d+\.png/.test(u)), 'tiles asked through the main process');
+  assert.ok(hits.some((u) => /TYPENAMES=cad%3Aparcels/.test(u) && /SRSNAME=urn%3Aogc%3Adef%3Acrs%3AOGC%3A1.3%3ACRS84/.test(u)), 'features asked in CRS84');
+  // which parcels does a road cross: Lot 1 lies east of the base point, a road running north through it
+  await ok('create_curve', { points: [[10, 0, 20], [10, 0, -80]], kind: 'polyline', name: 'Road centreline' });
+  const q = await ok('query_service_features', { layer: 'Parcels', touching: 'Road centreline' });
+  assert.deepEqual(q.features.map((f) => f.lot), ['Lot 1']);
+  const imp = await ok('import_features', { layer: 'Parcels', radius: 200 });
+  assert.equal(imp.features, 2);
+  await w.click('[data-tab="survey"]');
+  await w.locator('.survey-views button', { hasText: 'Maps' }).click();
+  await w.locator('.map-layer', { hasText: 'Parcels' }).waitFor();
+  assert.equal(await w.locator('.map-layer').count(), 2);
+  await w.locator('.map-layer', { hasText: 'Aerial' }).getByRole('checkbox').uncheck();
+  await w.waitForFunction(() => window.mmr.doc.settings.map_layers.find((L) => L.name === 'Aerial').visible === false);
 });

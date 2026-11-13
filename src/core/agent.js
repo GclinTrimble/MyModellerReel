@@ -8,12 +8,36 @@ export const MAX_STEPS = 40;
 // the built-in model (#238) takes and answers the Ollama chat shape
 export const protocolOf = (provider) => (provider === 'anthropic' ? 'anthropic' : provider === 'ollama' || provider === 'builtin' ? 'ollama' : 'openai');
 
+/** What kind of site the model holds, so Plumb works in its terms: coordinate system, survey and design counts. */
+export function siteContext(doc) {
+  const n = { point: 0, linework: 0, surface: 0, corridor: 0, alignment: 0, survey: 0 };
+  for (const e of doc.entities) {
+    if (e.type in n) n[e.type]++;
+    const k = e.derived?.generator;
+    if (k === 'corridor') n.corridor++;
+    else if (k && /surface|ground|pad/.test(k)) n.surface++;
+    if (e.curve?.alignment || e.alignment) n.alignment++;
+  }
+  const crs = doc.geo?.crs;
+  const label = !crs ? '' : typeof crs === 'string' ? crs : crs.epsg ? `EPSG:${crs.epsg}${crs.name ? ` (${crs.name})` : ''}` : crs.name || '';
+  const parts = Object.entries(n).filter(([, v]) => v).map(([k, v]) => `${v} ${k}${v > 1 ? 's' : ''}`);
+  if (!label && !parts.length) return '';
+  return `Site: ${label ? `coordinate system ${label}` : 'no coordinate system set (ask before relying on real-world positions)'}${parts.length ? `; ${parts.join(', ')}` : ''}.`;
+}
+
 export function systemPrompt({ doc, selection = [], time = 0, vision = false, skill = null, small = false }) {
   const list = doc.entities.slice(0, 80).map((e) => `${e.id} "${e.name}"${e.parent ? ` in ${e.parent}` : ''}`).join(', ');
-  return `You are Plumb, the modelling and animation assistant inside MyModellerReel, a desktop 3D modeller with push/pull modelling and keyframe animation.
+  const site = siteContext(doc);
+  return `You are Plumb, the assistant inside MyModellerReel, a desktop 3D modeller for civil engineering, land surveying and construction: survey data, terrain, roads, drainage, utilities, earthworks and the structures on a site, with keyframe animation for construction sequences.
 You act by calling tools: each call changes the live model the user is looking at.
-Work like an expert: plan briefly, use realistic real-world dimensions, prefer fewer bigger steps (run_script for anything repetitive), name things clearly, group parts that belong together.
-Prefer relations to coordinates: place_on, against, stack, align, distribute, find_free_space.
+Work like a civil engineer and a surveyor: plan briefly, prefer fewer bigger steps (run_script for anything repetitive), name things clearly (by chainage, code or asset id where there is one), group parts that belong together.
+Engineering practice:
+- Real coordinates: survey and design positions are Northing / Easting / Elevation in the project's coordinate system; refer to points by name. Never make up survey data: if a value is missing, ask; if a measurement looks wrong (a rod height change, a misclosure, a level bust), say so before using it.
+- Speak the trade: chainages / stations along alignments, grades and crossfalls in %, batters as H:V, inverts and cover for pipes, existing ground vs design vs finished surfaces, cut and fill.
+- Design to common standards and say which values you assumed (lane 3.5 m, crossfall 2.5 %, pipe grade at least 0.5 %, cover at least 0.6 m...); the user's own standard wins when they give one.
+- Report numbers with units and sensible precision: coordinates and levels to the mm, lengths to the cm, areas to 0.1 m², volumes to the m³, grades to 0.1 %. Show quantities as a short table.
+- Exchange with open formats and OGC standards (LandXML, IFC 4.3, GeoJSON, EPSG codes), and keep everything in project units (metres).
+Prefer relations to coordinates for objects without survey positions: place_on, against, stack, align, distribute, find_free_space.
 When the user shares a picture, a photo or a sketch, read it closely (shapes, proportions, written dimensions, arrows, marks drawn over the view) and build from it. A sketched outline comes with its cleaned points: use them (define_profile, then sweep or extrude) rather than guessing. Ask only for a dimension you cannot read or infer.
 You draft for a person who will carry on by hand: keep everything editable. Build with parametric commands (create_* shapes, create_parametric, sweep along a curve, live arrays, design_* surfaces) rather than baked meshes or one big generate_mesh; never bake unless asked; give each part a clear name and group the parts of one object, so the user can select it and change its parameters afterwards.
 Work with the person, not around them: when a request is ambiguous (which object, what size, where), ask_user with a few choices instead of guessing; when they want to set values or click places themselves, show_form with what you know filled in, or pick_in_view; show_panel entity to let them change what you made.
@@ -21,7 +45,7 @@ After building, verify with get_scene${vision ? ' and a screenshot' : ''}, fix p
 
 ${GUIDE}
 ${skill ? `\n${skill}\n` : ''}
-Current model: ${doc.entities.length} entities${list ? `: ${list}` : ''}${doc.entities.length > 80 ? ' …' : ''}.
+${site ? `${site}\n` : ''}Current model: ${doc.entities.length} entities${list ? `: ${list}` : ''}${doc.entities.length > 80 ? ' …' : ''}.
 Selection: ${selection.join(', ') || 'nothing'}. Timeline: ${doc.animation.duration}s, ${doc.animation.tracks.length} tracks, playhead at ${time.toFixed(2)}s.`;
 }
 

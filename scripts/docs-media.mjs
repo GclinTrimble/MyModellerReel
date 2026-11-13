@@ -1380,6 +1380,39 @@ const PAGES = {
     await shot('AI › Copilot feedback: how it is doing, what goes wrong, export');
     await clean();
   },
+  async 'edit-survey-measurements'() {
+    await fresh();
+    await run('import', { path: path.resolve('tests/fixtures/jxl/kerb-pickup.jxl') });
+    await run('set_style', { point_labels: 'name_z' });
+    await camera([-6, 14, 30], [7, 0, 5]); // the shots east of S1, looking north-west so the 0.5 m rise shows
+    await js("window.mmr.app.ui.show('fieldbook', true); window.mmr.app.ui.fbOpen = new Set(Object.keys(window.mmr.app.store.doc.entities.find((e) => e.survey).survey.setups)); window.mmr.app.ui.renderDock(); return 1;");
+    await shot('Import a JobXML job: its setups, rod heights and every shot come with the points');
+    await js("[...document.querySelectorAll('#dock-body button')].find((b) => b.textContent.includes('Check the survey')).click(); return 1;");
+    await wait(800);
+    await shot('Check the survey: one shot at a 2.000 m rod between shots at 1.500 m');
+    await js("[...document.querySelectorAll('.fb-findings button')].find((b) => b.textContent.includes('Fix')).click(); return 1;");
+    await wait(900);
+    await shot('Fix: the rod height is corrected and P3 moves up 0.5 m; the edit keeps its original value');
+    await clean();
+  },
+  async 'web-map-layers'() {
+    await fresh();
+    await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });
+    await run('set_base_point', { latitude: 52.3676, longitude: 4.9041, z: 0 });
+    const eox = 'https://tiles.maps.eox.at/wmts/1.0.0/WMTSCapabilities.xml';
+    await js(`window.mmr.app.ui.show('maplayers', true); const u = window.mmr.app.ui.mapUi || (window.mmr.app.ui.mapUi = {}); u.url = ${JSON.stringify(eox)}; window.mmr.app.ui.renderDock(); [...document.querySelectorAll('#dock-body button')].find((b) => b.textContent.includes('Read')).click(); return 1;`);
+    await wait(5000);
+    await shot('Maps: paste a WMTS, WMS, WFS or OGC API address and Read its layers');
+    await run('add_map_layer', { url: eox, layer: 's2cloudless-2024_3857', name: 'Sentinel-2 cloudless 2024', attribution: 'Sentinel-2 cloudless by EOX IT Services GmbH (Contains modified Copernicus Sentinel data)' });
+    await run('add_map_layer', { url: 'https://service.pdok.nl/kadaster/kadastralekaart/wfs/v5_0?request=GetCapabilities&service=WFS&version=2.0.0', layer: 'kadastralekaart:Perceel', name: 'Parcels (Kadaster, PDOK)', style: { stroke: '#ffd43b', width: 2, label: 'perceelnummer' } });
+    await camera([0, 900, 300], [0, 0, 0]);
+    await wait(9000);
+    await shot('Imagery (OGC WMTS) and cadastral parcels (OGC WFS 2.0) under the model, labelled with their numbers');
+    await camera([-160, 140, 220], [0, 0, 0]);
+    await wait(7000);
+    await shot('They stream as you move, in the project coordinate system');
+    await clean();
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

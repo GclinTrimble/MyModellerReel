@@ -90,11 +90,11 @@ function cred() {
   const GENERIC = 1;
   const PERSIST_LOCAL_MACHINE = 2;
   return (credApi = {
-    write: (blob) =>
-      CredWriteW({ Flags: 0, Type: GENERIC, TargetName: TARGET, CredentialBlobSize: blob.length, CredentialBlob: blob, Persist: PERSIST_LOCAL_MACHINE, UserName: 'account' }, 0),
-    read: () => {
+    write: (blob, target = TARGET) =>
+      CredWriteW({ Flags: 0, Type: GENERIC, TargetName: target, CredentialBlobSize: blob.length, CredentialBlob: blob, Persist: PERSIST_LOCAL_MACHINE, UserName: 'account' }, 0),
+    read: (target = TARGET) => {
       const out = [null];
-      if (!CredReadW(TARGET, GENERIC, 0, out)) return null;
+      if (!CredReadW(target, GENERIC, 0, out)) return null;
       try {
         const c = koffi.decode(out[0], CREDENTIALW);
         return Buffer.from(koffi.decode(c.CredentialBlob, 'uint8_t', c.CredentialBlobSize));
@@ -102,7 +102,7 @@ function cred() {
         CredFree(out[0]);
       }
     },
-    remove: () => void CredDeleteW(TARGET, GENERIC, 0),
+    remove: (target = TARGET) => void CredDeleteW(target, GENERIC, 0),
   });
 }
 
@@ -369,4 +369,33 @@ async function uploadFeedback(rows) {
   return { uploaded: rows.length };
 }
 
-module.exports = { registerAccount, needsSignIn, whenSignedIn, uploadFeedback };
+/** Map service secrets (#267): API keys and tokens per service in Credential Manager, never in settings or the cloud. */
+const secretTarget = (name) => `${TARGET}-map:${String(name).slice(0, 200)}`;
+function getSecret(name) {
+  const b = cred()?.read(secretTarget(name));
+  return b ? JSON.parse(b.toString('utf8')) : null;
+}
+function setSecret(name, value) {
+  if (!value) return cred()?.remove(secretTarget(name));
+  if (!cred()?.write(Buffer.from(JSON.stringify(value), 'utf8'), secretTarget(name))) throw new Error('Windows Credential Manager refused the key');
+}
+
+/** The user's map services in the suite (#267): the map_services table, one row per service name, row-level security. */
+async function rest(method, route, body) {
+  if (!configured()) return null;
+  let r;
+  try {
+    r = await fetch(`${SUITE.url}/rest/v1/${route}`, { method, headers: { apikey: SUITE.anonKey, Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
+  } catch {
+    throw new Error("Couldn't reach your account. Check your connection");
+  }
+  if (!r.ok) throw new Error(`The suite answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return method === 'GET' ? r.json() : true;
+}
+const mapServices = {
+  list: () => rest('GET', 'map_services?select=name,kind,url,config,updated_at&app=eq.MyModellerReel&order=name'),
+  save: (row) => rest('POST', 'map_services?on_conflict=user_id,app,name', [{ app: 'MyModellerReel', name: row.name, kind: row.kind, url: row.url, config: row.config || {}, updated_at: new Date().toISOString() }]),
+  remove: (name) => rest('DELETE', `map_services?app=eq.MyModellerReel&name=eq.${encodeURIComponent(name)}`),
+};
+
+module.exports = { registerAccount, needsSignIn, whenSignedIn, uploadFeedback, getSecret, setSecret, mapServices };

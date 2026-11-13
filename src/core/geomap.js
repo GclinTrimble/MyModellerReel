@@ -120,8 +120,8 @@ export function projection(epsg) {
  * it went through the project grid }. Through the projection when the coordinate system has one and a base point is
  * set (model x = E − base E, z = −(N − base N)); else around the geolocation on a local plane; null without either.
  */
-export function placer({ base, epsg, geolocation }) {
-  const p = projection(epsg);
+export function placer({ base, epsg, geolocation, job = null }) {
+  const p = projection(epsg) || fromJobProjection(job);
   if (p && base)
     return {
       origin: p.inverse(base[0], base[1]),
@@ -130,6 +130,7 @@ export function placer({ base, epsg, geolocation }) {
         const [e, n] = p.forward(lon, lat);
         return [e - base[0], -(n - base[1])];
       },
+      toLonLat: (x, z) => p.inverse(base[0] + x, base[1] - z),
     };
   const g = geolocation;
   if (!g || !Number.isFinite(g.latitude) || !Number.isFinite(g.longitude)) return null;
@@ -142,7 +143,73 @@ export function placer({ base, epsg, geolocation }) {
       const [x, y] = webMercator.forward(lon, lat);
       return [(x - x0) * k, -(y - y0) * k];
     },
+    toLonLat: (x, z) => webMercator.inverse(x0 + x / k, y0 - z / k),
   };
+}
+
+// ---- datums and definitions (#261)
+
+/** Geodetic (degrees, ellipsoid height) → ECEF metres on an ellipsoid (a, f), WGS 84 by default. */
+export function toEcef(lon, lat, h = 0, a = R, f = F) {
+  const e2 = f * (2 - f);
+  const [p, l] = [lat * D2R, lon * D2R];
+  const N = a / Math.sqrt(1 - e2 * Math.sin(p) ** 2);
+  return [(N + h) * Math.cos(p) * Math.cos(l), (N + h) * Math.cos(p) * Math.sin(l), (N * (1 - e2) + h) * Math.sin(p)];
+}
+/** ECEF → [lon, lat, h] (Bowring, then iterated to sub-millimetre). */
+export function fromEcef(x, y, z, a = R, f = F) {
+  const e2 = f * (2 - f);
+  const p = Math.hypot(x, y);
+  let lat = Math.atan2(z, p * (1 - e2));
+  let h = 0;
+  for (let i = 0; i < 6; i++) {
+    const N = a / Math.sqrt(1 - e2 * Math.sin(lat) ** 2);
+    h = p / Math.cos(lat) - N;
+    lat = Math.atan2(z, p * (1 - (e2 * N) / (N + h)));
+  }
+  return [Math.atan2(y, x) / D2R, lat / D2R, h];
+}
+/** Seven-parameter Helmert (position vector convention, as EPSG 1033 / proj towgs84): translations m, rotations arc-seconds, scale ppm. */
+export function helmert([x, y, z], { tx = 0, ty = 0, tz = 0, rx = 0, ry = 0, rz = 0, ds = 0 } = {}) {
+  const k = 1 + ds * 1e-6;
+  const r = (v) => (v / 3600) * D2R;
+  const [a, b, c] = [r(rx), r(ry), r(rz)];
+  return [tx + k * (x - c * y + b * z), ty + k * (c * x + y - a * z), tz + k * (-b * x + a * y + z)];
+}
+
+/**
+ * A projection from a Trimble JobXML ProjectionRecord ({ type, lat0, lon0, k0, fe, fn }), so a job with its own grid
+ * (a local circuit with no EPSG code) still sits on the map. Transverse Mercator only; null otherwise.
+ */
+export function fromJobProjection(p) {
+  if (!p || !/TransverseMercator/i.test(p.type || '')) return null;
+  return tm({ lat0: p.lat0 || 0, lon0: p.lon0, k0: p.k0 || 1, fe: p.fe || 0, fn: p.fn || 0 });
+}
+
+/**
+ * Projection parameters from OGC WKT-CRS (ISO 19162 PROJCRS, or WKT1 PROJCS): Transverse Mercator and Lambert
+ * conformal conic (2SP). Returns { forward, inverse, name, epsg } or null. Datum shifts are not applied (see toEcef).
+ */
+export function fromWkt(wkt) {
+  const s = String(wkt);
+  const name = s.match(/^\s*PROJ(?:CS|CRS)\["([^"]+)"/i)?.[1] || '';
+  const epsg = +(s.match(/(?:ID|AUTHORITY)\["EPSG",\s*"?(\d+)"?\]\s*\]\s*$/i)?.[1] || 0) || null;
+  const par = (...names) => {
+    for (const n of names) {
+      const m = s.match(new RegExp(`PARAMETER\\["${n}"\\s*,\\s*(-?[\\d.eE+-]+)`, 'i'));
+      if (m) return +m[1];
+    }
+    return undefined;
+  };
+  const method = s.match(/(?:METHOD|PROJECTION)\["([^"]+)"/i)?.[1] || '';
+  const lat0 = par('Latitude of natural origin', 'latitude_of_origin', 'Latitude of false origin') ?? 0;
+  const lon0 = par('Longitude of natural origin', 'central_meridian', 'Longitude of false origin') ?? 0;
+  const fe = par('False easting', 'false_easting', 'Easting at false origin') ?? 0;
+  const fn = par('False northing', 'false_northing', 'Northing at false origin') ?? 0;
+  let p = null;
+  if (/transverse.?mercator/i.test(method)) p = tm({ lat0, lon0, k0: par('Scale factor at natural origin', 'scale_factor') ?? 1, fe, fn });
+  else if (/lambert.?conic.?conformal|lambert_conformal_conic/i.test(method)) p = lcc({ lat1: par('Latitude of 1st standard parallel', 'standard_parallel_1'), lat2: par('Latitude of 2nd standard parallel', 'standard_parallel_2'), lat0, lon0, fe, fn });
+  return p ? { ...p, name, epsg } : null;
 }
 
 /** The tiles that cover `radius` metres around a lat/long with at most `across` tiles each way: { z, x0, y0, x1, y1 }. */

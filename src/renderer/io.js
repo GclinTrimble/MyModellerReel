@@ -39,6 +39,23 @@ function avgOf(tex) {
   for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) s[k] += d[i + k];
   return s.map((x) => x / 256 / 255);
 }
+/**
+ * GLTFLoader reads any node's extras.pivot as GLTFExporter's container (first child at -pivot) and zeroes that child's
+ * position. Rigs from other tools keep their own pivot note there (animated machines): drop it unless the pattern is
+ * really GLTFExporter's, or their arms and buckets come apart.
+ */
+const keepForeignPivots = (parser) => ({
+  name: 'mmr_foreign_pivots',
+  beforeRoot() {
+    const nodes = parser.json.nodes || [];
+    for (const n of nodes) {
+      const p = n.extras?.pivot;
+      if (!Array.isArray(p)) continue;
+      const t = nodes[n.children?.[0]]?.translation;
+      if (!t || p.some((v, k) => Math.abs(v + t[k]) > 1e-6)) delete n.extras.pivot;
+    }
+  },
+});
 /** A three.js mesh as one of our shapes: world transform baked, recentred, its material's look. Null when empty. */
 function meshPart(o) {
   if (!o.isMesh || !o.geometry?.attributes?.position) return null;
@@ -67,7 +84,7 @@ const FILTERS = {
   models: [{ name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'usda', 'usdc', 'usdz', 'usd'] }],
   reference: [{ name: 'Designs to follow', extensions: ['usda', 'usdc', 'usdz', 'usd', 'glb', 'gltf', 'obj', 'stl', 'fbx'] }],
   usda: [{ name: 'OpenUSD (text)', extensions: ['usda'] }],
-  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'usda', 'usdc', 'usdz', 'usd', 'xml', 'landxml', 'ifc', 'dxf', 'jxl', 'fxl', 'geojson', 'json', 'shp'] }, { name: 'Trimble JobXML / feature library', extensions: ['jxl', 'fxl'] }, { name: 'GeoJSON / Shapefile', extensions: ['geojson', 'json', 'shp'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
+  import: [{ name: 'Models and exchange files', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx', 'usda', 'usdc', 'usdz', 'usd', 'xml', 'landxml', 'ifc', 'dxf', 'jxl', 'fxl', 'geojson', 'json', 'shp', 'gpkg'] }, { name: 'Trimble JobXML / feature library', extensions: ['jxl', 'fxl'] }, { name: 'GeoJSON / Shapefile / GeoPackage', extensions: ['geojson', 'json', 'shp', 'gpkg'] }, { name: 'LandXML', extensions: ['xml', 'landxml'] }, { name: 'IFC', extensions: ['ifc'] }, { name: 'DXF', extensions: ['dxf'] }, { name: '3D models', extensions: ['glb', 'gltf', 'obj', 'stl', 'fbx'] }],
   landxml: [{ name: 'LandXML 1.2', extensions: ['xml'] }],
   ifc: [{ name: 'IFC', extensions: ['ifc'] }],
   dxf: [{ name: 'DXF (R12)', extensions: ['dxf'] }],
@@ -83,6 +100,10 @@ const FILTERS = {
   '3mf': [{ name: '3MF', extensions: ['3mf'] }],
   sheet: [{ name: 'PDF', extensions: ['pdf'] }, { name: 'SVG drawing', extensions: ['svg'] }],
   geojson: [{ name: 'GeoJSON', extensions: ['geojson'] }],
+  owc: [{ name: 'OWS Context (GeoJSON)', extensions: ['json'] }],
+  gpkg: [{ name: 'OGC GeoPackage', extensions: ['gpkg'] }],
+  infragml: [{ name: 'OGC InfraGML Survey', extensions: ['gml'] }],
+  report: [{ name: 'Report (HTML)', extensions: ['html'] }],
   takeoff: [{ name: 'CSV table', extensions: ['csv'] }, { name: 'GeoJSON (painted faces, OGC API Features)', extensions: ['geojson'] }, { name: 'JSON', extensions: ['json'] }],
   matlib: [{ name: 'Material library', extensions: ['json', 'csv'] }],
   shp: [{ name: 'Shapefile', extensions: ['shp'] }],
@@ -174,7 +195,7 @@ export class IO {
     const ext = path.split('.').pop().toLowerCase();
     if (ext === 'glb' || ext === 'gltf') {
       // compressed GLBs (#104) read back: meshopt and draco
-      const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+      const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).register(keepForeignPivots);
       this.draco ||= new DRACOLoader().setDecoderPath(new URL('../../node_modules/three/examples/jsm/libs/draco/gltf/', import.meta.url).href);
       loader.setDRACOLoader(this.draco);
       return loader.parseAsync(ext === 'gltf' ? new TextDecoder().decode(buf) : buf, '');
@@ -422,6 +443,31 @@ export class IO {
   // ---------------------------------------------------------------- Phase 15
   compressGlb(path, method, out) {
     return native().invoke('glb:compress', path, method, out);
+  }
+  // ---------------------------------------------------------------- Phase 22: OGC services, map services, GeoPackage
+  ogcGet(url, opts = {}) {
+    return native().invoke('ogc:get', url, opts);
+  }
+  ogcCache(args) {
+    return native().invoke('ogc:cache', args);
+  }
+  ogcCacheInfo() {
+    return native().invoke('ogc:cache-info');
+  }
+  ogcCacheClear() {
+    return native().invoke('ogc:cache-clear');
+  }
+  ogcCacheLimit(mb) {
+    return native().invoke('ogc:cache-limit', mb);
+  }
+  mapServices(args) {
+    return native().invoke('map:services', args);
+  }
+  gpkgWrite(path, payload) {
+    return native().invoke('gpkg:write', path, payload);
+  }
+  gpkgRead(path) {
+    return native().invoke('gpkg:read', path);
   }
   netJson(url) {
     return native().invoke('net:json', url);

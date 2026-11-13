@@ -53,7 +53,9 @@ import './landxml.js';
 import './dxf.js';
 import './ifc.js';
 import * as TB from './trimble.js';
-import './gis.js';
+import * as FBK from './fieldbook.js';
+import { readGeoJson, writeGeoJson } from './gis.js';
+import * as OGC from './ogc.js';
 import * as TR from './terrain.js';
 import { surfaceSampler, surfaceSources, refPoint } from './sitework.js';
 import * as SW from './sitework.js';
@@ -107,6 +109,17 @@ export const GUIDE = `MyModellerReel conventions:
   point), add_breakline / add_boundary, create_surface (a live TIN), check_surface, cut_fill / volume_report,
   create_alignment + create_corridor, design_line_slope / design_plane / design_trench / design_road, a feature library
   (define_feature_code) that turns coded points into lines and objects.
+- Survey field books: importing a Trimble JobXML keeps its station setups, backsights, rod / instrument / antenna heights,
+  prism constants and every shot (a survey entity, OGC InfraGML Part 6 model). review_survey finds field busts (a run
+  of shots at another rod height, backsight residuals, weak GNSS); edit_survey_observations fixes them by names, setup,
+  base or time range ("rod 1.8 not 2.0 from 10:05 to 10:40") and the points, surfaces and linework follow (one undo);
+  list_survey, compare_survey (moved points), survey_report; export landxml (Survey) or infragml. Never change a
+  measurement without saying what and why.
+- Web maps and features (OGC): list_service_layers reads a WMTS / WMS / WFS / OGC API address; add_map_layer streams
+  tiles or features under the model in the project CRS; set_map_layer orders, styles (SLD) and filters (CQL2);
+  query_service_features (touching: an alignment → the parcels it crosses), import_features brings them in with
+  attributes; save_map_service / apply_layer_set reuse the person's services (account); cache_map_area for offline;
+  export_map_context (OWS Context), export_geopackage (OGC GeoPackage).
 - Drawings: import_pdf (scale "1:500") / import_image (world files, GeoTIFF) place underlays; calibrate_underlay
   (scale by a known distance, orient by a bearing, move onto a survey point) or add_control_pair + georeference_underlay
   (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
@@ -1197,9 +1210,256 @@ function registerCore(reg, ctx) {
     for (const k of ['map', 'grid', 'radius', 'opacity']) if (a[k] !== undefined) v[k] = a[k];
     v.radius = Math.max(20, Math.min(5000, v.radius));
     v.opacity = Math.max(0, Math.min(1, v.opacity));
-    const placed = GM.placer({ base: S.geo(ctx.doc).base, epsg: S.geo(ctx.doc).crs?.epsg, geolocation: s.geolocation });
+    const placed = GM.placer({ base: S.geo(ctx.doc).base, epsg: S.geo(ctx.doc).crs?.epsg, job: S.geo(ctx.doc).crs?.projection, geolocation: s.geolocation });
     return { ...v, ...(v.map !== 'none' ? { attribution: GM.LAYERS[v.map].attribution } : {}), ...(placed ? {} : { note: 'The model is not placed on Earth yet: set_base_point with latitude and longitude (or set_geolocation) to see the map.' }) };
   }, true);
+
+  // ---------------------------------------------------------------- OGC map and feature layers (#264–#268)
+  const curvePoints = (e) => (e.curve ? D.curvePoints(ctx.doc, e) : S.isLinework(e) ? S.lineworkPath(ctx.doc, e) : (() => { throw new Error(`${e.name} is not a curve or linework.`); })());
+  const placed = () => {
+    const g = S.geo(ctx.doc);
+    const pl = GM.placer({ base: g.base, epsg: g.crs?.epsg, job: g.crs?.projection, geolocation: ctx.doc.settings.geolocation });
+    if (!pl) throw new Error('Place the model on Earth first: set_coordinate_system with an EPSG code and a base point, or set_base_point with latitude and longitude.');
+    return pl;
+  };
+  const mapLayers = () => (ctx.doc.settings.map_layers ||= []);
+  const layerRef = (ref) => {
+    const list = mapLayers();
+    const L = list.find((x) => x.id === ref || x.name === ref) || (list.length === 1 && !ref ? list[0] : null);
+    if (!L) throw new Error(ref ? `No map layer "${ref}". list_map_layers shows them.` : 'Say which map layer.');
+    return L;
+  };
+  const caps = new Map(); // url → parsed capabilities, for this session
+  const fetchText = async (url, service) => (await needIO().ogcGet(url, { service })).text;
+  /** Read a service, whatever URL was pasted: capabilities, a landing page, or a bare endpoint. */
+  const readService = async (url, service = null) => {
+    if (caps.has(url)) return caps.get(url);
+    if (/\{z\}/i.test(url)) return { kind: 'xyz', url, layers: [{ id: 'tiles', title: 'Tiles' }] };
+    const tries = [url];
+    if (!/request=getcapabilities/i.test(url) && !/\/collections/.test(url)) {
+      if (!/[?&]f=json/.test(url)) tries.push(`${url.split('?')[0].replace(/\/$/, '')}/?f=json`);
+      for (const s of ['WMTS', 'WMS', 'WFS']) tries.push(`${url}${url.includes('?') ? '&' : '?'}SERVICE=${s}&REQUEST=GetCapabilities${s === 'WFS' ? '&VERSION=2.0.0' : s === 'WMS' ? '&VERSION=1.3.0' : ''}`);
+    }
+    let last = null;
+    for (const u of tries) {
+      try {
+        const text = await fetchText(u, service);
+        const kind = OGC.sniff(text);
+        if (!kind) continue;
+        let c;
+        if (kind === 'ogcapi') {
+          const landing = JSON.parse(text);
+          if (!landing.links && !landing.collections) continue;
+          const root = u.split('?')[0].replace(/\/(collections)?\/?$/, '');
+          const cols = landing.collections ? landing : JSON.parse(await fetchText(`${root}/collections?f=json`, service));
+          c = OGC.readOgcApi(landing, cols, root);
+        } else c = OGC.readCapabilities(text, u);
+        caps.set(url, c);
+        return c;
+      } catch (e) {
+        last = e;
+      }
+    }
+    throw new Error(`No WMTS, WMS, WFS or OGC API service answered at that address${last ? ` (${last.message})` : ''}.`);
+  };
+  const layerRow = (L) => ({ id: L.id, name: L.name, type: L.type, kind: L.kind, layer: L.layer, visible: L.visible !== false, opacity: L.opacity ?? 1, ...(L.style ? { style: L.style } : {}), ...(L.where ? { where: L.where } : {}), ...(L.cql ? { cql: L.cql } : {}), ...(L.service ? { service: L.service } : {}), url: L.url, attribution: L.attribution || '' });
+  const LAYER_STYLE = obj({ stroke: str('line colour #rrggbb'), width: num('line width, px'), fill: str('fill colour'), fill_opacity: num('0–1'), point: str('point colour'), size: num('point size, px'), label: str('attribute shown as a label'), rules: { type: 'array', items: obj({ where: obj({}, []), stroke: str('colour'), fill: str('colour'), point: str('colour') }, []), description: 'per attribute value: [{ where: { zone: "R1" }, fill: "#…" }]' } }, []);
+  def('maps', 'list_service_layers', 'What a web map or feature service offers: paste its address (a WMTS, WMS or WFS GetCapabilities URL, an OGC API landing page, or an XYZ tile template with {z}/{x}/{y}). Lists the layers with their styles, formats and whether they can be drawn (WMTS needs a Web Mercator tile matrix set).', obj({ url: str('service address'), service: str('a saved map service whose key to use') }, ['url']), async (a) => {
+    const c = await readService(a.url, a.service);
+    return { kind: c.kind, title: c.title, provider: c.provider, version: c.version, layers: c.layers.slice(0, 300).map((l) => ({ id: l.id, title: l.title, ...(l.styles?.length ? { styles: l.styles.map((s) => s.id) } : {}), ...(c.kind === 'wmts' ? { drawable: l.sets.some((s) => c.sets[s]?.zooms), sets: l.sets } : {}), ...(c.kind === 'ogcapi' ? { features: l.features, tiles: l.tiles } : {}) })), more: Math.max(0, c.layers.length - 300) };
+  });
+  def('maps', 'add_map_layer', 'Stream a web map or feature layer under the model (OGC WMTS, OGC API - Tiles, WMS, XYZ tiles; or WFS 2.0 / OGC API - Features as live vector features), in the project\'s coordinate system. Kept with the design; the map layers panel orders and styles them. Feature layers take a filter: where (attribute = value) or cql (CQL2 text, OGC API).', obj({ url: str('service address (capabilities, landing page or XYZ template)'), layer: str('layer id from list_service_layers (default: the only one)'), name: str('name in the layer list'), style: { description: 'map layers: the service style id; feature layers: a style object { stroke, fill, point, label, rules }' }, format: str('image format, e.g. image/png'), matrix_set: str('WMTS tile matrix set'), opacity: num('0–1, default 1'), where: obj({}, []), cql: str('CQL2 text filter (OGC API - Features)'), service: str('a saved map service (its key is used, list_map_services)'), attribution: str('attribution text for XYZ tiles') }, ['url']), async (a) => {
+    const c = await readService(a.url, a.service);
+    let L;
+    if (c.kind === 'xyz') L = { type: 'xyz', url: a.url, layer: 'tiles', attribution: a.attribution || '' };
+    else L = OGC.layerFrom(c, { layer: a.layer, style: typeof a.style === 'string' ? a.style : undefined, format: a.format, set: a.matrix_set });
+    if (L.type === 'wfs' && !L.json) throw new Error('That WFS cannot answer in GeoJSON; only GeoJSON output is read (GML 3.2 is not).');
+    const list = mapLayers();
+    const name = a.name || L.title || L.layer;
+    const id = `ml${(ctx.doc.settings.map_layer_seq = (ctx.doc.settings.map_layer_seq || 0) + 1)}`;
+    const row = { id, name, kind: L.kind || 'map', ...L, visible: true, opacity: Math.max(0, Math.min(1, a.opacity ?? 1)), ...(a.service ? { service: a.service } : {}), ...(a.where ? { where: a.where } : {}), ...(a.cql ? { cql: a.cql } : {}), ...(L.kind === 'features' ? { style: typeof a.style === 'object' ? a.style : { stroke: '#d9480f', width: 2, point: '#d9480f', fill: '#d9480f', fill_opacity: 0.15 } } : {}) };
+    delete row.title;
+    list.push(row);
+    return { ...layerRow(row), standard: { wmts: 'OGC WMTS 1.0.0', wms: 'OGC WMS 1.3.0', wfs: 'OGC WFS 2.0', ogcapi: 'OGC API - Tiles', 'ogcapi-features': 'OGC API - Features', xyz: 'XYZ tiles' }[row.type], ...(placedOk() ? {} : { note: 'The model is not placed on Earth yet: the layer shows once it is (set_coordinate_system and a base point).' }) };
+  }, true);
+  const placedOk = () => {
+    try {
+      return !!placed();
+    } catch {
+      return false;
+    }
+  };
+  def('maps', 'list_map_layers', 'The design\'s web map and feature layers, top first: name, type, visibility, opacity, style, filter. sld: also each feature layer\'s style as OGC SLD 1.1 / SE XML.', obj({ sld: bool('include SLD XML') }), (a) => mapLayers().slice().reverse().map((L) => ({ ...layerRow(L), ...(a.sld && L.kind === 'features' ? { sld: OGC.toSld(L.style, L.layer) } : {}) })));
+  def('maps', 'set_map_layer', 'Change a map layer: name, visible, opacity, order (0 = bottom … top = last), style (feature layers: { stroke, width, fill, point, label, rules }; or sld: an SLD / SE XML), filter (where / cql).', obj({ layer: str('layer id or name'), name: str('new name'), visible: bool('show or hide'), opacity: num('0–1'), order: num('position from the bottom, 0 = bottom'), style: LAYER_STYLE, sld: str('OGC SLD 1.1 / SE XML'), where: obj({}, []), cql: str('CQL2 text') }, ['layer']), (a) => {
+    const L = layerRef(a.layer);
+    if (a.name) L.name = a.name;
+    if (a.visible !== undefined) L.visible = a.visible;
+    if (a.opacity !== undefined) L.opacity = Math.max(0, Math.min(1, a.opacity));
+    if (a.style) L.style = { ...(typeof L.style === 'object' ? L.style : {}), ...a.style };
+    if (a.sld) L.style = OGC.fromSld(a.sld);
+    if (a.where !== undefined) L.where = a.where;
+    if (a.cql !== undefined) L.cql = a.cql;
+    if (a.order !== undefined) {
+      const list = mapLayers();
+      list.splice(list.indexOf(L), 1);
+      list.splice(Math.max(0, Math.min(list.length, Math.round(a.order))), 0, L);
+    }
+    return layerRow(L);
+  }, true);
+  def('maps', 'remove_map_layer', 'Take a web map or feature layer off the design.', obj({ layer: str('layer id or name') }, ['layer']), (a) => {
+    const L = layerRef(a.layer);
+    mapLayers().splice(mapLayers().indexOf(L), 1);
+    return { removed: L.name };
+  }, true);
+  /** Features of a feature layer around a place, projected to project coordinates (E, N, Z) as GeoJSON. */
+  const fetchFeatures = async (L, { around, radius = 200, limit = 1000, where, cql }) => {
+    const pl = placed();
+    const g = S.geo(ctx.doc);
+    const [x, z] = around || [0, 0];
+    const corners = [[x - radius, z - radius], [x + radius, z + radius], [x - radius, z + radius], [x + radius, z - radius]].map(([a, b]) => pl.toLonLat(a, b));
+    const bbox = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))];
+    const feats = [];
+    const seen = new Set();
+    let url = OGC.featuresUrl(L, bbox, { limit: Math.min(limit, 1000), where: where ?? L.where, cql: cql ?? L.cql });
+    for (let page = 0; url && feats.length < limit && page < 20; page++) {
+      const fc = JSON.parse(await fetchText(url, L.service));
+      if (!fc.features) throw new Error(`The service did not send GeoJSON features: ${JSON.stringify(fc).slice(0, 200)}`);
+      OGC.fixAxes(fc, bbox);
+      const fresh = OGC.addPage(feats, seen, fc.features);
+      // servers may send fewer than a page and still have more: page on until an empty one
+      url = L.type === 'ogcapi-features' ? OGC.nextLink(fc) : fresh ? OGC.featuresUrl(L, bbox, { limit: 1000, start: (page + 1) * 1000, where: where ?? L.where }) : null;
+    }
+    const base = g.base || [0, 0, 0];
+    const fc = OGC.projectGeoJson({ type: 'FeatureCollection', features: feats.slice(0, limit) }, (lon, lat) => {
+      const [lx, lz] = pl.toLocal(lon, lat);
+      return [base[0] + lx, base[1] - lz];
+    });
+    return { fc, bbox };
+  };
+  const aroundOf = (a) => {
+    if (a.near) {
+      const [e] = D.resolve(ctx.doc, a.near);
+      const b = D.worldBox(ctx.doc, e);
+      return { around: [(b.min[0] + b.max[0]) / 2, (b.min[2] + b.max[2]) / 2], radius: a.radius ?? Math.max(50, Math.hypot(b.max[0] - b.min[0], b.max[2] - b.min[2]) / 2 + 20), entity: e };
+    }
+    const t = ctx.view?.getCamera?.()?.target;
+    return { around: a.at || (t ? [t[0], t[2]] : [0, 0]), radius: a.radius ?? 200 };
+  };
+  const AROUND = { at: { type: 'array', items: { type: 'number' }, description: 'model point [x, z] (default: what the view looks at)' }, radius: num('metres around it (default 200)'), near: str('or: around this entity (a road, a boundary)'), where: obj({}, []), cql: str('CQL2 text (OGC API)'), limit: num('features, default 500') };
+  def('maps', 'query_service_features', 'Ask a feature layer (WFS / OGC API - Features) which features are in an area and what their attributes are: around a model point, or near an entity; touching: only features that touch or cross that entity (e.g. "which parcels touch this road"). Returns attributes, not geometry.', obj({ layer: str('feature layer id or name'), ...AROUND, touching: str('only features touching this curve / linework / boundary'), tolerance: num('m for touching, default 0.5') }, ['layer']), async (a) => {
+    const L = layerRef(a.layer);
+    if (L.kind !== 'features') throw new Error(`${L.name} is a map layer: query a feature layer (WFS or OGC API - Features).`);
+    const ar = aroundOf({ ...a, near: a.near || a.touching });
+    const { fc } = await fetchFeatures(L, { ...ar, limit: a.limit ?? 500, where: a.where, cql: a.cql });
+    let feats = fc.features;
+    if (a.touching) {
+      const line = curvePoints(ar.entity).map((p) => S.toProject(ctx.doc, p)).map((p) => [p.e, p.n]);
+      feats = feats.filter((f) => OGC.touches(f.geometry, line, a.tolerance ?? 0.5));
+    }
+    return { layer: L.name, count: feats.length, features: feats.slice(0, 200).map((f) => ({ id: f.id, ...f.properties })) };
+  });
+  def('maps', 'import_features', 'Bring the features of a feature layer (WFS / OGC API - Features) into the model as points, lines and outlines with their attributes, on a layer: around a model point or near an entity, with an optional filter. The source and time are kept on each feature.', obj({ layer: str('feature layer id or name'), ...AROUND, to_layer: str('model layer (default: the map layer name)') }, ['layer']), async (a) => {
+    const L = layerRef(a.layer);
+    if (L.kind !== 'features') throw new Error(`${L.name} is a map layer: bring in a feature layer.`);
+    const { fc } = await fetchFeatures(L, { ...aroundOf(a), limit: a.limit ?? 500, where: a.where, cql: a.cql });
+    const when = new Date().toISOString();
+    for (const f of fc.features) f.properties = { ...f.properties, source: `${L.name} (${L.url.split('?')[0]})`, retrieved: when };
+    const report = F.newReport();
+    readGeoJson(fc, { doc: ctx.doc, report, opts: { layer: a.to_layer || L.name, force: true } });
+    return report.done({ features: fc.features.length, layer: a.to_layer || L.name });
+  }, true);
+  def('maps', 'export_map_context', 'Save the design\'s map and feature layers as an OGC OWS Context GeoJSON document (14-055r2), with their styles as SE, to open in another OWS Context reader or share. Without path, returns it.', obj({ path: str('absolute .json path'), title: str('document title') }), async (a) => {
+    const pl = placedOk() ? placed() : null;
+    const owc = OGC.toOwsContext(mapLayers(), { title: a.title || ctx.doc.name || 'Map layers', bbox: pl ? [...pl.toLonLat(-500, 500), ...pl.toLonLat(500, -500)] : null });
+    if (!a.path) return owc;
+    await needIO().writeText(a.path, JSON.stringify(owc, null, 1));
+    return { path: a.path, layers: owc.features.length, standard: 'OGC OWS Context GeoJSON 1.0' };
+  });
+  def('maps', 'import_map_context', 'Add the layers of an OGC OWS Context GeoJSON document (a file or its text) to the design.', obj({ path: str('absolute path'), text: str('or: the document') }), async (a) => {
+    const text = a.text ?? (a.path ? await needIO().readText(a.path) : null);
+    if (!text) throw new Error('Give path or text.');
+    const added = OGC.fromOwsContext(text).map((L) => ({ ...L, id: `ml${(ctx.doc.settings.map_layer_seq = (ctx.doc.settings.map_layer_seq || 0) + 1)}` }));
+    mapLayers().push(...added);
+    return { added: added.map((L) => L.name) };
+  }, true);
+
+  // the user's own services and layer sets, saved with their account (#267)
+  def('maps', 'list_map_services', 'The map and feature services this person saved (kept with their account, so they follow them to another computer), and their layer sets. has_key: a key is stored for it on this computer.', obj({}), async () => needIO().mapServices({ action: 'list' }));
+  def('maps', 'save_map_service', 'Save a web map or feature service for reuse in any design (with the account). A key or token for it (key) is kept in Windows Credential Manager on this computer, never in the design or the cloud: sent as a header (key_header, e.g. Authorization) or a query parameter (key_query, e.g. api).', obj({ name: str('your name for it'), url: str('service address'), layers: { type: 'array', items: { type: 'string' }, description: 'the layers you usually add' }, key: str('API key or token (stays on this computer)'), key_header: str('header name for the key'), key_query: str('query parameter for the key') }, ['name', 'url']), async (a) => {
+    const secret = a.key ? { value: a.key, ...(a.key_header ? { header: a.key_header } : { query: a.key_query || 'api' }) } : undefined;
+    let kind = 'xyz';
+    if (!/\{z\}/i.test(a.url)) {
+      if (secret) await needIO().mapServices({ action: 'save', service: { name: a.name, kind: 'wmts', url: a.url }, secret }); // the key first: reading the service may need it
+      kind = (await readService(a.url, a.name)).kind;
+    }
+    const r = await needIO().mapServices({ action: 'save', service: { name: a.name, kind, url: a.url, config: { layers: a.layers || [] } }, secret });
+    return { saved: a.name, kind, synced: r.synced, ...(r.why ? { note: r.why } : {}) };
+  });
+  def('maps', 'remove_map_service', 'Forget a saved map service or layer set (and its key on this computer).', obj({ name: str('its name') }, ['name']), async (a) => {
+    const r = await needIO().mapServices({ action: 'remove', name: a.name });
+    return { removed: a.name, synced: r.synced };
+  });
+  def('maps', 'save_layer_set', 'Save the design\'s current map and feature layers as a named layer set with the account ("NZ basemap + cadastre"), to put on any design with apply_layer_set.', obj({ name: str('layer set name') }, ['name']), async (a) => {
+    if (!mapLayers().length) throw new Error('This design has no map layers to save.');
+    const r = await needIO().mapServices({ action: 'save', service: { name: a.name, kind: 'layer-set', url: '', config: OGC.toOwsContext(mapLayers(), { title: a.name }) } });
+    return { saved: a.name, layers: mapLayers().length, synced: r.synced };
+  });
+  def('maps', 'apply_layer_set', 'Put a saved layer set (or a saved service\'s usual layers) on this design.', obj({ name: str('layer set or service name') }, ['name']), async (a) => {
+    const { services } = await needIO().mapServices({ action: 'list' });
+    const s = services.find((x) => x.name === a.name);
+    if (!s) throw new Error(`No saved layer set or service "${a.name}". list_map_services shows them.`);
+    const before = mapLayers().length;
+    if (s.kind === 'layer-set') for (const L of OGC.fromOwsContext(s.config)) mapLayers().push({ ...L, id: `ml${(ctx.doc.settings.map_layer_seq = (ctx.doc.settings.map_layer_seq || 0) + 1)}` });
+    else for (const layer of s.config?.layers?.length ? s.config.layers : [undefined]) await reg.commands.get('add_map_layer').run({ url: s.url, layer, service: s.name });
+    return { added: mapLayers().length - before, layers: mapLayers().slice(before).map((L) => L.name) };
+  }, true);
+
+  // offline (#268)
+  def('maps', 'cache_map_area', 'Take a site offline: download the tiles of the visible map layers (and their features) around a place for the zoom levels given, into the app\'s map cache, so the layers still show without a network.', obj({ at: AROUND.at, radius: num('metres, default 500'), min_zoom: num('default 14'), max_zoom: num('default 18'), layers: { type: 'array', items: { type: 'string' }, description: 'layer ids or names (default: the visible ones)' } }), async (a) => {
+    const pl = placed();
+    const radius = a.radius ?? 500;
+    const [x, z] = a.at || [0, 0];
+    const corners = [[x - radius, z - radius], [x + radius, z + radius]].map(([p, q]) => pl.toLonLat(p, q));
+    const lay = a.layers ? a.layers.map(layerRef) : mapLayers().filter((L) => L.visible !== false);
+    const urls = [];
+    const [z0, z1] = [a.min_zoom ?? 14, Math.min(a.max_zoom ?? 18, 20)];
+    for (const L of lay.filter((l) => l.kind !== 'features'))
+      for (let zz = z0; zz <= z1; zz++) {
+        const t0 = GM.lonLatToTile(Math.min(corners[0][0], corners[1][0]), Math.max(corners[0][1], corners[1][1]), zz);
+        const t1 = GM.lonLatToTile(Math.max(corners[0][0], corners[1][0]), Math.min(corners[0][1], corners[1][1]), zz);
+        for (let ty = Math.floor(t0.y); ty <= Math.floor(t1.y); ty++) for (let tx = Math.floor(t0.x); tx <= Math.floor(t1.x); tx++) {
+          const u = OGC.tileUrl(L, zz, tx, ty);
+          if (u) urls.push(u);
+        }
+      }
+    if (urls.length > 20000) throw new Error(`That is ${urls.length} tiles: lower max_zoom or the radius (20 000 at most).`);
+    const r = urls.length ? await needIO().ogcCache({ urls, service: lay[0]?.service }) : { cached: 0, failed: 0 };
+    let features = 0;
+    for (const L of lay.filter((l) => l.kind === 'features')) features += (await fetchFeatures(L, { around: [x, z], radius, limit: 5000 })).fc.features.length;
+    return { tiles: urls.length, ...r, features, cache: await needIO().ogcCacheInfo() };
+  });
+  def('maps', 'map_cache', 'The map cache on this computer: its size and folder; clear: empty it; limit_mb: its size limit (old tiles go first).', obj({ clear: bool('empty the cache'), limit_mb: num('size limit, MB') }), async (a) => {
+    if (a.clear) await needIO().ogcCacheClear();
+    if (a.limit_mb) await needIO().ogcCacheLimit(a.limit_mb);
+    return needIO().ogcCacheInfo();
+  });
+  def('file', 'export_geopackage', 'Write features (points, linework, outlines with their attributes) to an OGC GeoPackage 1.4 file, in project coordinates with the EPSG code of the coordinate system: by layer (glob), the selection, or everything.', obj({ path: str('absolute .gpkg path'), layer: str('model layer name or glob (default: all)'), selection: bool('only the selection'), table: str('table name (default: one per layer)') }, ['path']), async (a) => {
+    const doc = ctx.doc;
+    let ents = a.selection ? targets(ctx, {}) : doc.entities;
+    if (a.layer) {
+      const re = new RegExp(`^${a.layer.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`, 'i');
+      ents = ents.filter((e) => re.test(e.tag || ''));
+    }
+    const fc = JSON.parse(writeGeoJson(doc, { ents }));
+    if (!fc.features.length) throw new Error('No points, linework or outlines to write.');
+    const byLayer = new Map();
+    for (const f of fc.features) {
+      const t = a.table || String(f.properties?.layer || 'features').replace(/\W+/g, '_');
+      byLayer.set(t, [...(byLayer.get(t) || []), f]);
+    }
+    const crs = S.geo(doc).crs;
+    return needIO().gpkgWrite(a.path, { srs: crs?.epsg ? { epsg: crs.epsg, name: crs.name } : {}, layers: [...byLayer].map(([table, features]) => ({ table, features })), description: doc.name || '' });
+  });
 
   def('terrain', 'set_units', 'Units: display (how lengths are shown: auto, mm, cm, m, in, ft, ft-in) and precision (decimals; for ft-in the inch fraction, e.g. 16), and the survey units for coordinates in and out (length m, ft, usft; angles deg, dms, gon). Commands always take and return metres.', obj({ display: str('length display', Units.DISPLAY), precision: num('decimals (ft-in: inch fraction 2–64)'), length: str('survey length unit', Object.keys(S.UNITS)), angles: str('angle format', ['deg', 'dms', 'gon']) }), (a) => {
     if (a.display !== undefined) ctx.doc.settings.display_units = a.display;
@@ -1299,6 +1559,97 @@ function registerCore(reg, ctx) {
     afterPoints();
     return { edited: pts.length, points: pts.slice(0, 50).map(fmtPt) };
   }, true);
+
+  // ---------------------------------------------------------------- survey field books (#257–#260, #269)
+  const surveyOf = (ref) => {
+    const doc = ctx.doc;
+    if (ref) {
+      const [e] = D.resolve(doc, ref);
+      if (!e.survey) throw new Error(`${e.name} is not a survey (import a JobXML job to get one).`);
+      return e;
+    }
+    const sel = ctx.selection.get().map((id) => D.getEntity(doc, id)).filter(Boolean);
+    const viaSel = sel.find((e) => e.survey) || doc.entities.find((e) => e.survey && sel.some((p) => p.point?.survey === e.id));
+    if (viaSel) return viaSel;
+    const all = doc.entities.filter((e) => e.survey);
+    if (all.length === 1) return all[0];
+    throw new Error(all.length ? `Say which survey: ${all.map((e) => e.name).join(', ')}.` : 'No survey in the model: import a Trimble JobXML (.jxl) job first.');
+  };
+  const OBS_FILTER = {
+    survey: str('the survey (default: the only one, or the selected one)'),
+    ids: { type: 'array', items: { type: 'string' }, description: 'observation ids' },
+    names: { type: 'array', items: { type: 'string' }, description: 'point names, globs work ("Pt1*")' },
+    setup: str('a station setup: its id or station point name'),
+    base: str('a GNSS base: its id or point name'),
+    kind: str('ts (total station), gnss, keyed or computed', ['ts', 'gnss', 'keyed', 'computed']),
+    code: str('feature code'),
+    from: str('time from, "10:05" or ISO'),
+    to: str('time to, "10:40" or ISO'),
+  };
+  const mm = (x) => Math.round(x * 1000) / 1000;
+  const movedRows = (list) => list.slice(0, 100).map((m) => ({ name: m.name, dn: mm(m.dn), de: mm(m.de), dz: mm(m.dz) }));
+  def('terrain', 'list_survey', 'A survey\'s field book (OGC InfraGML Part 6 Survey model): station setups (instrument height, backsight, scale, PPM), GNSS bases, and observations (target or antenna height, prism constant, angles and distance, precision) with filters; edits made so far with their original values; notes and photos.', obj({ ...OBS_FILTER, edits: bool('only list the edits') }), (a) => {
+    const e = surveyOf(a.survey);
+    if (a.edits) return { survey: e.name, edits: FBK.listEdits(e.survey) };
+    const s = FBK.summary(e.survey, a);
+    const photos = (e.survey.media || []).filter((m) => m.asset).map((m) => ({ point: m.point, file: m.file, asset: m.asset }));
+    return { survey: e.name, id: e.id, ...s, observations: s.observations.slice(0, 500), more: Math.max(0, s.observations.length - 500), notes_list: e.survey.notes.slice(0, 50), photos: photos.slice(0, 100) };
+  });
+  def('terrain', 'edit_survey_observations', 'Fix field mistakes in a survey and recompute its points: target_height (rod / prism height, total station), prism_constant (m), antenna_height (GNSS measured height, same measuring method), instrument_height / backsight / scale / ppm (of the setups those shots belong to), base_antenna_height, name, code, desc, deleted (true deletes the shot, false restores it), n / e / z for keyed-in points. Pick the observations by ids, names, setup, base, kind, code or a time range ("the rod was 1.8 m from 10:05 to 10:40"). revert: put the picked observations back as measured. Points, surfaces and linework built on them follow.', obj({ ...OBS_FILTER, target_height: num('m'), prism_constant: num('m (e.g. 0.002, -0.0344)'), antenna_height: num('measured antenna height, m'), antenna_type: str('Raw (to the mount, offsets added) or Corrected (to the phase centre)', ['Raw', 'Corrected']), instrument_height: num('m'), backsight: str('backsight point name'), scale: num('scale factor'), ppm: num('atmospheric correction, ppm'), base_antenna_height: num('base antenna measured height, m'), name: str('new point name'), code: str('new code'), desc: str('new description'), deleted: bool('delete (true) or restore (false)'), n: num('keyed-in Northing'), e: num('keyed-in Easting'), z: num('keyed-in Elevation'), revert: bool('undo the edits on the picked observations and their setups') }), (a) => {
+    const e = surveyOf(a.survey);
+    const book = e.survey;
+    const filter = Object.fromEntries(Object.keys(OBS_FILTER).filter((k) => k !== 'survey' && a[k] !== undefined).map((k) => [k, a[k]]));
+    if (!Object.keys(filter).length) throw new Error('Pick the observations: ids, names, setup, base, kind, code or a time range (from / to).');
+    const obs = FBK.selectObservations(book, filter);
+    if (!obs.length) throw new Error('No observations match. list_survey shows them.');
+    let edited;
+    if (a.revert) {
+      const recs = new Set(obs);
+      for (const o of obs) recs.add(book.setups[o.setup] || book.bases[o.base]);
+      edited = [];
+      for (const r of recs) {
+        if (!r || !Object.keys(r.edits || {}).length) continue;
+        for (const [k, v] of Object.entries(r.edits)) {
+          if (k === 'backsight') r.backsights[0].point = v;
+          else r[k] = v;
+        }
+        r.edits = {};
+        edited.push(r.id);
+      }
+    } else {
+      const changes = Object.fromEntries(['target_height', 'prism_constant', 'antenna_height', 'antenna_type', 'instrument_height', 'backsight', 'scale', 'ppm', 'base_antenna_height', 'name', 'code', 'desc', 'deleted', 'n', 'e', 'z'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
+      if (!Object.keys(changes).length) throw new Error('Nothing to change: give target_height, antenna_height, instrument_height, backsight, prism_constant… or revert.');
+      edited = FBK.editObservations(book, obs, changes);
+    }
+    const r = FBK.applyToDoc(ctx.doc, e, S, D);
+    afterPoints();
+    return { survey: e.name, observations: obs.length, edited: edited.length, moved: r.moved.length, removed: r.removed, added: r.added, points: movedRows(r.moved) };
+  }, true);
+  def('terrain', 'recompute_survey', 'Recompute a survey\'s points from its field book (after its control points moved, or to check it): each point moves by what the edits and moved stations change.', obj({ survey: OBS_FILTER.survey }), (a) => {
+    const e = surveyOf(a.survey);
+    const r = FBK.applyToDoc(ctx.doc, e, S, D);
+    afterPoints();
+    return { survey: e.name, moved: r.moved.length, removed: r.removed, added: r.added, points: movedRows(r.moved) };
+  }, true);
+  def('terrain', 'compare_survey', 'Points of a survey that moved from where the field software put them (after edits), over a tolerance: name, dN, dE, dZ in metres.', obj({ survey: OBS_FILTER.survey, tolerance: num('m, default 0.001') }), (a) => {
+    const e = surveyOf(a.survey);
+    const tol = a.tolerance ?? 0.001;
+    const moved = FBK.recompute(e.survey, () => null).moved.filter((m) => Math.hypot(m.dn, m.de, m.dz) >= tol);
+    return { survey: e.name, tolerance: tol, moved: moved.length, points: movedRows(moved), edits: FBK.listEdits(e.survey) };
+  });
+  def('terrain', 'survey_report', 'A survey report as an HTML page: station setups and backsights, GNSS bases, every edit with its old and new value, the points the edits moved, and the review checks. Give path to save it; export with format landxml (LandXML 1.2 Survey) or infragml (OGC InfraGML Part 6) for the field book itself.', obj({ survey: OBS_FILTER.survey, path: str('absolute .html path') }), async (a) => {
+    const e = surveyOf(a.survey);
+    const moved = FBK.recompute(e.survey, () => null).moved;
+    const findings = FBK.reviewBook(e.survey);
+    const html = FBK.surveyReport(e.survey, { name: e.name, moved, findings });
+    if (a.path) await needIO().writeText(a.path, html);
+    return { survey: e.name, edits: FBK.listEdits(e.survey).length, moved: moved.length, findings: findings.length, ...(a.path ? { path: a.path } : { html }) };
+  });
+  def('terrain', 'review_survey', 'Check a survey like a party chief: backsight residuals, a run of shots with a different rod / target height than the shots around it (a forgotten rod change), odd prism constants, GNSS antenna height changes, poor GNSS precision / PDOP / satellites, the same point name at different places, check shots. Each finding says the likely fix as edit_survey_observations arguments.', obj({ survey: OBS_FILTER.survey, residual: num('backsight / check tolerance, m (default 0.01)'), precision: num('GNSS horizontal precision limit, m (default 0.05)'), pdop: num('PDOP limit (default 6)') }), (a) => {
+    const e = surveyOf(a.survey);
+    const findings = FBK.reviewBook(e.survey, Object.fromEntries(['residual', 'precision', 'pdop'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]])));
+    return { survey: e.name, findings: findings.length, list: findings.map((f) => (f.fix ? { ...f, fix: { survey: e.name, ...f.fix } } : f)) };
+  });
 
   const pointText = async (a) => {
     if (a.text) return a.text;

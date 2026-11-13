@@ -7,7 +7,8 @@ const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
-const { registerAccount, needsSignIn, whenSignedIn, uploadFeedback } = require('./account.cjs');
+const { registerAccount, needsSignIn, whenSignedIn, uploadFeedback, getSecret, setSecret, mapServices } = require('./account.cjs');
+const { registerMaps } = require('./maps.cjs');
 
 // MMR_HOME: e2e runs keep their own data folder (and single-instance lock), away from the user's real app.
 app.setPath('userData', process.env.MMR_HOME || path.join(app.getPath('appData'), 'MyModellerReel'));
@@ -66,7 +67,7 @@ function publicSettings() {
 
 // Files the renderer (and so AI scripts) may read or write. Anything else is refused.
 const MODEL_EXT = /\.(glb|gltf|obj|stl|fbx|bin|usd|usda|usdc|usdz)$/i;
-const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|svg|pdf)$/i;
+const OUT_EXT = /\.(glb|gltf|obj|stl|usdz|usda|3mf|html|png|jpg|webm|mp4|gif|json|csv|txt|pgw|jgw|tfw|wld|xml|landxml|fxl|dxf|ifc|geojson|shp|shx|dbf|svg|pdf|gml|gpkg)$/i;
 
 let win;
 function createWindow(page) {
@@ -273,6 +274,7 @@ ipcMain.handle('settings:set', (_, patch) => {
   saveSettings();
   return publicSettings();
 });
+registerMaps({ ipcMain, userDir: USER, settings: () => settings, saveSettings, account: { getSecret, setSecret, mapServices } });
 ipcMain.handle('window:title', (_, t) => win.setTitle(t));
 ipcMain.handle('shell:open-path', (_, p) => shell.openPath(p === 'plugins' ? USER_PLUGINS : p === 'library' ? LIBRARY : USER));
 // the component library (#45): GLB / glTF files in a folder; the starter models are copied in once
@@ -369,7 +371,7 @@ ipcMain.handle('file:read', (_, p) => {
 });
 // drawings and images placed as underlays
 ipcMain.handle('file:read-binary', (_, p) => {
-  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ply|las|laz|e57|xyz|pts|csv|txt|ifc|shp|shx|dbf|usd|usda|usdc|usdz)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio, IFC and USD files.`);
+  if (!/\.(pdf|png|jpe?g|gif|bmp|tiff?|webp|hdr|exr|mp3|wav|ogg|m4a|aac|flac|ply|las|laz|e57|xyz|pts|csv|txt|ifc|shp|shx|dbf|usd|usda|usdc|usdz|gpkg)$/i.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only PDF, image, audio, IFC, USD and GeoPackage files.`);
   if (fs.statSync(p).size > 300e6) throw new Error('That file is over 300 MB.');
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);

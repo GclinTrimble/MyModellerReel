@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<JOBFile jobName="Kerb pickup" product="Trimble Access" productVersion="2025.10" version="6.30">
+<FieldBook>
+  <CoordinateSystemRecord ID="c1"><SystemName>New Zealand</SystemName><ZoneName>NZTM 2000</ZoneName><DatumName>NZGD2000</DatumName></CoordinateSystemRecord>
+  <PointRecord ID="k1" TimeStamp="2026-03-02T10:00:00"><Name>S1</Name><Code>CP</Code><Method>Coordinates</Method><SurveyMethod>KeyedIn</SurveyMethod><Classification>Normal</Classification><Deleted>false</Deleted><Grid><North>1000</North><East>5000</East><Elevation>10</Elevation></Grid></PointRecord>
+  <PointRecord ID="k2" TimeStamp="2026-03-02T10:00:01"><Name>BS</Name><Code>CP</Code><Method>Coordinates</Method><SurveyMethod>KeyedIn</SurveyMethod><Classification>Normal</Classification><Deleted>false</Deleted><Grid><North>1100</North><East>5000</East><Elevation>10</Elevation></Grid></PointRecord>
+  <AtmosphereRecord ID="a1"><PPM>0</PPM><RefractionCoefficient>0.142</RefractionCoefficient></AtmosphereRecord>
+  <StationRecord ID="s1" TimeStamp="2026-03-02T10:01:00"><StationName>S1</StationName><TheodoliteHeight>1.6</TheodoliteHeight><AtmosphereID>a1</AtmosphereID><ScaleFactor>1</ScaleFactor><StationType>StandardResection</StationType></StationRecord>
+  <BackBearingRecord ID="bb1"><StationRecordID>s1</StationRecordID><Station>S1</Station><BackSight>BS</BackSight><Face1HorizontalCircle>0</Face1HorizontalCircle><OrientationCorrection>0</OrientationCorrection></BackBearingRecord>
+  <TargetRecord ID="t1"><PrismType>Trimble360Prism</PrismType><PrismConstant>0.002</PrismConstant><TargetHeight>1.5</TargetHeight></TargetRecord>
+  <TargetRecord ID="t2"><PrismType>Trimble360Prism</PrismType><PrismConstant>0.002</PrismConstant><TargetHeight>2.0</TargetHeight></TargetRecord>
+  <PointRecord ID="o0" TimeStamp="2026-03-02T10:02:00"><Name>BS</Name><Code>GND</Code><Method>DirectReading</Method><Classification>BackSight</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>0</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>100</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t1</TargetID>
+    <ComputedGrid><North>1100.000000</North><East>5000.000000</East><Elevation>10.1</Elevation></ComputedGrid></PointRecord>
+  <PointRecord ID="o1" TimeStamp="2026-03-02T10:05:00"><Name>P1</Name><Code>GND</Code><Method>DirectReading</Method><Classification>Normal</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>90</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>10</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t1</TargetID>
+    <ComputedGrid><North>1000.000000</North><East>5010.000000</East><Elevation>10.1</Elevation></ComputedGrid></PointRecord>
+  <PointRecord ID="o2" TimeStamp="2026-03-02T10:06:00"><Name>P2</Name><Code>GND</Code><Method>DirectReading</Method><Classification>Normal</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>100</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>12</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t1</TargetID>
+    <ComputedGrid><North>997.916222</North><East>5011.817693</East><Elevation>10.1</Elevation></ComputedGrid></PointRecord>
+  <PointRecord ID="o3" TimeStamp="2026-03-02T10:20:00"><Name>P3</Name><Code>GND</Code><Method>DirectReading</Method><Classification>Normal</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>110</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>14</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t2</TargetID>
+    <ComputedGrid><North>995.211718</North><East>5013.155697</East><Elevation>9.6</Elevation></ComputedGrid></PointRecord>
+  <PointRecord ID="o4" TimeStamp="2026-03-02T10:30:00"><Name>P4</Name><Code>GND</Code><Method>DirectReading</Method><Classification>Normal</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>120</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>16</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t1</TargetID>
+    <ComputedGrid><North>992.000000</North><East>5013.856406</East><Elevation>10.1</Elevation></ComputedGrid></PointRecord>
+  <PointRecord ID="o5" TimeStamp="2026-03-02T10:31:00"><Name>P5</Name><Code>GND</Code><Method>DirectReading</Method><Classification>Normal</Classification><Deleted>false</Deleted>
+    <Circle><HorizontalCircle>130</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>18</EDMDistance><Face>Face1</Face></Circle>
+    <StationID>s1</StationID><BackBearingID>bb1</BackBearingID><TargetID>t1</TargetID>
+    <ComputedGrid><North>988.429823</North><East>5013.788800</East><Elevation>10.1</Elevation></ComputedGrid></PointRecord>
+  <NoteRecord ID="n1" TimeStamp="2026-03-02T10:21:00"><Notes><Note>Rod extended for the kerb</Note></Notes></NoteRecord>
+  <PointRecord ID="k3" TimeStamp="2026-03-02T11:00:00"><Name>B1</Name><Code>CP</Code><Method>Coordinates</Method><SurveyMethod>KeyedIn</SurveyMethod><Classification>Normal</Classification><Deleted>false</Deleted><Grid><North>2000</North><East>6000</East><Elevation>20</Elevation></Grid></PointRecord>
+  <GPSEquipmentRecord ID="q1"><AntennaType>R12i Internal</AntennaType><AntennaMeasurementMethod>Bottom of quick release</AntennaMeasurementMethod><AntennaTapeAdjustment>0</AntennaTapeAdjustment><AntennaHorizontalOffset>0</AntennaHorizontalOffset><AntennaVerticalOffset>0.17932</AntennaVerticalOffset></GPSEquipmentRecord>
+  <AntennaRecord ID="ab"><MeasuredHeight>1.5</MeasuredHeight><MeasurementType>Raw</MeasurementType><GPSEquipmentID>q1</GPSEquipmentID><ReducedHeight>1.67932</ReducedHeight></AntennaRecord>
+  <ReferenceRecord ID="r1" TimeStamp="2026-03-02T11:00:00"><PointName>B1</PointName><AntennaID>ab</AntennaID></ReferenceRecord>
+  <AntennaRecord ID="ar"><MeasuredHeight>1.75</MeasuredHeight><MeasurementType>Raw</MeasurementType><GPSEquipmentID>q1</GPSEquipmentID><ReducedHeight>1.92932</ReducedHeight></AntennaRecord>
+  <PointRecord ID="g1" TimeStamp="2026-03-02T11:05:00"><Name>R1</Name><Code>GND</Code><Method>GpsRTKQuickMark</Method><SurveyMethod>Fix</SurveyMethod><Classification>Normal</Classification><Deleted>false</Deleted>
+    <ECEFDeltas><DeltaX>10</DeltaX><DeltaY>20</DeltaY><DeltaZ>5</DeltaZ></ECEFDeltas><ReferenceRecordID>r1</ReferenceRecordID><AntennaID>ar</AntennaID>
+    <ComputedGrid><North>2010</North><East>6020</East><Elevation>21</Elevation></ComputedGrid><Precision><Horizontal>0.012</Horizontal><Vertical>0.02</Vertical></Precision>
+    <QualityControl1><NumberOfSatellites>14</NumberOfSatellites><PDOP>1.4</PDOP></QualityControl1></PointRecord>
+  <PointRecord ID="g2" TimeStamp="2026-03-02T11:06:00"><Name>R2</Name><Code>GND</Code><Method>GpsRTKQuickMark</Method><SurveyMethod>Fix</SurveyMethod><Classification>Normal</Classification><Deleted>false</Deleted>
+    <ECEFDeltas><DeltaX>11</DeltaX><DeltaY>21</DeltaY><DeltaZ>5</DeltaZ></ECEFDeltas><ReferenceRecordID>r1</ReferenceRecordID><AntennaID>ar</AntennaID>
+    <ComputedGrid><North>2011</North><East>6021</East><Elevation>21.2</Elevation></ComputedGrid><Precision><Horizontal>0.09</Horizontal><Vertical>0.12</Vertical></Precision>
+    <QualityControl1><NumberOfSatellites>5</NumberOfSatellites><PDOP>7.5</PDOP></QualityControl1></PointRecord>
+</FieldBook>
+</JOBFile>

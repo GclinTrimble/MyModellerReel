@@ -12,6 +12,7 @@ import { buildForm, SWATCHES, codeGrid } from './forms.js';
 import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
+import * as Assets from '../core/assets.js';
 import * as SW from '../core/sitework.js';
 import * as TR from '../core/terrain.js';
 const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile', set_material: 'Colour and finish', create_corridor: 'New road corridor', create_alignment: 'New alignment', create_surface: 'New surface' };
@@ -105,7 +106,7 @@ export function infoTip(text, label = 'More information') {
 }
 /** The Survey tab's two views (#228): the points, and COGO. */
 export const surveyViews = (ui, current) =>
-  h('div.segmented.survey-views', { role: 'tablist', 'aria-label': 'Survey' }, ...[['survey', 'Points', 'map-pin'], ['cogo', 'COGO', 'compass-tool']].map(([tab, label, ic]) => h('button.seg', { type: 'button', role: 'tab', 'aria-selected': String(tab === current), 'aria-pressed': String(tab === current), onclick: () => ui.show(tab) }, icon(ic), label)));
+  h('div.segmented.survey-views', { role: 'tablist', 'aria-label': 'Survey' }, ...[['survey', 'Points', 'map-pin'], ['fieldbook', 'Field book', 'notebook'], ['maplayers', 'Maps', 'stack'], ['cogo', 'COGO', 'compass-tool']].map(([tab, label, ic]) => h('button.seg', { type: 'button', role: 'tab', 'aria-selected': String(tab === current), 'aria-pressed': String(tab === current), onclick: () => ui.show(tab) }, icon(ic), label)));
 const iconBtn = (name, label, onclick, pressed) =>
   h('button.icon-btn', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(name));
 
@@ -501,6 +502,9 @@ export class UI {
       } },
       addPoint: { label: 'Add point…', icon: 'map-pin', run: form('add_point') },
       cogo: { label: 'COGO: inverse, traverse, intersect…', icon: 'compass-tool', run: () => this.show('cogo') },
+      fieldbook: { label: 'Field book: fix rod, instrument and antenna heights…', icon: 'notebook', run: () => this.show('fieldbook', true) },
+      mapLayers: { label: 'Map layers: WMTS, WMS, WFS, OGC API…', icon: 'stack', run: () => this.show('maplayers', true) },
+      exportGpkg: { label: 'Export GeoPackage (.gpkg)…', icon: 'database', run: async () => { const p = await this.app.io.pick('gpkg', true, 'Site.gpkg'); if (p) this.app.reg.run('export_geopackage', { path: p }).then((r) => this.toast(`${r.features} features in ${r.tables.length} table${r.tables.length === 1 ? '' : 's'}`)).catch((e) => this.toast(e.message, 'danger')); } },
       breakline: { label: 'Breakline through the selected points', icon: 'line-segment', run: run('add_breakline', {}) },
       boundary: { label: 'Boundary through the selected points', icon: 'polygon', run: run('add_boundary', {}) },
       surface: { label: 'Create surface (TIN)…', icon: 'mountains', run: form('create_surface', { name: 'Existing ground' }) },
@@ -688,13 +692,13 @@ export class UI {
   buildMenus() {
     const T = (g) => TOOLS.filter((t) => t.group === g).map((t) => `tool:${t.id}`);
     this.menus = {
-      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', '-', 'quantities', '-', 'plugins'],
+      File: ['new', 'newTab', 'startScreen', 'open', 'save', 'saveAs', 'versions', '-', 'import', 'importCloud', 'freeAssets', '-', 'referenceFile', 'publishReference', '-', 'exportAll', 'exportSelection', 'exportGpkg', '-', 'quantities', '-', 'plugins'],
       Edit: ['undo', 'redo', '-', 'cut', 'copy', 'paste', '-', 'duplicate', 'delete', '-', 'selectAll', 'selectNone', 'selectInvert', 'selectSimilar', 'selectWhere', '-', 'group', 'ungroup', '-', 'makeComponent', 'placeComponent', 'makeUnique', 'replaceComponent', '-', 'hide', 'unhideAll', 'lock', 'unlockAll', '-', 'metadata', '-', 'modelInfo', 'purge', 'units'],
       Arrange: ['alignXmin', 'alignXmid', 'alignXmax', 'alignZmin', 'alignZmid', 'alignZmax', 'alignYmin', '-', 'distX', 'distZ', 'stack', '-', 'placeOn', 'against', 'freeSpace'],
       View: ['zoomExtents', 'zoomSel', 'tool:zoomwin', 'viewBack', 'viewForward', 'Standard views', 'iso', 'top', 'front', 'right', 'left', 'back', 'Panes', 'layout1', 'layout2', 'layout2Rows', 'layout3', 'layout4', 'fitPanes', 'Display', 'edges', 'xray', 'wireframe', 'shadows', 'grid', 'Sections', 'sectionPlanes', 'sectionFill', 'unsection', 'Handles', 'gizmoMove', 'gizmoRotate', 'gizmoScale', 'Style', 'styleShaded', 'styleHidden', 'styleMono', 'styleSketchy', 'Camera and light', 'parallel', 'twoPoint', 'lens', 'effects', 'environment', 'geolocation', 'sunTime', 'sunStudy', 'Render', 'renderImage', 'aiRender', '-', 'ribbon', 'sideToolbar', 'sidePanel', 'timeline', 'theme', 'perf'],
       Tools: ['Draw', ...T('draw'), 'Modify', ...T('edit'), 'Construct', ...T('construct'), 'Drafting', ...T('draft'), 'Camera', ...T('camera'), 'Lights', 'lightPoint', 'lightSpot', 'lightArea', 'Materials', 'texture', 'textureEdit', 'materialMaps', 'aiTexture', 'generateMesh', 'Annotate', 'text3d', 'dimensionShape', 'labelSel', 'listAnnotations', 'clearGuides', 'lineTypes', 'clashes', 'Shape', 'filletEdges', 'chamferEdges', 'loft', 'shell', 'thicken', 'extrudeFaces', 'subdivide', 'deform', 'simplify', 'splitSolid', 'intersect', 'weld', 'symmetry', 'arrayGrid', 'arrayPath', 'axes', 'import2d', 'curvesToFaces', 'imprint', 'offsetFace', 'moveElements', 'repair', 'Parametric', 'sweep', 'sketchProfile', 'liveArray', 'bake', 'Recipes', 'recordMacro', 'saveRecipe', 'library', 'My tools', 'myTools'],
       Animate: ['timeline', 'play', '-', 'keySel', 'keyCam', 'autoKey', '-', 'sequence', 'turntable', 'scenesAnim', 'explode', 'alongPath', 'stagger', 'motion', '-', 'marker', 'caption', 'Depth', 'saveClip', 'applyClip', 'physics', 'addShot', 'addAudio', 'sectionReveal', 'attach', 'lookAt', 'retime', 'schedule', '-', 'clearAnim', 'exportVideo'],
-      Site: ['ribbonSite', '-', 'survey', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
+      Site: ['ribbonSite', '-', 'survey', 'fieldbook', 'mapLayers', 'importPoints', 'exportPoints', 'importTerrain', 'groundFromCloud', '-', 'Surfaces', 'contours', 'analyze', 'profile', 'sections', 'smooth', 'fromContours', 'contourZ', '-', 'Design', 'pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', '-', 'addPoint', 'tool:point', 'cogo', '-', 'breakline', 'boundary', 'surface', 'editSurface', 'checkSurface', '-', 'cutFill', 'volumeReport', '-', 'Roads', 'alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'corridorVolumes', 'corridorSolids', 'applyCorridor', 'Field designs', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road', '-', 'featureCode', 'loadLibrary', 'processCodes', '-', 'coordSys', 'basePoint', 'mapPick', 'units'],
       Drawings: ['ribbonDrawings', '-', 'importPdf', 'importImage', 'readDrawing', 'vectorise', 'snapDrawings', '-', 'Place', 'tool:calibrate', 'drawingScale', 'tool:control', 'georef', 'georefReport', 'worldFile', '-', 'From the PDF', 'pdfStats', 'extract', 'drawingText', 'textToPoints', 'labelContours', '-', 'Drafting', 'tool:trim', 'tool:extend', 'tool:split', 'tool:join', 'offset', 'fillet', 'chamfer', 'joinCurves', 'explode', 'simplify', 'divide', '-', 'To the model', 'elevate', 'toBreaklines', 'extrudeLines', 'sweepLines', '-', 'Layers', 'newLayer', 'mapLayers', 'layerState', 'restoreLayerState'],
       AI: ['askAi', 'askHere', 'agents', 'newChat', 'sketchForAi', '-', 'review', 'proposeToggle', 'proposeAccept', 'proposeReject', '-', 'mcp', 'aiSetup', 'aiFeedback', 'aiSettings'],
       Help: ['howto', 'tour', 'insights', 'shortcuts', 'mcp', '-', 'checkUpdates', 'restartUpdate', '-', 'about'],
@@ -1271,7 +1275,7 @@ export class UI {
   show(tab, focus = false) {
     this.tab = tab;
     if (focus) this.setSidePanel(true);
-    for (const b of this.$('dock-tabs').querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === (tab === 'cogo' ? 'survey' : tab))); // COGO lives in the Survey tab
+    for (const b of this.$('dock-tabs').querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === (tab === 'cogo' || tab === 'fieldbook' || tab === 'maplayers' ? 'survey' : tab))); // COGO lives in the Survey tab
     this.renderDock();
     if (focus && tab === 'ai') this.app.ai.focus();
   }
@@ -1340,7 +1344,7 @@ export class UI {
   // ---------------------------------------------------------------- ribbons (#195, #197): tools by workflow, in tabs
   static RIBBONS = {
     Site: {
-      Survey: ['survey', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
+      Survey: ['survey', 'fieldbook', 'mapLayers', 'importPoints', 'tool:point', 'addPoint', 'cogo', 'featureCode', 'loadLibrary', 'processCodes', 'exportPoints', 'coordSys', 'basePoint', 'mapPick'],
       Surfaces: ['surface', 'editSurface', 'breakline', 'boundary', 'checkSurface', 'importTerrain', 'groundFromCloud', 'contours', 'contourZ', 'analyze', 'smooth', 'fromContours'],
       Design: ['pad', 'stamp', 'newTerrain', 'tool:sculpt', 'drape', 'drapeImage', 'water', 'trench', 'lineSlope', 'plane', 'offsetSurface', 'road'],
       Roads: ['alignment', 'corridor', 'editCorridor', 'roadViews', 'corridorSurface', 'applyCorridor', 'profile', 'sections'],
@@ -2569,7 +2573,7 @@ export class UI {
     };
     const recipes = Object.entries(doc.recipes || {});
     // the component library (#45): click to place at the view's centre, or drag into the view
-    // groups fold, the search finds a name, group or tag, Ctrl-click picks several to group and tag in the bar below
+    // groups fold, the search finds a name, group or tag, Ctrl-click picks several (Shift-click a run) to group and tag in the bar below
     const lib = (this.libState ||= { q: '', picked: new Set() });
     const assets = h('div.assets-wrap', { ondragover: (e) => e.dataTransfer.types.includes('Files') && e.preventDefault(), ondrop: (e) => e.dataTransfer.files.length && (e.preventDefault(), e.stopPropagation(), app.dropFiles(e.dataTransfer.files, { library: true })) }, h('p.muted.small', {}, 'Loading…'));
     const organize = (names, meta) => run('organize_library', { names, ...meta });
@@ -2578,27 +2582,39 @@ export class UI {
       const shown = list.filter((f) => !q || [f.name, f.group, ...f.tags].some((x) => x.toLowerCase().includes(q)));
       const groups = [...new Set(list.map((f) => f.group).filter(Boolean))].sort();
       lib.picked = new Set([...lib.picked].filter((n) => list.some((f) => f.name === n)));
+      // picking updates the tiles and the bar in place: re-rendering the dock would lose its scroll position
+      const els = new Map();
+      const pick = (names, on) => {
+        for (const n of names) on ? lib.picked.add(n) : lib.picked.delete(n), els.get(n)?.setAttribute('aria-pressed', String(on));
+        drawBar();
+      };
       const tile = (f) => {
         const img = h('img', { alt: '' });
         app.io.libraryThumb(f.name).then((src) => (img.src = src)).catch(() => {});
         const place = (position) => app.reg.run('insert_asset', { name: f.name, position }).then((r) => r?.id && app.tools.place([r.id])).catch((e) => this.toast(e.message, 'danger'));
         const tags = f.tags.length ? ` · ${f.tags.join(', ')}` : '';
-        return h(
+        const el = h(
           'button.asset',
           {
-            title: `${f.name}${tags}: click to place, drag into the view, Ctrl-click to pick several`,
+            title: `${f.name}${tags}: click to place, drag into the view, Ctrl-click to pick several, Shift-click to pick a run`,
             'aria-pressed': String(lib.picked.has(f.name)),
             draggable: true,
             ondragstart: (e) => e.dataTransfer.setData('text/x-mmr-asset', f.name),
             onclick: (e) => {
-              if (!(e.ctrlKey || e.metaKey)) return place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100)));
-              lib.picked.has(f.name) ? lib.picked.delete(f.name) : lib.picked.add(f.name);
-              this.renderDock();
+              const at = order.indexOf(f.name);
+              if (e.shiftKey) {
+                const from = order.includes(lib.anchor) ? order.indexOf(lib.anchor) : at;
+                pick(order.slice(Math.min(from, at), Math.max(from, at) + 1), true);
+              } else if (e.ctrlKey || e.metaKey) pick([f.name], !lib.picked.has(f.name));
+              else return place(app.viewport.controls.target.toArray().map((x, k) => (k === 1 ? 0 : Math.round(x * 100) / 100)));
+              lib.anchor = f.name;
             },
           },
           img,
           h('span', {}, f.name.replace(/\.\w+$/, '')),
         );
+        els.set(f.name, el);
+        return el;
       };
       // a tile dragged onto a group's title moves into that group
       const section = (name, items) =>
@@ -2609,23 +2625,25 @@ export class UI {
           h('div.assets', {}, items.map(tile)),
         );
       const byGroup = [...groups.map((g) => [g, shown.filter((f) => f.group === g)]), ['Ungrouped', shown.filter((f) => !f.group)]].filter(([, items]) => items.length);
-      const picked = [...lib.picked];
+      const order = byGroup.flatMap(([, items]) => items.map((f) => f.name)); // the order on screen, for Shift-click runs
       const gIn = h('input', { placeholder: 'Group', list: 'lib-groups', 'aria-label': 'Group' });
       const tIn = h('input', { placeholder: 'Tags, comma separated', 'aria-label': 'Tags' });
+      const count = h('strong', {});
+      const bar = h(
+        'div.lib-organize',
+        {},
+        count,
+        gIn,
+        tIn,
+        h('button.btn.sm.primary', { onclick: () => organize([...lib.picked], { ...(gIn.value.trim() ? { group: gIn.value.trim() } : {}), ...(tIn.value.trim() ? { add_tags: tIn.value.split(',').map((s) => s.trim()).filter(Boolean) } : {}) }).then(() => lib.picked.clear()) }, icon('check'), 'Apply'),
+        h('button.btn.sm', { onclick: () => pick([...lib.picked], false) }, 'Clear'),
+      );
+      const drawBar = () => ((bar.hidden = !lib.picked.size), (count.textContent = `${lib.picked.size} picked`));
+      drawBar();
       assets.replaceChildren(
         h('input.lib-search', { type: 'search', value: lib.q, placeholder: 'Search name, group or tag', 'aria-label': 'Search the library', oninput: (e) => ((lib.q = e.target.value), clearTimeout(this.libT), (this.libT = setTimeout(() => (this.renderDock(), this.$('dock-body').querySelector('.lib-search')?.focus()), 200))) }),
         h('datalist', { id: 'lib-groups' }, groups.map((g) => h('option', { value: g }))),
-        picked.length
-          ? h(
-              'div.lib-organize',
-              {},
-              h('strong', {}, `${picked.length} picked`),
-              gIn,
-              tIn,
-              h('button.btn.sm.primary', { onclick: () => organize(picked, { ...(gIn.value.trim() ? { group: gIn.value.trim() } : {}), ...(tIn.value.trim() ? { add_tags: tIn.value.split(',').map((s) => s.trim()).filter(Boolean) } : {}) }).then(() => lib.picked.clear()) }, icon('check'), 'Apply'),
-              h('button.btn.sm', { onclick: () => (lib.picked.clear(), this.renderDock()) }, 'Clear'),
-            )
-          : '', // replaceChildren would print null
+        bar,
         ...byGroup.map(([g, items]) => section(g, items)),
         ...(list.length ? [] : [h('p.muted.small', {}, 'Add models, or drop model files here.')]),
       );
@@ -2963,6 +2981,215 @@ export class UI {
   }
 
   /** Survey: coordinates, points table, surfaces and the feature library. */
+  /** Map layers (#264–#268): add OGC services, order and style the layers, my saved services and layer sets, offline. */
+  panel_maplayers() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (name, args) => app.reg.run(name, args).catch((e) => (this.toast(e.message, 'danger'), null));
+    const st = (this.mapUi ||= { url: '', caps: null, layer: '', services: null, cache: null, busy: false });
+    const again = () => this.renderDock();
+    if (!st.services && !st.loading) {
+      st.loading = true;
+      run('list_map_services', {}).then((r) => ((st.services = r?.services || []), (st.synced = r?.synced), (st.why = r?.why), again()));
+      run('map_cache', {}).then((r) => ((st.cache = r), again()));
+    }
+    const layers = (doc.settings.map_layers || []).slice();
+    const placed = !!(doc.geo?.base && (doc.geo?.crs?.epsg || doc.geo?.crs?.projection)) || !!doc.settings.geolocation;
+    const url = h('input.grow', { value: st.url, placeholder: 'WMTS / WMS / WFS capabilities, OGC API page or XYZ {z}/{x}/{y}', 'aria-label': 'Service address', oninput: (e) => (st.url = e.target.value), onkeydown: (e) => e.key === 'Enter' && read() });
+    const read = async () => {
+      if (!st.url.trim()) return;
+      st.busy = true;
+      again();
+      st.caps = await run('list_service_layers', { url: st.url.trim() });
+      st.layer = st.caps?.layers.find((l) => l.drawable !== false)?.id || '';
+      st.busy = false;
+      again();
+    };
+    const add = async () => {
+      const r = await run('add_map_layer', { url: st.url.trim(), ...(st.layer ? { layer: st.layer } : {}) });
+      if (r) this.toast(`${r.name}: ${r.standard}${r.note ? ` · ${r.note}` : ''}`), (st.caps = null), again();
+    };
+    const row = (L, i) => {
+      const top = i === layers.length - 1;
+      const feat = L.kind === 'features';
+      return h(
+        'div.card.map-layer',
+        {},
+        h(
+          'div.row',
+          {},
+          h('input', { type: 'checkbox', checked: L.visible !== false, 'aria-label': `Show ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, visible: e.target.checked }) }),
+          icon(feat ? 'polygon' : 'map-trifold'),
+          h('b.grow', { title: `${L.type.toUpperCase()} · ${L.url}` }, L.name),
+          h('button.icon-btn.sm', { title: 'Up', 'aria-label': `Move ${L.name} up`, disabled: top, onclick: () => run('set_map_layer', { layer: L.id, order: i + 1 }) }, icon('arrow-up')),
+          h('button.icon-btn.sm', { title: 'Down', 'aria-label': `Move ${L.name} down`, disabled: i === 0, onclick: () => run('set_map_layer', { layer: L.id, order: i - 1 }) }, icon('arrow-down')),
+          h('button.icon-btn.sm', { title: 'Remove', 'aria-label': `Remove ${L.name}`, onclick: () => run('remove_map_layer', { layer: L.id }) }, icon('trash')),
+        ),
+        h(
+          'div.row.wrap.small',
+          {},
+          h('label.row', {}, 'Opacity ', h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: L.opacity ?? 1, 'aria-label': `Opacity of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, opacity: +e.target.value }) })),
+          feat ? h('label.row', {}, 'Colour ', h('input', { type: 'color', value: L.style?.stroke || '#d9480f', 'aria-label': `Colour of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, style: { stroke: e.target.value, point: e.target.value, fill: e.target.value } }) })) : null,
+          feat ? h('label.row', {}, 'Label ', h('input.cell', { value: L.style?.label || '', placeholder: 'attribute', 'aria-label': `Label attribute of ${L.name}`, onchange: (e) => run('set_map_layer', { layer: L.id, style: { label: e.target.value.trim() || undefined } }) })) : null,
+          app.mapLayers?.errors.get(L.id) ? h('span.param-error', { title: app.mapLayers.errors.get(L.id) }, icon('warning'), ' not loading') : null,
+        ),
+        feat
+          ? h(
+              'div.row.wrap',
+              {},
+              h('input.cell.grow', { value: L.cql || (L.where ? Object.entries(L.where).map(([k, v]) => `${k}=${v}`).join(' AND ') : ''), placeholder: L.type === 'wfs' ? 'filter: attribute=value' : 'filter: CQL2, e.g. zone=\'R1\'', 'aria-label': `Filter of ${L.name}`, onchange: (e) => {
+                const t = e.target.value.trim();
+                const eq = /^\s*(\w+)\s*=\s*'?([^']*)'?\s*$/.exec(t);
+                run('set_map_layer', { layer: L.id, ...(L.type === 'wfs' ? { where: t && eq ? { [eq[1]]: eq[2] } : {} } : { cql: t }) });
+              } }),
+              h('button.btn.sm', { title: 'Bring the features around the view into the model, with their attributes', onclick: () => run('import_features', { layer: L.id }).then((r) => r && this.toast(`${r.features} features on layer ${r.layer}`)) }, icon('tray-arrow-down'), 'Bring in'),
+            )
+          : null,
+      );
+    };
+    const svc = st.services || [];
+    return h(
+      'div.panel',
+      {},
+      surveyViews(this, 'maplayers'),
+      placed ? null : h('div.card.small', {}, icon('info'), ' Place the model on Earth first: layers show once it has a coordinate system and a base point. ', h('button.btn.sm', { onclick: () => app.pickLocation() }, icon('map-pin'), 'Place…')),
+      h('h3', {}, 'Add a service'),
+      h('div.row', {}, url, h('button.btn', { onclick: read, disabled: st.busy }, icon(st.busy ? 'spinner' : 'magnifying-glass'), 'Read')),
+      st.caps
+        ? h(
+            'div.card',
+            {},
+            h('div.small', {}, h('b', {}, st.caps.title || st.caps.kind.toUpperCase()), st.caps.provider ? ` · ${st.caps.provider}` : '', ` · ${st.caps.kind.toUpperCase()} ${st.caps.version || ''}`),
+            h('select', { 'aria-label': 'Layer', onchange: (e) => (st.layer = e.target.value) }, st.caps.layers.map((l) => h('option', { value: l.id, selected: l.id === st.layer, disabled: l.drawable === false }, `${l.title}${l.drawable === false ? ' (no Web Mercator tiles)' : l.features ? ' · features' : ''}`))),
+            h('div.row.wrap', {}, h('button.btn.primary', { onclick: add }, icon('plus'), 'Add layer'), h('button.btn', { onclick: () => this.commandDialog('save_map_service', { name: st.caps.title || '', url: st.url.trim(), layers: st.layer ? [st.layer] : [] }) }, icon('bookmark-simple'), 'Save to my services…')),
+          )
+        : null,
+      h('h3', {}, `Layers · ${layers.length}`),
+      layers.length ? layers.map(row).reverse() : h('p.small.muted', {}, 'No web map layers yet: add a service above, or one of yours below. The basemap button at the bottom left of the view stays too.'),
+      layers.length ? h('div.row.wrap', {}, h('button.btn.sm', { onclick: () => this.commandDialog('save_layer_set', {}) }, icon('stack'), 'Save as a layer set…'), h('button.btn.sm', { onclick: async () => { const p = await app.io.pick('owc', true, 'map-context.json'); if (p) run('export_map_context', { path: p }).then((r) => r && this.toast(`OWS Context: ${r.layers} layers`)); } }, icon('export'), 'OWS Context…')) : null,
+      h('div.row', {}, h('h3.grow', {}, 'My services'), h('span.small.muted', { title: st.why || '' }, st.services ? (st.synced ? 'with your account' : 'on this computer') : '…')),
+      svc.length
+        ? h('div.map-services', {}, svc.map((s) => h('div.row.small', {}, icon(s.kind === 'layer-set' ? 'stack' : 'globe'), h('span.grow', { title: s.url }, s.name, s.has_key ? h('span.muted', {}, ' · key') : ''), h('button.btn.sm', { onclick: () => run('apply_layer_set', { name: s.name }).then((r) => r && this.toast(`${r.added} layer${r.added === 1 ? '' : 's'} added`)) }, icon('plus'), 'Add'), h('button.icon-btn.sm', { title: `Forget ${s.name}`, 'aria-label': `Forget ${s.name}`, onclick: () => run('remove_map_service', { name: s.name }).then(() => ((st.services = null), (st.loading = false), again())) }, icon('trash')))))
+        : h('p.small.muted', {}, 'Services and layer sets you save follow you to any computer you sign in on. Keys stay on this computer.'),
+      h('div.row.wrap', {}, h('button.btn.sm', { onclick: async () => { const p = await app.io.pick('owc', false); if (p) run('import_map_context', { path: p }).then((r) => r && this.toast(`${r.added.length} layers added`)); } }, icon('tray-arrow-down'), 'Open an OWS Context…')),
+      h('h3', {}, 'Offline'),
+      h('div.small.muted', {}, st.cache ? `Map cache: ${st.cache.mb} MB of ${st.cache.limit_mb} MB` : ''),
+      h('div.row.wrap', {}, h('button.btn.sm', { disabled: !layers.length, onclick: async () => { const v = app.mapLayers?.view(); this.toast('Taking this area offline…'); const r = await run('cache_map_area', { at: v ? [v.x, v.z] : [0, 0], radius: Math.min(1500, Math.round(v?.radius || 500)) }); if (r) (st.cache = r.cache), this.toast(`${r.cached} tiles and ${r.features} features kept for offline use${r.failed ? ` (${r.failed} failed)` : ''}`), again(); } }, icon('cloud-arrow-down'), 'Take this area offline'), h('button.btn.sm', { onclick: () => run('map_cache', { clear: true }).then((r) => ((st.cache = r), again())) }, icon('broom'), 'Clear the cache')),
+    );
+  }
+  /** Field book (#260): a survey's setups and shots, edited in place; review findings with their fix; edits; photos. */
+  panel_fieldbook() {
+    const app = this.app;
+    const doc = app.store.doc;
+    const run = (name, args) => app.reg.run(name, args).catch((e) => this.toast(e.message, 'danger'));
+    const surveys = doc.entities.filter((e) => e.survey);
+    if (!surveys.length)
+      return h('div.panel', {}, surveyViews(this, 'fieldbook'), h('p.small.muted', {}, 'Import a Trimble JobXML (.jxl) job: its station setups, rod and antenna heights and every shot come with the points, so a field mistake can be fixed here.'), h('button.btn.primary', { onclick: () => run('import', {}) }, icon('tray-arrow-down'), 'Import a job…'));
+    const e = surveys.find((s) => s.id === this.fbSurvey) || surveys[0];
+    this.fbSurvey = e.id;
+    const book = e.survey;
+    const sv = { survey: e.id };
+    const sel = (this.fbSel ||= new Set());
+    const num3 = (v) => (v == null ? '' : (+v).toFixed(3));
+    const cell = (label, value, onchange) => h('input.cell', { inputmode: 'decimal', value: num3(value), 'aria-label': label, onclick: (ev) => ev.stopPropagation(), onchange: (ev) => ev.target.value !== '' && onchange(+ev.target.value) });
+    const edited = (rec, k) => (k in (rec.edits || {}) ? '.edited' : '');
+    const findings = this.fbFindings?.survey === e.id ? this.fbFindings.list : null;
+    const review = async () => {
+      const r = await run('review_survey', sv);
+      if (r) (this.fbFindings = { survey: e.id, list: r.list }), this.renderDock();
+    };
+    const edit = async (args) => {
+      const r = await run('edit_survey_observations', { ...sv, ...args });
+      if (r) this.toast(`${r.edited} edited · ${r.moved} point${r.moved === 1 ? '' : 's'} moved${r.removed?.length ? ` · ${r.removed.length} hidden` : ''}`);
+      if (this.fbFindings) this.fbFindings = null;
+      this.renderDock();
+    };
+    const edits = (() => {
+      const out = [];
+      for (const s of [...Object.values(book.setups), ...Object.values(book.bases)]) for (const k of Object.keys(s.edits || {})) out.push(`${s.kind === 'station' ? `Station ${s.station}` : `Base ${s.point}`}: ${k}`);
+      for (const o of book.observations) for (const k of Object.keys(o.edits || {})) out.push(`${o.name}: ${k === 'th' ? 'rod height' : k === 'pc' ? 'prism constant' : k === 'antenna' ? 'antenna height' : k}`);
+      return out;
+    })();
+    const groups = [
+      ...Object.values(book.setups).map((s) => ({ s, obs: book.observations.filter((o) => o.setup === s.id) })),
+      ...Object.values(book.bases).map((s) => ({ s, obs: book.observations.filter((o) => o.base === s.id) })),
+    ].filter((g) => g.obs.length);
+    const other = book.observations.filter((o) => !o.setup && !o.base);
+    const open = (this.fbOpen ||= new Set());
+    const row = (o) =>
+      h(
+        `tr${sel.has(o.id) ? '.sel' : ''}${o.deleted ? '.deleted' : ''}`,
+        { onclick: () => (sel.has(o.id) ? sel.delete(o.id) : sel.add(o.id), this.renderDock()), ondblclick: () => { const p = doc.entities.find((x) => x.id === book.points?.[o.name]); if (p) app.select([p.id]), run('zoom_extents', { ids: [p.id] }); } },
+        h('td', {}, h('input', { type: 'checkbox', checked: sel.has(o.id), 'aria-label': `Pick ${o.name}`, onclick: (ev) => ev.stopPropagation(), onchange: (ev) => (ev.target.checked ? sel.add(o.id) : sel.delete(o.id), this.renderDock()) })),
+        h('td', { title: `${o.method} · ${o.cls}` }, o.name, o.cls !== 'Normal' ? h('span.small.muted', {}, ` ${o.cls}`) : null),
+        h('td', {}, (o.time || '').slice(11, 16)),
+        h(`td${edited(o, o.kind === 'gnss' ? 'antenna' : 'th')}`, {}, o.kind === 'ts' ? cell(`Rod height of ${o.name}`, o.th, (v) => edit({ ids: [o.id], target_height: v })) : o.kind === 'gnss' ? cell(`Antenna height of ${o.name}`, o.antenna?.measured, (v) => edit({ ids: [o.id], antenna_height: v })) : ''),
+        h('td', {}, o.code),
+        h('td', {}, h('button.icon-btn.sm', { title: o.deleted ? `Restore ${o.name}` : `Delete ${o.name}`, 'aria-label': o.deleted ? `Restore ${o.name}` : `Delete ${o.name}`, onclick: (ev) => (ev.stopPropagation(), edit({ ids: [o.id], deleted: !o.deleted })) }, icon(o.deleted ? 'arrow-counter-clockwise' : 'trash'))),
+      );
+    const table = (obs) => h('div.qty.fb', {}, h('table', {}, h('thead', {}, h('tr', {}, ['', 'Point', 'Time', 'Height', 'Code', ''].map((c) => h('th', {}, c)))), h('tbody', {}, obs.slice(0, 400).map(row))));
+    const setupCard = ({ s, obs }) => {
+      const isOpen = open.has(s.id);
+      return h(
+        'div.card.fb-setup',
+        {},
+        h(
+          'div.row.wrap',
+          {},
+          h('button.icon-btn.sm', { title: isOpen ? 'Hide the shots' : 'Show the shots', 'aria-label': isOpen ? 'Hide the shots' : 'Show the shots', 'aria-expanded': String(isOpen), onclick: () => (isOpen ? open.delete(s.id) : open.add(s.id), this.renderDock()) }, icon(isOpen ? 'caret-down' : 'caret-right')),
+          icon(s.kind === 'station' ? 'binoculars' : 'broadcast'),
+          h('b.grow', {}, s.kind === 'station' ? `Station ${s.station}` : `Base ${s.point}`),
+          h('span.small.muted', {}, `${obs.length} shot${obs.length === 1 ? '' : 's'} · ${(s.time || '').slice(11, 16)}`),
+        ),
+        s.kind === 'station'
+          ? h(
+              'div.row.wrap.small',
+              {},
+              h(`label.row${edited(s, 'ih')}`, {}, 'Instrument height ', cell(`Instrument height at ${s.station}`, s.ih, (v) => edit({ setup: s.id, instrument_height: v }))),
+              h(`label.row${edited(s, 'backsight')}`, {}, 'Backsight ', h('input.cell', { value: s.backsights[0]?.point || '', 'aria-label': `Backsight from ${s.station}`, onchange: (ev) => ev.target.value && edit({ setup: s.id, backsight: ev.target.value.trim() }) })),
+            )
+          : h('div.row.wrap.small', {}, h(`label.row${edited(s, 'antenna')}`, {}, 'Base antenna height ', cell(`Base antenna height at ${s.point}`, s.antenna?.measured, (v) => edit({ base: s.id, base_antenna_height: v }))), h('span.muted', {}, s.antenna?.method || '')),
+        isOpen ? table(obs) : null,
+      );
+    };
+    const photos = (book.media || []).filter((m) => m.asset).slice(0, 24);
+    const url = (id) => ((this.fbUrls ||= new Map()).get(id) || this.fbUrls.set(id, URL.createObjectURL(new Blob([Assets.get(id).bytes], { type: Assets.get(id).mime }))).get(id));
+    return h(
+      'div.panel',
+      {},
+      surveyViews(this, 'fieldbook'),
+      surveys.length > 1 ? h('select', { 'aria-label': 'Survey', onchange: (ev) => ((this.fbSurvey = ev.target.value), sel.clear(), this.renderDock()) }, surveys.map((s) => h('option', { value: s.id, selected: s.id === e.id }, s.name))) : null,
+      h('div.small.muted', {}, `${book.job.product} ${book.job.version}`.trim(), book.job.crs?.system ? ` · ${book.job.crs.system}${book.job.crs.zone ? ` / ${book.job.crs.zone}` : ''}` : '', ` · ${book.observations.length} observations`),
+      h('div.row.wrap', {}, h('button.btn.primary', { onclick: review }, icon('list-checks'), 'Check the survey'), h('button.btn', { onclick: () => run('recompute_survey', sv).then(() => this.renderDock()) }, icon('arrows-clockwise'), 'Recompute')),
+      findings
+        ? h(
+            'div.fb-findings',
+            {},
+            findings.length ? findings.map((f) => h('div.card.row', {}, icon(f.severity === 'warning' ? 'warning' : 'info'), h('span.grow.small', {}, f.message), f.fix ? h('button.btn.sm', { onclick: () => edit(f.fix) }, icon('wrench'), 'Fix') : null)) : h('p.small', {}, icon('check-circle'), ' Nothing suspicious: backsights, rod and antenna heights, prism constants, GNSS quality and duplicates look right.'),
+          )
+        : null,
+      sel.size
+        ? h(
+            'div.card.row.wrap.fb-bulk',
+            {},
+            h('b', {}, `${sel.size} picked`),
+            h('label.row.small', {}, 'Rod height ', h('input.cell', { inputmode: 'decimal', 'aria-label': 'Rod height for the picked shots', onchange: (ev) => ev.target.value !== '' && edit({ ids: [...sel], target_height: +ev.target.value }) })),
+            h('label.row.small', {}, 'Antenna height ', h('input.cell', { inputmode: 'decimal', 'aria-label': 'Antenna height for the picked points', onchange: (ev) => ev.target.value !== '' && edit({ ids: [...sel], antenna_height: +ev.target.value }) })),
+            h('button.btn.sm', { onclick: () => edit({ ids: [...sel], revert: true }) }, icon('arrow-counter-clockwise'), 'As measured'),
+            h('button.btn.sm', { onclick: () => (sel.clear(), this.renderDock()) }, 'Clear'),
+          )
+        : null,
+      h('h3', {}, 'Setups'),
+      groups.map(setupCard),
+      other.length ? h('details', {}, h('summary', {}, `Keyed-in and computed points · ${other.length}`), table(other)) : null,
+      h('div.row', {}, h('h3.grow', {}, `Edits · ${edits.length}`), edits.length ? h('button.btn.sm', { onclick: () => edit({ names: ['*'], revert: true }) }, icon('arrow-counter-clockwise'), 'Undo all edits') : null),
+      edits.length ? h('ul.small.fb-edits', {}, edits.slice(0, 50).map((x) => h('li', {}, x))) : h('p.small.muted', {}, 'No edits: the points are where the field software put them.'),
+      book.notes.length ? h('details', {}, h('summary', {}, `Notes · ${book.notes.length}`), h('ul.small', {}, book.notes.map((n) => h('li', {}, `${(n.time || '').slice(11, 16)} ${n.text}`)))) : null,
+      photos.length
+        ? h('div', {}, h('h3', {}, `Photos · ${photos.length}`), h('div.fb-photos', {}, photos.map((m) => h('button.fb-photo', { title: m.point || m.file, 'aria-label': `Photo of ${m.point || m.file}`, onclick: () => { const p = doc.entities.find((x) => x.id === book.points?.[m.point]); if (p) app.select([p.id]); } }, h('img', { src: url(m.asset), alt: m.point || m.file }), h('span.small', {}, m.point || '')))))
+        : null,
+    );
+  }
   panel_survey() {
     const app = this.app;
     const doc = app.store.doc;

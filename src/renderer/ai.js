@@ -28,12 +28,12 @@ const SEES = /llava|vision|-vl|vl:|gemma3|minicpm-v|moondream|bakllava|qwen2\.5v
 import { SKILLS, USER_SKILLS, skillPrompt } from '../core/skills.js';
 
 const SUGGESTIONS = [
-  'Model a small two-storey house with a pitched roof, a door and four windows',
-  'Build a 12-step staircase from separate steps, then animate it as a bottom-up build sequence',
-  'Make a door hinged on its left side and animate it opening over 2 seconds',
-  'Add a 10 second turntable camera so I can export a reel',
-  'Look at my model and suggest three improvements',
-  'Create a plugin with a command that makes a parametric bookshelf',
+  'Make an existing ground surface from my survey points and show 0.5 m contours',
+  'Design a 7 m wide access road along this line with 1:2 batters and give me cut and fill volumes',
+  'Lay a 300 mm stormwater pipe from MH1 to MH2 at 1 % fall with its trench, and check the cover',
+  'A building pad at RL 12.50 inside this outline with 1:2 batters: how much cut and fill?',
+  'Check my survey for busts: rod heights, backsights, duplicate points',
+  'Animate the earthworks as a 4D sequence: strip topsoil, cut, fill, then pave',
 ];
 
 export class Assistant {
@@ -68,7 +68,7 @@ export class Assistant {
   build() {
     this.head = h('div.chat-head');
     this.log = h('div.chat-log');
-    this.input = h('textarea', { placeholder: 'Ask Plumb what to build or animate…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
+    this.input = h('textarea', { placeholder: 'Ask Plumb to survey, design, model or sequence…  (Enter sends, Shift+Enter new line)', 'aria-label': 'Message the AI' });
     this.input.onkeydown = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();

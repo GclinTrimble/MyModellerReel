@@ -3,6 +3,9 @@ import * as X from './xml.js';
 import * as S from './survey.js';
 import * as L from './layers.js';
 import { registerFormat } from './formats.js';
+import * as FB from './fieldbook.js';
+import * as D from './document.js';
+import * as Assets from './assets.js';
 
 /** An attribute or a child element, whichever the writer used. */
 const val = (el, k) => el?.attrs?.[k] ?? X.kid(el || { children: [] }, k)?.text?.trim();
@@ -11,64 +14,74 @@ const num = (el, k) => {
   return v === undefined || v === '' ? null : Number(v);
 };
 
-/** Points of a JobXML file: reduced coordinates when the job has them, else the field book's grid values. */
-export function jxlPoints(text) {
-  const root = X.parse(text);
-  const job = X.kid(root, 'JOBFile');
-  if (!job) throw new Error('Not a Trimble JobXML file (no <JOBFile>).');
-  const pts = new Map();
-  const attrsOf = (rec) => {
-    const out = {};
-    for (const f of X.all(rec, 'Feature')) for (const a of X.kids(f, 'Attribute')) {
-      const n = val(a, 'Name');
-      if (n) out[n] = isNaN(Number(val(a, 'Value'))) ? val(a, 'Value') : Number(val(a, 'Value'));
-    }
-    return out;
-  };
-  const red = X.kid(job, 'Reductions');
-  if (red) {
-    for (const p of X.kids(red, 'Point')) {
-      const g = X.kid(p, 'Grid');
-      if (!g || num(g, 'North') === null) continue;
-      pts.set(val(p, 'Name'), { name: val(p, 'Name'), n: num(g, 'North'), e: num(g, 'East'), z: num(g, 'Elevation') ?? 0, code: val(p, 'Code') || '', desc: val(p, 'Description1') || '', attrs: attrsOf(p) });
-    }
-  }
-  const book = X.kid(job, 'FieldBook');
-  for (const rec of book ? X.kids(book, 'PointRecord') : []) {
-    if (val(rec, 'Deleted') === 'true') {
-      pts.delete(val(rec, 'Name'));
-      continue;
-    }
-    if (red) continue; // the reductions already hold the final coordinates
-    const g = X.kid(rec, 'Grid') || X.kid(rec, 'ComputedGrid');
-    if (!g || num(g, 'North') === null) continue;
-    pts.set(val(rec, 'Name'), { name: val(rec, 'Name'), n: num(g, 'North'), e: num(g, 'East'), z: num(g, 'Elevation') ?? 0, code: val(rec, 'Code') || '', desc: val(rec, 'Description1') || '', attrs: attrsOf(rec) });
-  }
-  const cs = X.all(job, 'CoordinateSystem')[0];
-  return { points: [...pts.values()], crs: cs ? val(cs, 'SystemName') || val(cs, 'ZoneName') || null : null, job: job.attrs.jobName };
-}
-
 registerFormat({
   id: 'jxl',
-  label: 'Trimble JobXML (.jxl): points, codes, attributes',
+  label: 'Trimble JobXML (.jxl): points with their field book (setups, observations, heights), codes, attributes, photos',
+  standard: FB.STANDARD,
   extensions: ['jxl', 'xml'],
   sniff: (t) => typeof t === 'string' && /<JOBFile[\s>]/.test(t.slice(0, 4000)),
-  read: (text, { doc, report, cmd }) => {
-    const r = jxlPoints(text);
-    if (!r.points.length) throw new Error('No points with grid coordinates in that job.');
+  read: async (text, { doc, report, cmd, opts = {}, io }) => {
+    const book = FB.readJobXml(text);
+    const rows = FB.bookPoints(book);
+    if (!rows.length) throw new Error('No points with grid coordinates in that job.');
+    const survey = D.addEntity(doc, { type: 'survey', name: D.uniqueName(doc, book.job.name || 'Survey'), survey: book, material: { color: '#c9a227' } });
+    book.points = {};
     const names = new Set(S.points(doc).map((p) => p.name));
-    const rows = r.points.map((p) => {
+    for (const p of rows) {
       let name = p.name;
       while (names.has(name)) name = `${name}-1`;
       if (name !== p.name) report.warn(`Point ${p.name} exists already: brought in as ${name}.`);
       names.add(name);
-      return { ...p, name };
-    });
-    for (const p of rows) S.addPoint(doc, p);
+      const pt = S.addPoint(doc, { ...p, name });
+      Object.assign(pt.point, { obs: p.obs, survey: survey.id });
+      book.points[p.name] = pt.id;
+    }
     report.add('points', rows.length);
-    if (r.crs) report.warn(`The job's coordinate system is ${r.crs}: coordinates are used as they are.`);
+    report.add('survey setups', Object.keys(book.setups).length + Object.keys(book.bases).length);
+    report.add('observations', book.observations.length);
+    if (book.report.kept.length) report.warn(`Kept as computed in the field (not recomputed after edits): ${book.report.kept.join(', ')}.`);
+    const crs = book.job.crs?.system ? `${book.job.crs.system}${book.job.crs.zone ? ` / ${book.job.crs.zone}` : ''}` : '';
+    if (crs) report.warn(`The job's coordinate system is ${crs}: coordinates are used as they are.`);
+    // a model without a coordinate system takes the job's (its projection places web maps under it, #261)
+    const g = S.geo(doc);
+    if (!g.crs && (crs || book.job.projection)) g.crs = { name: crs || book.job.name, ...(book.job.projection?.type === 'TransverseMercator' ? { projection: book.job.projection } : {}) };
+    // photos linked to points (#262): media records pointing at an observation, and Photo attributes
+    if (io?.readBinary && opts.path) {
+      const dir = String(opts.path).replace(/[\\/][^\\/]*$/, '');
+      const obsIds = new Map(book.observations.map((o) => [o.id, o.name]));
+      const wanted = [];
+      for (const m of book.media) if (m.record && obsIds.has(m.record)) wanted.push({ file: m.file, point: obsIds.get(m.record), m });
+      for (const o of book.observations) if (typeof o.attrs?.Photo === 'string' && o.attrs.Photo) wanted.push({ file: o.attrs.Photo.replace(/\\/g, '/'), point: o.name });
+      let n = 0;
+      for (const w of wanted.slice(0, 500)) {
+        try {
+          const bytes = await io.readBinary(`${dir}/${w.file}`);
+          const asset = Assets.put(bytes, { mime: /\.png$/i.test(w.file) ? 'image/png' : 'image/jpeg', name: w.file.split('/').pop() });
+          const item = w.m || { time: '', file: w.file, record: null, kind: 'photo' };
+          if (!w.m) book.media.push(item);
+          Object.assign(item, { asset, point: w.point });
+          n++;
+        } catch {
+          report.skip(`photo ${w.file}`, 'not found next to the job');
+        }
+      }
+      if (n) report.add('photos', n);
+    }
     if (cmd && Object.keys(doc.featureCodes || {}).length) cmd('process_codes', {});
-    return { job: r.job };
+    return { job: book.job.name, survey: survey.id, standard: FB.STANDARD };
+  },
+});
+
+// OGC InfraGML 1.0 Part 6 Survey (#263): a survey's field book, export only
+registerFormat({
+  id: 'infragml',
+  label: 'OGC InfraGML 1.0 Part 6 Survey (.gml): setups, raw observations, survey results',
+  standard: FB.STANDARD,
+  extensions: ['gml'],
+  write: (doc, { ents }) => {
+    const s = ents.find((e) => e.survey) || doc.entities.find((e) => e.survey);
+    if (!s) throw new Error('No survey to write: import a Trimble JobXML job first.');
+    return FB.toInfraGml(s.survey, { name: s.name, crs: S.geo(doc).crs });
   },
 });
 

@@ -769,6 +769,7 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .lib-group > .assets { margin-top: var(--my-space-1); }
 .asset[aria-pressed='true'] { outline: 2px solid var(--my-accent); outline-offset: -2px; background: var(--my-accent-tint); }
 .lib-organize { display: flex; flex-wrap: wrap; align-items: center; gap: var(--my-space-1); padding: var(--my-space-2); border: 1px solid var(--my-accent); border-radius: var(--my-radius-md); background: var(--my-accent-tint); }
+.lib-organize[hidden] { display: none; }
 .lib-organize input { flex: 1 1 120px; min-width: 0; }
 /* COGO panel (#228) */
 .cogo { gap: var(--my-space-3); }
@@ -849,3 +850,20 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .layer-tile:hover .layer-thumb { border-color: var(--my-accent-line); }
 .layer-tile:focus-visible { outline: 2px solid var(--my-focus); outline-offset: 1px; }
 .layer-close { align-self: flex-start; }
+
+/* Field book (#260) */
+.qty.fb { max-height: 40vh; }
+.qty.fb table { table-layout: fixed; font-size: var(--my-text-xs); }
+.qty.fb th:nth-child(1) { width: 8%; } .qty.fb th:nth-child(2) { width: 30%; } .qty.fb th:nth-child(3) { width: 14%; } .qty.fb th:nth-child(4) { width: 22%; } .qty.fb th:nth-child(6) { width: 10%; }
+.qty.fb td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px; }
+.qty.fb tr { cursor: pointer; }
+.qty.fb tr.sel td { background: var(--my-accent-tint); }
+.qty.fb tr.deleted td:nth-child(2) { text-decoration: line-through; color: var(--my-text-muted, inherit); }
+.fb-setup { margin-bottom: var(--my-space-2); }
+.edited input.cell, td.edited input.cell { border-color: var(--my-warning); box-shadow: inset 3px 0 0 var(--my-warning); }
+.fb-findings .card { align-items: flex-start; gap: var(--my-space-2); margin-bottom: var(--my-space-1); }
+.fb-bulk { position: sticky; top: 0; z-index: 1; gap: var(--my-space-2); }
+.fb-edits { margin: 0; padding-left: 1.2em; }
+.fb-photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: var(--my-space-2); }
+.fb-photo { display: flex; flex-direction: column; gap: 2px; padding: 0; border: 1px solid var(--my-border); background: none; border-radius: var(--my-radius-sm, 4px); overflow: hidden; cursor: pointer; }
+.fb-photo img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }

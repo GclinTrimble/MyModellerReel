@@ -104,6 +104,24 @@ export function writeGeoJson(doc, { ents }) {
 }
 const r6 = (x) => Math.round(x * 1e6) / 1e6;
 
+// OGC GeoPackage 1.4 features (#268): read in the main process (SQLite), here turned into points, lines and outlines
+registerFormat({
+  id: 'gpkg',
+  label: 'OGC GeoPackage (.gpkg): feature tables with attributes',
+  standard: 'OGC GeoPackage 1.4 (12-128r19)',
+  extensions: ['gpkg'],
+  binary: true,
+  read: async (data, { doc, report, opts = {}, io }) => {
+    if (!io?.gpkgRead || !opts.path) throw new Error('GeoPackage files are read from disk: give path.');
+    const { tables } = await io.gpkgRead(opts.path);
+    const epsg = S.geo(doc).crs?.epsg;
+    for (const t of tables) {
+      if (t.epsg && epsg && +t.epsg !== +epsg) report.warn(`Table ${t.table} is in EPSG:${t.epsg}, the model in EPSG:${epsg}: coordinates are used as they are.`);
+      readGeoJson({ type: 'FeatureCollection', features: t.features.filter((x) => x.geometry).map((x) => ({ type: 'Feature', ...x })) }, { doc, report, opts: { ...opts, layer: opts.layer || t.table, force: t.epsg !== 4326 } });
+    }
+    return { tables: tables.map((t) => t.table) };
+  },
+});
 registerFormat({ id: 'geojson', label: 'GeoJSON (points, lines, polygons with properties)', extensions: ['geojson', 'json'], sniff: (t) => typeof t === 'string' && /"type"\s*:\s*"(FeatureCollection|Feature|Point|LineString|Polygon)/.test(t.slice(0, 2000)), read: readGeoJson, write: writeGeoJson });
 
 // ---------------------------------------------------------------- Shapefile (.shp + .shx + .dbf)

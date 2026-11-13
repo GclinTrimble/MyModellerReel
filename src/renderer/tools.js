@@ -126,9 +126,10 @@ export class Tools {
     const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging;
     const inPane = (fn) => this.guard(() => this.vp.withPane(pane, fn));
     // touchpads have no middle button: Alt + drag orbits and Alt + Shift + drag pans, with any tool. This capture
-    // listener runs before OrbitControls' own, so the left button is mapped for this one drag.
+    // listener runs before OrbitControls' own, so the left button is mapped for this one drag. ROTATE either way:
+    // OrbitControls itself turns ROTATE into PAN while Shift is held (and PAN into ROTATE, which broke Alt+Shift).
     const altNav = (e) => e.button === 0 && e.altKey && e.pointerType !== 'touch';
-    c.addEventListener('pointerdown', (e) => ((pane ? pane.controls : this.vp.controls).mouseButtons.LEFT = altNav(e) ? (e.shiftKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE) : this.leftNav ?? null), true);
+    c.addEventListener('pointerdown', (e) => ((pane ? pane.controls : this.vp.controls).mouseButtons.LEFT = altNav(e) ? THREE.MOUSE.ROTATE : this.leftNav ?? null), true);
     c.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') this.touches.add(e.pointerId);
       // an Alt click that does not move (paint sample, tape guide) still reaches the tool, on release

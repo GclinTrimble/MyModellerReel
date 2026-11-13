@@ -66,10 +66,63 @@ report both, store the one the user means), cogo_station_offset and cogo_offset_
 or linework (offset + right, − left), cogo_curve solves a curve from any two parts, cogo_area gives a parcel's area.
 A legal description ("thence N 45°30' E 120.00 feet…") is a traverse that should close on the point of beginning:
 run it with close_to, quote the misclosure and precision, and say if it does not close (worse than 1:10000 is poor).
-Every COGO result has a report line: give it to the user as it is.`,
+Every COGO result has a report line: give it to the user as it is.
+Field data: before using a job, check it like a party chief would: backsight residuals, rod / target height changes
+between consecutive shots (a forgotten rod change is the commonest bust), prism constants, instrument heights, GNSS
+precisions and duplicate point names at different positions. Report what looks wrong with the shots involved and the
+likely fix; do not change measurements without saying so. With a JobXML job in the model, review_survey does these checks
+and edit_survey_observations applies the fix (by shot names, setup, base or time range); survey_report documents it.`,
     examples: [
       { title: 'Deed mapcheck', code: "await api.cogo_traverse({ from: 'POB', legs: [{ direction: 'N 45 30 E', distance: 120 }, { direction: 'S 44 30 E', distance: 80 }, { direction: 'S 45 30 W', distance: 120 }, { direction: 'N 44 30 W', distance: 80 }], close_to: 'POB', store: false });" },
       { title: 'Corner from two distances', code: "await api.cogo_intersect({ point1: 'CP1', distance1: 60, point2: 'CP2', distance2: 80, solution: '1', name: 'C1' });" },
+    ],
+  },
+  roads: {
+    label: 'Road design',
+    description: 'Alignments, vertical profiles, cross-sections, corridors, superelevation, road earthworks',
+    prompt: `Domain: road geometric design. Work from an alignment (create_alignment: points of intersection with radii,
+a vertical profile of PVIs with parabolic vertical curves, or following the ground), then create_corridor with a
+template, then corridor_surface, corridor_volumes and road_views (long section and cross-sections). Typical values,
+unless the user gives their standard (Austroads, AASHTO, DMRB...): lanes 3.5 m (3.0-3.25 m local streets), normal
+crossfall 2.5-3 % falling from the crown, sealed shoulders 1.0-2.5 m at 4 %, superelevation up to 6-8 % on curves
+with 30-60 m runoff, longitudinal grade 0.5-8 % (at least 0.5 % for drainage on kerbed roads), crest and sag curves
+long enough for sight distance (K about 10-60 by speed), cut batters 1:1.5-1:2 (H:V 1.5-2), fill batters 1:2-1:3,
+table drains 0.5-0.6 m deep at the toe of cuts, pavement asphalt 0.04-0.1 m on 0.2-0.4 m crushed rock base. Name
+corridors and alignments by road name; report lengths, chainages, minimum radius, maximum grade, cut / fill volumes and
+the balance, and flag anything outside the values you assumed.`,
+    examples: [
+      { title: 'Alignment, corridor and volumes', code: "await api.create_alignment({ name: 'Access Road', points: [[0, 0], [80, 20], [160, 0]], radii: [0, 120, 0], surface: 'Existing ground' });\nawait api.create_corridor({ alignment: 'Access Road', surface: 'Existing ground', template: { lanes: [{ width: 3.5, crossfall: 2.5 }], shoulder: { width: 1, crossfall: 4 }, cut_slope: 2, fill_slope: 3, ditch: { width: 0.5, depth: 0.6 } }, name: 'Access Road corridor' });\nawait api.corridor_volumes({ corridor: 'Access Road corridor', bulking: 1.25, shrinkage: 0.9 });" },
+    ],
+  },
+  drainage: {
+    label: 'Drainage and utilities',
+    description: 'Gravity pipes, manholes, trenches, culverts, swales; pipe grades, inverts and cover',
+    prompt: `Domain: stormwater, wastewater and utilities. A gravity run goes manhole to manhole in straight lines; each
+pipe has invert levels at both ends, a grade (fall / length, %), a diameter and cover to the finished surface. Typical
+values unless told otherwise: minimum grade 0.5 % for stormwater (1 in 200), 1 in 60-1 in 150 for small sewers,
+self-cleansing velocity 0.6-0.7 m/s, minimum cover 0.6 m in verges and 0.9-1.2 m under roads, manholes at every change
+of grade or direction and at most 90-120 m apart, inverts dropping at least 20-30 mm across a manhole, trench width
+about the pipe diameter + 0.3-0.6 m. Build trenches with design_trench (from / to manholes, invert levels or grade, side
+slopes), pipes with sweep using the pipe profile along the invert line (centre at invert + radius), manholes as
+cylinders on the inverts. Name assets by id (SW-MH01, SW-P01) and set_metadata diameter, material, invert_in / invert_out,
+grade; report a pipe schedule (from, to, length, grade, cover min) and flag grades or cover below the minimum.`,
+    examples: [
+      { title: 'Trench between two manholes at 1 % fall', code: "await api.design_trench({ from: 'MH1', to: 'MH2', depth: 1.2, grade: 1, bottom: 0.6, side_slope: 1, surface: 'Existing ground', name: 'Trench MH1-MH2' });" },
+    ],
+  },
+  earthworks: {
+    label: 'Earthworks and site grading',
+    description: 'Existing ground, pads and platforms, batters, cut / fill, stockpiles, haul and balance',
+    prompt: `Domain: earthworks. Start from an existing ground surface (survey points, breaklines, boundary, or a point
+cloud's ground), keep it as "Existing ground", and design on top: create_pad for building pads and platforms (level or
+graded top, cut and fill batters daylighting to the ground, merge for a design surface), design_plane / design_line_slope
+for graded areas, corridors for roads and channels. Volumes with cut_fill / volume_report between existing and design
+(or a level), with bulking (rock 1.3-1.6, clay 1.2-1.3, sand 1.1-1.15) and compaction / shrinkage (0.85-0.95), within a
+boundary per stage or area. Strip topsoil (0.1-0.3 m) first and report it apart. Batters: 1:2 typical in clay and fill,
+1:1 or steeper only in rock. Aim for a cut / fill balance; report cut, fill, net, imported or exported material and the
+areas, and stage work with markers and build_sequence for a 4D sequence.`,
+    examples: [
+      { title: 'Pad and cut / fill', code: "await api.create_pad({ outline: 'Pad outline', elevation: 12.5, surface: 'Existing ground', cut_slope: 2, fill_slope: 2, merge: true, name: 'Building pad' });\nawait api.cut_fill({ existing: 'Existing ground', design: 'Design surface', bulking: 1.25, shrinkage: 0.9 });" },
     ],
   },
   furniture: {

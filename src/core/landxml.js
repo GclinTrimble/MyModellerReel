@@ -6,6 +6,7 @@ import * as G from './geometry.js';
 import * as S from './survey.js';
 import * as L from './layers.js';
 import { registerFormat } from './formats.js';
+import * as FB from './fieldbook.js';
 
 const UNIT = { meter: 1, millimeter: 0.001, centimeter: 0.01, kilometer: 1000, foot: 0.3048, USSurveyFoot: 1200 / 3937, inch: 0.0254 };
 
@@ -164,6 +165,24 @@ export function readLandXml(text, { doc, cmd, report, opts = {} }) {
     addCurve(doc, pts.map((p) => world(p[0], p[1], p[2] ?? 0)), { name: D.uniqueName(doc, pf.attrs.name || 'Feature'), tag: layer(opts.layer || 'LandXML features'), material: { color: '#2f6f86' } });
     report.add('features');
   }
+  // survey field books (#263): setups and raw observations, linked to the points just read
+  const surveys = X.kids(lx, 'Survey');
+  if (surveys.length) {
+    const results = new Map();
+    for (const p of X.all(lx, 'CgPoint')) {
+      const c = X.nums(p.text || '');
+      if (c.length >= 2) results.set(p.attrs.name, { n: c[0] * k, e: c[1] * k, z: (c[2] ?? 0) * k, code: p.attrs.code || '' });
+    }
+    for (const sv of surveys) {
+      const book = FB.fromLandXmlSurvey(sv, results);
+      if (!book.observations.length) continue;
+      book.points = Object.fromEntries(S.points(doc).filter((p) => book.results[p.name]).map((p) => [p.name, p.id]));
+      const e = D.addEntity(doc, { type: 'survey', name: D.uniqueName(doc, book.job.name), survey: book, material: { color: '#c9a227' } });
+      for (const id of Object.values(book.points)) Object.assign(D.getEntity(doc, id).point, { survey: e.id, obs: book.results[D.getEntity(doc, id).name]?.obs });
+      report.add('survey setups', Object.keys(book.setups).length + Object.keys(book.bases).length);
+      report.add('observations', book.observations.length);
+    }
+  }
   for (const n of ['Parcels', 'PipeNetworks', 'GradingModels', 'Roadways']) if (X.kid(lx, n)) report.skip(n, 'not read yet');
 }
 
@@ -201,6 +220,7 @@ export function writeLandXml(doc, { ents, opts = {} }) {
     X.el('Project', { name: opts.name || 'MyModellerReel model' }),
     X.el('Application', { name: 'MyModellerReel', manufacturer: 'MyModellerReel', version: opts.version || '' }),
     pts.length && opts.points !== false ? X.el('CgPoints', {}, pts.map((p) => X.el('CgPoint', { name: p.name, code: p.point.code || undefined, desc: p.point.desc || undefined }, nez(D.worldMatrix(doc, p).elements.slice(12, 15))))) : null,
+    ...ents.filter((e) => e.survey).map((e) => FB.toLandXmlSurvey(e.survey, X, e.name)),
     surfaces.length
       ? X.el(
           'Surfaces',
@@ -235,7 +255,7 @@ export function writeLandXml(doc, { ents, opts = {} }) {
 
 registerFormat({
   id: 'landxml',
-  label: 'LandXML 1.2 (points, surfaces, alignments, linework)',
+  label: 'LandXML 1.2 (points, surfaces, alignments, linework, survey setups and raw observations)',
   extensions: ['xml', 'landxml'],
   sniff: (t) => typeof t === 'string' && /<LandXML[\s>]/.test(t.slice(0, 4000)),
   read: readLandXml,
