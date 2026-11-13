@@ -73,11 +73,39 @@ async function verifyFile(file, bytes, sha256) {
   return hash.digest('hex') === sha256;
 }
 
+/** Dedicated GPUs by their Vulkan name: NVIDIA, AMD Radeon RX / Pro, Intel Arc A and B cards. The rest are integrated. */
+const DEDICATED = /NVIDIA|GeForce|Quadro|Radeon(\(TM\))? (RX|Pro)|Arc\(TM\) [AB]\d/i;
 /**
- * The built-in runtime. dir: where models live. load: the node-llama-cpp module (tests pass a fake).
+ * The Vulkan devices to use (GGML_VK_VISIBLE_DEVICES), or null for all. A laptop with a graphics card also lists its
+ * integrated GPU, and llama.cpp then splits the model over both by memory: the integrated one, whose "memory" is
+ * shared RAM, takes most layers and the model crawls (#257: 1 token/s on an RTX laptop). So: only the dedicated ones.
+ */
+function vulkanDevices(names = []) {
+  const keep = names.flatMap((n, i) => (DEDICATED.test(n) ? [i] : []));
+  return keep.length && keep.length < names.length ? keep.join(',') : null;
+}
+/** The Vulkan device names, read in a child process (the choice must be made before this process loads Vulkan). */
+function probeVulkan() {
+  const { execFile } = require('node:child_process');
+  const { pathToFileURL } = require('node:url');
+  const entry = pathToFileURL(require.resolve('node-llama-cpp').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')).href;
+  const code = `import(${JSON.stringify(entry)}).then(async (L) => { const l = await L.getLlama({ build: 'never', gpu: 'vulkan', skipDownload: true }); console.log(JSON.stringify(await l.getGpuDeviceNames())); process.exit(0); }).catch(() => process.exit(1));`;
+  return new Promise((resolve) => execFile(process.execPath, ['-e', code], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 60000, windowsHide: true }, (err, out) => {
+    try {
+      resolve(err ? [] : JSON.parse(out.trim().split('\n').pop()));
+    } catch {
+      resolve([]);
+    }
+  }));
+}
+
+/**
+ * The built-in runtime. dir: where models live. load: the node-llama-cpp module (tests pass a fake, and no probe).
+ * probe: the Vulkan device names (vulkanDevices).
  * status(id), download(id, onProgress, signal), chat(id, body, onText, signal) → the Ollama /api/chat reply.
  */
-function createBuiltin({ dir, load = () => import('node-llama-cpp'), check = verifyFile }) {
+function createBuiltin({ dir, load, check = verifyFile, probe = load ? async () => [] : probeVulkan }) {
+  load ||= () => import('node-llama-cpp');
   const fileOf = (id) => path.join(dir, `${modelOf(id).id}.gguf`);
   let live = null; // { id, llama, model, chat }
   let queue = Promise.resolve(); // one model, one context: agents asking at once take turns
@@ -87,11 +115,28 @@ function createBuiltin({ dir, load = () => import('node-llama-cpp'), check = ver
     if (!fs.existsSync(file)) throw new Error(`The assistant model is not downloaded yet (${modelOf(id).label}). Download it from the AI panel.`);
     await live?.model.dispose();
     const L = await load();
+    if (!live?.llama && process.platform !== 'darwin' && !process.env.GGML_VK_VISIBLE_DEVICES) {
+      const pick = vulkanDevices(await probe());
+      if (pick) process.env.GGML_VK_VISIBLE_DEVICES = pick;
+    }
     // the GPU when there is one (Vulkan, CUDA, Metal), the CPU otherwise; never compile on the user's PC
     const llama = live?.llama || (await L.getLlama({ build: 'never' }));
-    const model = await llama.loadModel({ modelPath: file });
-    const context = await model.createContext({ contextSize: { min: 8192, max: 32768 } });
-    live = { id: modelOf(id).id, llama, model, chat: new L.LlamaChat({ contextSequence: context.getSequence() }) };
+    // 16k tokens hold a turn's ~4.5k of instructions and tools and a long thread; a bigger cache only takes graphics
+    // memory the model's layers need (#257)
+    const size = { contextSize: { min: 8192, max: 16384 } };
+    let model = await llama.loadModel({ modelPath: file });
+    let context;
+    try {
+      context = await model.createContext(size);
+    } catch (e) {
+      // the graphics card is full (another app holds its memory): run on the processor rather than not at all
+      if (!/too large for the available VRAM|InsufficientMemory/i.test(`${e.name} ${e.message}`)) throw e;
+      await model.dispose();
+      model = await llama.loadModel({ modelPath: file, gpuLayers: 0 });
+      context = await model.createContext(size);
+    }
+    const sequence = context.getSequence();
+    live = { id: modelOf(id).id, llama, model, sequence, chat: new L.LlamaChat({ contextSequence: sequence }) };
     return live;
   };
   return {
@@ -135,10 +180,17 @@ function createBuiltin({ dir, load = () => import('node-llama-cpp'), check = ver
     chat(id, body, onText, signal) {
       const turn = queue.then(() => (signal?.aborted ? Promise.reject(new Error('Stopped.')) : this.answer(id, body, onText, signal)));
       queue = turn.catch(() => {});
-      return turn;
+      if (!signal) return turn;
+      // Stop answers at once, even while the model is still loading or another agent's request runs (#257); the load
+      // carries on, so the model is ready next time
+      const stopped = new Promise((_, no) => (signal.aborted ? no(new Error('Stopped.')) : signal.addEventListener('abort', () => no(new Error('Stopped.')), { once: true })));
+      return Promise.race([turn, stopped]);
     },
     async answer(id, body, onText, signal) {
-      const { chat } = await open(id);
+      const { chat, sequence } = await open(id);
+      // tokens evaluated (what the cache did not already hold) and generated, as Ollama reports them
+      const meter = () => sequence?.tokenMeter?.getState?.() || { usedInputTokens: 0, usedOutputTokens: 0 };
+      const before = meter();
       const functions = Object.fromEntries((body.tools || []).map((t) => [t.function.name, { description: t.function.description, params: toGbnf(t.function.parameters) }]));
       const r = await chat.generateResponse(toHistory(body.messages || []), {
         ...(Object.keys(functions).length ? { functions } : {}),
@@ -149,9 +201,10 @@ function createBuiltin({ dir, load = () => import('node-llama-cpp'), check = ver
         budgets: { thoughtTokens: 0 }, // no long hidden reasoning on a laptop: answer and call tools straight away
       });
       const tool_calls = (r.functionCalls || []).map((c) => ({ function: { name: c.functionName, arguments: dropNulls(c.params ?? {}) } }));
-      return { model: modelOf(id).id, done: true, message: { role: 'assistant', content: r.response, ...(tool_calls.length ? { tool_calls } : {}) } };
+      const after = meter();
+      return { model: modelOf(id).id, done: true, prompt_eval_count: after.usedInputTokens - before.usedInputTokens, eval_count: after.usedOutputTokens - before.usedOutputTokens, message: { role: 'assistant', content: r.response, ...(tool_calls.length ? { tool_calls } : {}) } };
     },
   };
 }
 
-module.exports = { MODELS, modelOf, toGbnf, toHistory, dropNulls, verifyFile, createBuiltin };
+module.exports = { MODELS, modelOf, toGbnf, toHistory, dropNulls, verifyFile, vulkanDevices, probeVulkan, createBuiltin };

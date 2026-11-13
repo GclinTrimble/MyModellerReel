@@ -252,10 +252,22 @@ kbd { font: var(--my-text-xs) var(--my-font-mono); padding: 0 var(--my-space-1);
 .chat-input { padding: var(--my-space-2) var(--my-space-3) var(--my-space-3); border-top: 1px solid var(--my-border); display: flex; gap: var(--my-space-2); align-items: flex-end; }
 .chat-input textarea { flex: 1; min-height: 60px; max-height: 200px; resize: none; padding: var(--my-space-2); border-radius: var(--my-radius-md); border: 1px solid var(--my-border); background: var(--my-surface); user-select: text; }
 .chat-input textarea:focus { outline: 2px solid var(--my-focus); outline-offset: -1px; }
-.thinking { display: inline-flex; gap: 4px; padding: var(--my-space-2); }
-.thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--my-highlight); animation: blink 1s infinite var(--my-ease); }
-.thinking i:nth-child(2) { animation-delay: 0.15s; } .thinking i:nth-child(3) { animation-delay: 0.3s; }
-@keyframes blink { 50% { opacity: 0.2; } }
+/* the running turn (#257): status, clock, Stop; steps tick as they finish; reasoning folds with a live preview */
+.turn-live { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--my-space-2); padding: var(--my-space-1) var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); font-size: var(--my-text-xs); }
+.turn-clock { font-family: var(--my-font-mono); color: var(--my-text-muted); white-space: nowrap; }
+.turn-spin, .toolcall.running .tc-icon { width: 10px; height: 10px; flex: none; border-radius: 50%; border: 2px solid var(--my-border); border-top-color: var(--my-accent); animation: turn-spin 0.8s linear infinite; display: inline-block; }
+.toolcall .tc-icon { display: inline-block; width: 10px; margin-right: 4px; vertical-align: -1px; }
+.toolcall.ok .tc-icon::before { content: "✓"; color: var(--my-success-text); }
+.toolcall.err .tc-icon::before { content: "✕"; color: var(--my-danger-text); }
+.toolcall .tc-err { color: var(--my-danger-text); }
+.toolcall b { font-weight: 600; color: var(--my-text); }
+@keyframes turn-spin { to { transform: rotate(360deg); } }
+.msg .think { font-size: var(--my-text-xs); color: var(--my-text-muted); margin-bottom: var(--my-space-1); }
+.msg .think summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: italic; }
+.msg .think-text { max-height: 160px; overflow: auto; padding-left: var(--my-space-2); border-left: 2px solid var(--my-border); }
+.turn-stats summary { cursor: pointer; }
+.turn-trace { font: var(--my-text-xs) var(--my-font-mono); white-space: pre; padding: var(--my-space-1) 0 0 var(--my-space-2); }
+@media (prefers-reduced-motion: reduce) { .turn-spin, .toolcall.running .tc-icon { animation: none; } }
 
 /* ---------- timeline ---------- */
 .timeline { height: 230px; display: grid; grid-template-rows: 40px 1fr; background: var(--my-surface); border-top: 1px solid var(--my-border); }
