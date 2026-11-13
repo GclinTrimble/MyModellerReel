@@ -2591,8 +2591,10 @@ export class UI {
       dlg.replaceChildren(
         h('div.panel', {}, h('h3', {}, title), body, h('footer', {}, buttons.map(([label, value], i) => h(`button.btn${i === 0 ? '.primary' : ''}`, { onclick: () => ((this.modalClosing = true), dlg.close(), resolve(value)) }, label)))),
       );
-      // the close event comes later: one we caused (a button, picking in the view) is not a Cancel
-      dlg.onclose = () => (this.modalClosing ? (this.modalClosing = false) : resolve(null));
+      // the close event comes later: one we caused (a button, picking in the view) is not a Cancel, and one that
+      // arrives while the dialog is open again belongs to the dialog this one replaced (Coordinate system → Pick on a map)
+      this.modalClosing = false;
+      dlg.onclose = () => dlg.open || (this.modalClosing ? (this.modalClosing = false) : resolve(null));
       dlg.showModal();
     });
   }
