@@ -172,6 +172,7 @@ export function toBuffers(mesh) {
   const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
   const rgb = (h) => [1, 3, 5].map((k) => lin(parseInt(h.slice(k, k + 2), 16) / 255));
   for (let fi = 0; fi < mesh.f.length; fi++) {
+    if (col && mesh.fc[fi] === 'none') continue; // a face of a hidden surface material
     const n = faceNormal(mesh, fi);
     const c = col && rgb(mesh.fc[fi] || '#ffffff');
     for (const t of triangulateFace(mesh, fi)) {

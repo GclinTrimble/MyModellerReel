@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
-const { registerAccount, needsSignIn, whenSignedIn } = require('./account.cjs');
+const { registerAccount, needsSignIn, whenSignedIn, uploadFeedback } = require('./account.cjs');
 
 // MMR_HOME: e2e runs keep their own data folder (and single-instance lock), away from the user's real app.
 app.setPath('userData', process.env.MMR_HOME || path.join(app.getPath('appData'), 'MyModellerReel'));
@@ -218,6 +218,39 @@ ipcMain.handle('ai:ollama-pull', async (event, model) => {
 });
 ipcMain.handle('ai:ollama-pull-cancel', () => pulling?.abort());
 
+// copilot feedback (#232): one JSON file per rated turn in <userData>/feedback; shared ones upload to the suite
+const FEEDBACK = path.join(USER, 'feedback');
+const feedbackFile = (id) => {
+  if (!/^[\w-]{1,64}$/.test(String(id))) throw new Error('Not a feedback id.');
+  return path.join(FEEDBACK, `${id}.json`);
+};
+const readFeedback = () => (fs.existsSync(FEEDBACK) ? fs.readdirSync(FEEDBACK).filter((f) => f.endsWith('.json')).map((f) => readJson(path.join(FEEDBACK, f), null)).filter(Boolean) : []);
+async function shareFeedback() {
+  const pending = readFeedback().filter((r) => r.rating && !r.shared).slice(0, 20);
+  if (!pending.length) return { uploaded: 0 };
+  const FB = await import(pathToFileURL(path.join(ROOT, 'src', 'core', 'feedback.js')).href);
+  const r = await uploadFeedback(pending.map((x) => FB.uploadRow(x)));
+  for (const x of pending) fs.writeFileSync(feedbackFile(x.id), JSON.stringify({ ...x, shared: true }));
+  return r;
+}
+ipcMain.handle('feedback:save', async (_, record) => {
+  fs.mkdirSync(FEEDBACK, { recursive: true });
+  fs.writeFileSync(feedbackFile(record.id), JSON.stringify(record));
+  if (!settings.ai.shareFeedback) return { saved: record.id, shared: false };
+  try {
+    return { saved: record.id, ...(await shareFeedback()), shared: true };
+  } catch (e) {
+    return { saved: record.id, shared: false, error: e.message }; // kept; tried again with the next rating
+  }
+});
+ipcMain.handle('feedback:list', () => readFeedback());
+ipcMain.handle('feedback:share', () => shareFeedback());
+ipcMain.handle('feedback:export', (_, file, text) => {
+  if (!/\.jsonl$/i.test(String(file))) throw new Error('Export to a .jsonl file.');
+  fs.writeFileSync(file, text);
+  return { path: file };
+});
+
 ipcMain.handle('settings:set', (_, patch) => {
   for (const p of ['anthropic', 'openai']) if (patch?.ai?.[p] && !patch.ai[p].apiKey) delete patch.ai[p].apiKey; // blank = keep
   if (patch?.ai?.image?.openai && !patch.ai.image.openai.apiKey) delete patch.ai.image.openai.apiKey;
@@ -238,7 +271,41 @@ try {
 } catch (e) {
   console.error('library:', e);
 }
-ipcMain.handle('library:list', () => fs.readdirSync(LIBRARY).filter((f) => /\.(glb|gltf)$/i.test(f)).map((f) => ({ name: f, size: fs.statSync(path.join(LIBRARY, f)).size })));
+// groups and tags of library models: library.json beside them ({ "Tree.glb": { group, tags } })
+const LIB_META = path.join(LIBRARY, 'library.json');
+const libMeta = () => {
+  try {
+    return JSON.parse(fs.readFileSync(LIB_META, 'utf8'));
+  } catch {
+    return {};
+  }
+};
+const cleanMeta = (m = {}) => ({ ...(m.group ? { group: String(m.group).slice(0, 60) } : {}), ...(Array.isArray(m.tags) && m.tags.length ? { tags: [...new Set(m.tags.map((t) => String(t).trim().slice(0, 40)).filter(Boolean))].slice(0, 20) } : {}) });
+const setMeta = (name, m) => {
+  const all = libMeta();
+  all[name] = cleanMeta({ ...all[name], ...m });
+  fs.writeFileSync(LIB_META, JSON.stringify(all, null, 1));
+  return all[name];
+};
+ipcMain.handle('library:list', () => {
+  const meta = libMeta();
+  return fs.readdirSync(LIBRARY).filter((f) => /\.(glb|gltf)$/i.test(f)).map((f) => ({ name: f, size: fs.statSync(path.join(LIBRARY, f)).size, group: meta[f]?.group || '', tags: meta[f]?.tags || [] }));
+});
+ipcMain.handle('library:meta', (_, name, m) => {
+  const f = path.basename(String(name));
+  if (!fs.existsSync(path.join(LIBRARY, f))) throw new Error(`No "${f}" in the component library.`);
+  return setMeta(f, m || {});
+});
+// a model added to the library: GLB bytes (the page converts other formats first), never over an existing file
+ipcMain.handle('library:add', (_, name, data, meta) => {
+  const stem = path.basename(String(name)).replace(/\.\w+$/, '').replace(/[^\w .()-]+/g, '_').slice(0, 80) || 'Model';
+  if (!(data instanceof ArrayBuffer || ArrayBuffer.isView(data)) || data.byteLength > 300e6) throw new Error('A library model is GLB bytes under 300 MB.');
+  let file = `${stem}.glb`;
+  for (let k = 2; fs.existsSync(path.join(LIBRARY, file)); k++) file = `${stem} ${k}.glb`;
+  fs.writeFileSync(path.join(LIBRARY, file), Buffer.from(data instanceof ArrayBuffer ? data : data.buffer));
+  if (meta) setMeta(file, meta);
+  return file;
+});
 ipcMain.handle('library:path', (_, name) => {
   const p = path.join(LIBRARY, path.basename(String(name)));
   if (!/\.(glb|gltf)$/i.test(p) || !fs.existsSync(p)) throw new Error(`No "${name}" in the component library.`);
@@ -256,9 +323,9 @@ ipcMain.handle('file:save-dialog', async (_, { defaultPath, filters }) => {
   const r = await dialog.showSaveDialog(win, { defaultPath, filters });
   return r.canceled ? null : r.filePath;
 });
-ipcMain.handle('file:open-dialog', async (_, { filters }) => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters });
-  return r.canceled ? null : r.filePaths[0];
+ipcMain.handle('file:open-dialog', async (_, { filters, multi }) => {
+  const r = await dialog.showOpenDialog(win, { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters });
+  return r.canceled ? null : multi ? r.filePaths : r.filePaths[0];
 });
 ipcMain.handle('file:read', (_, p) => {
   if (!MODEL_EXT.test(p)) throw new Error(`Refusing to read ${path.basename(p)}: only model files.`);

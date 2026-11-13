@@ -360,4 +360,13 @@ function registerAccount(h) {
   powerMonitor.on('resume', () => void ping());
 }
 
-module.exports = { registerAccount, needsSignIn, whenSignedIn };
+/** Copilot feedback (#232): rows into the suite's ai_feedback table as the signed-in user (row-level security). */
+async function uploadFeedback(rows) {
+  if (!configured()) throw new Error('No suite account on this build.');
+  const r = await post('/rest/v1/ai_feedback', rows, await accessToken());
+  if (r.status === 409) return { uploaded: 0, already: true }; // the same record id was shared before
+  if (!r.ok) throw new Error(`The suite answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return { uploaded: rows.length };
+}
+
+module.exports = { registerAccount, needsSignIn, whenSignedIn, uploadFeedback };

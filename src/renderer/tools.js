@@ -11,6 +11,8 @@ import { fillet as fillet2d } from '../core/drafting.js';
 import { formatLength } from '../core/units.js';
 import * as MD from '../core/modeling.js';
 import { floorAt, blocked } from './scale.js';
+import * as TK from '../core/takeoff.js';
+import { h } from './ui.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -41,7 +43,7 @@ export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, g
 export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
-export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], 'paint', 'eraser', 'section'];
+export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], ['paint', 'matbrush'], 'eraser', 'section'];
 
 export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
@@ -73,6 +75,7 @@ export const TOOLS = [
   { id: 'surfedit', label: 'Edit surface (swap, delete, add or remove points, outline, holes)', key: '', icon: 'triangle', group: 'site' },
   { id: 'basepoint', label: 'Base point (click a point, type its coordinates)', key: '', icon: 'crosshair-simple', group: 'site' },
   { id: 'paint', label: 'Paint Bucket (Alt samples)', key: 'B', icon: 'paint-bucket', group: 'construct' },
+  { id: 'matbrush', label: 'Material brush (paint surface materials for takeoff)', key: '', icon: 'paint-brush', group: 'construct' },
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
   { id: 'orbit', label: 'Orbit (middle mouse)', key: 'O', icon: 'globe-simple', group: 'camera' },
@@ -125,15 +128,31 @@ export class Tools {
     // the gizmo's handles (#67) win over the tool under them
     const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging;
     const inPane = (fn) => this.guard(() => this.vp.withPane(pane, fn));
+    // touchpads have no middle button: Alt + drag orbits and Alt + Shift + drag pans, with any tool. This capture
+    // listener runs before OrbitControls' own, so the left button is mapped for this one drag.
+    const altNav = (e) => e.button === 0 && e.altKey && e.pointerType !== 'touch';
+    c.addEventListener('pointerdown', (e) => ((pane ? pane.controls : this.vp.controls).mouseButtons.LEFT = altNav(e) ? (e.shiftKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE) : this.leftNav ?? null), true);
     c.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') this.touches.add(e.pointerId);
+      // an Alt click that does not move (paint sample, tape guide) still reaches the tool, on release
+      if (altNav(e) && this.leftNav == null) return void (this.altDrag = { e, moved: false });
       if (e.button === 0 && !elsewhere()) inPane(() => this.tool.down?.(e));
       if (e.button === 0 && this.only) (this.only = null), this.status(this.tool.hint); // a one-shot snap is used up
     });
-    c.addEventListener('pointermove', (e) => !elsewhere() && inPane(() => this.tool.move?.(e)));
+    c.addEventListener('pointermove', (e) => {
+      const a = this.altDrag;
+      if (a) return void (a.moved ||= Math.hypot(e.clientX - a.e.clientX, e.clientY - a.e.clientY) > 4);
+      if (!elsewhere()) inPane(() => this.tool.move?.(e));
+    });
     c.addEventListener('pointerup', (e) => {
       const multi = elsewhere();
       this.touches.delete(e.pointerId);
+      const a = this.altDrag;
+      if (a && e.button === 0) {
+        this.altDrag = null;
+        if (!a.moved) inPane(() => (this.tool.down?.(a.e), this.tool.up?.(e)));
+        return;
+      }
       if (e.button === 0 && !multi) inPane(() => this.tool.up?.(e));
     });
     c.addEventListener('pointercancel', (e) => this.touches.delete(e.pointerId));
@@ -202,7 +221,7 @@ export class Tools {
     this.lock = null;
     this.id = id;
     this.tool = new IMPL[id](this);
-    const left = id === 'orbit' ? THREE.MOUSE.ROTATE : id === 'pan' ? THREE.MOUSE.PAN : null;
+    const left = (this.leftNav = id === 'orbit' ? THREE.MOUSE.ROTATE : id === 'pan' ? THREE.MOUSE.PAN : null);
     this.vp.controls.mouseButtons.LEFT = left;
     this.vp.canvas.dataset.tool = id;
     for (const p of this.vp.extra || []) (p.controls.mouseButtons.LEFT = left), (p.canvas.dataset.tool = id);
@@ -1132,6 +1151,125 @@ class PaintTool {
   }
 }
 
+/**
+ * Material brush: paints surface materials face by face for takeoff. Brush (drag; [ ] change the radius), Fill (click:
+ * the region up to bends, lines and other paint), Erase. Alt-click samples. The settings live in a bar in the view.
+ */
+export const BRUSH = { material: 'Asphalt', mode: 'brush', radius: 1, angle: 30 };
+class MaterialBrushTool {
+  hint = 'Drag over a surface to paint the material (one undo step per stroke). Fill: click a face to fill its region up to lines and edges. Alt-click samples. [ ] change the radius.';
+  constructor(t) {
+    this.t = t;
+    this.s = BRUSH;
+    this.bar = h('div.view-hud', { role: 'toolbar', 'aria-label': 'Material brush' });
+    document.querySelector('.viewport-wrap').append(this.bar);
+    this.renderBar();
+  }
+  leave() {
+    this.bar.remove();
+    this.t.vp.overlay.clear();
+  }
+  lib() {
+    return TK.library(this.t.app.store.doc);
+  }
+  renderBar() {
+    const s = this.s;
+    if (!TK.find(this.t.app.store.doc, s.material)) s.material = this.lib()[0]?.name;
+    const m = TK.find(this.t.app.store.doc, s.material);
+    const seg = (id, label, ic) => h('button.btn.sm', { 'aria-pressed': String(s.mode === id), title: label, onclick: () => ((s.mode = id), this.renderBar()) }, h(`i.ph.ph-${ic}`), label);
+    const sel = this.t.app.selection.map((id) => this.t.app.entity(id)).find((e) => e?.curve?.closed);
+    const kids = [
+      h('i.swatch-dot', { style: { background: m?.color || '#888' } }),
+      h('select', { 'aria-label': 'Material', title: m ? `${m.code || 'no code'} · ${m.thickness || 0} m thick · ${m.density || 0} kg/m³ · ${m.cost || 0}/m²` : '', onchange: (ev) => ((s.material = ev.target.value), this.renderBar()) }, ...this.lib().map((x) => h('option', { value: x.name, selected: x.name === s.material }, x.name))),
+      h('span.seg-group', {}, seg('brush', 'Brush', 'paint-brush'), seg('fill', 'Fill', 'paint-bucket'), seg('erase', 'Erase', 'eraser')),
+      s.mode === 'fill'
+        ? h('label', { title: 'Largest bend between faces the fill crosses' }, 'Bend ', h('input', { type: 'number', min: 0, max: 180, step: 5, value: s.angle, onchange: (ev) => (s.angle = +ev.target.value || 30) }), '°')
+        : h('label', {}, 'Radius ', h('input', { type: 'number', min: 0.05, step: 0.25, value: s.radius, onchange: (ev) => (s.radius = Math.max(0.05, +ev.target.value || 1)) }), ' m'),
+      sel ? h('button.btn.sm', { title: `Paint every face inside "${sel.name}"`, onclick: () => this.paintInside(sel) }, h('i.ph.ph-selection'), `Inside ${sel.name}`) : null,
+      h('button.btn.sm', { title: 'Material manager: library, show / hide, takeoff', onclick: () => this.t.app.ui.materialManager() }, h('i.ph.ph-table'), 'Manager'),
+    ];
+    this.bar.replaceChildren(...kids.filter(Boolean));
+  }
+  material() {
+    return this.s.mode === 'erase' ? 'none' : this.s.material;
+  }
+  /** Every visible mesh with faces inside the closed curve, in one undo step. */
+  async paintInside(curve) {
+    const doc = this.t.app.store.doc;
+    const poly = D.curvePoints(doc, curve).map((p) => [p[0], p[2]]);
+    const ids = doc.entities.filter((e) => e.mesh && e.visible !== false && TK.facesInside(D.worldMesh(doc, e), poly).length).map((e) => e.id);
+    if (!ids.length) return this.t.app.ui.toast(`No faces inside ${curve.name}`, 'warning');
+    await this.t.run('run_script', { code: ids.map((id) => `await api.paint_surface(${JSON.stringify({ id, material: this.material(), inside: curve.id })});`).join('\n') });
+    this.t.app.ui.toast(`Painted inside ${curve.name} on ${ids.length} surface${ids.length > 1 ? 's' : ''}`);
+  }
+  ring(hit) {
+    this.t.vp.overlay.clear();
+    if (this.stroke) this.preview();
+    if (!hit || this.s.mode === 'fill') return hit && this.t.faceHighlight(hit);
+    const n = hit.normal;
+    const { u, v } = basis(n);
+    const pts = Array.from({ length: 49 }, (_, k) => {
+      const a = (k / 48) * Math.PI * 2;
+      return hit.point.clone().addScaledVector(u, Math.cos(a) * this.s.radius).addScaledVector(v, Math.sin(a) * this.s.radius).addScaledVector(n, 0.02);
+    });
+    this.t.lines(pts, HIGHLIGHT);
+  }
+  preview() {
+    const { e, faces, obj } = this.stroke;
+    if (!faces.size) return;
+    const sub = { v: e.mesh.v, f: [...faces].map((fi) => e.mesh.f[fi]) };
+    this.t.ghost(sub, obj.matrixWorld, this.s.mode === 'erase' ? 0xffffff : TK.find(this.t.app.store.doc, this.s.material)?.color || ACCENT, 0.6);
+  }
+  collect(hit) {
+    const st = this.stroke;
+    if (!hit || hit.entityId !== st.e.id) return;
+    for (const fi of TK.facesNear(st.w, hit.point.toArray(), this.s.radius)) st.faces.add(fi);
+  }
+  async down(ev) {
+    const hit = this.t.vp.pick(ev);
+    if (!hit) return;
+    const e = this.t.app.entity(hit.entityId);
+    if (!e?.mesh) return;
+    if (ev.altKey) {
+      const name = e.fm?.[hit.faceIndex];
+      if (name) (this.s.material = name), (this.s.mode = 'brush'), this.renderBar();
+      return this.t.status(name ? `Sampled ${name}` : 'That face has no surface material');
+    }
+    if (this.s.mode === 'fill') return this.t.run('paint_surface', { id: e.id, material: this.material(), seed: hit.faceIndex, fill: true, angle: this.s.angle, breaklines: this.breaklines() }).then((r) => this.t.status(`Filled ${r.faces} faces, ${r.area} m²`));
+    this.stroke = { e, w: D.worldMesh(this.t.app.store.doc, e), faces: new Set(), obj: hit.object };
+    this.collect(hit);
+    this.ring(hit);
+  }
+  /** Curves and linework in view: the fill does not cross them (kerbs, edges of seal, boundaries). */
+  breaklines() {
+    return this.t.app.store.doc.entities.filter((e) => e.visible !== false && (e.curve || e.type === 'linework')).map((e) => e.id).slice(0, 200);
+  }
+  move(ev) {
+    const hit = this.t.vp.pick(ev);
+    if (this.stroke) this.collect(hit);
+    this.ring(hit);
+  }
+  async up() {
+    const st = this.stroke;
+    this.stroke = null;
+    this.t.vp.overlay.clear();
+    if (!st?.faces.size) return;
+    const r = await this.t.run('paint_surface', { id: st.e.id, material: this.material(), faces: [...st.faces] });
+    this.t.status(`${r.material === 'none' ? 'Cleared' : `Painted ${r.material} on`} ${r.faces} faces, ${r.area} m²`);
+  }
+  cancel() {
+    this.stroke = null;
+    this.t.vp.overlay.clear();
+  }
+  key(ev) {
+    if (ev.key !== '[' && ev.key !== ']') return false;
+    this.s.radius = Math.max(0.05, Math.round(this.s.radius * (ev.key === ']' ? 1.25 : 0.8) * 100) / 100);
+    this.renderBar();
+    this.t.status(`Brush radius ${fmt(this.s.radius)}`);
+    return true;
+  }
+}
+
 class EraserTool {
   hint = 'Click a shape, group, line, dimension or label to delete it.';
   constructor(t) {
@@ -1184,7 +1322,7 @@ class SectionTool extends PushPullTool {
 }
 
 class CameraTool {
-  hint = 'Drag to navigate. Middle mouse orbits, right mouse pans and the wheel zooms with any tool.';
+  hint = 'Drag to navigate. With any tool: middle mouse or Alt + drag orbits, right mouse or Alt + Shift + drag pans, the wheel or a pinch zooms.';
   constructor(t) {
     this.t = t;
   }
@@ -2118,6 +2256,7 @@ const IMPL = {
   dimension: DimensionTool,
   label: LabelTool,
   paint: PaintTool,
+  matbrush: MaterialBrushTool,
   eraser: EraserTool,
   section: SectionTool,
   orbit: CameraTool,

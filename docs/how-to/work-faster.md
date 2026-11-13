@@ -8,12 +8,12 @@ You want the tool you need without scrolling or digging through menus: draw, mov
 
 1. **The side toolbar** has one button per kind of tool; the variants share it (rectangle and rotated rectangle, circle and polygon, arc and curve, trim and extend, tape, dimension and label). Right-click a button with a corner mark, or click it again, to choose a variant. The [Line](tool:line) tool now keeps open lines: Enter, Esc or a double-click ends the line; closing it on the first point still makes a face.
    ![Variants share a button](media/work-faster/01.jpg)
-2. **The view bar** (top right) holds the standard views and the navigation tools (orbit, pan, zoom window, walk) as drop-downs, zoom extents, the number of panes, the display toggles and the snaps.
-   ![The view bar](media/work-faster/02.jpg)
-3. **Display** switches edges, x-ray, wireframe, shadows, grid, point labels, the style and the colouring; the list stays open while you switch several things. Toggles in the View menu stay open too.
+2. **The view bar** (top right) shows every view button when there is room: Select, perspective / parallel, wireframe, **Views**, **Navigate**, zoom extents, **Display**, **Snaps**, edges, shadows and the timeline. **Views** acts on the pane you last worked in: the standard views, projection, wireframe, maximise or move the pane to its own window, scenes and the number of panes. When the view gets narrow, the buttons group into their drop-downs (snaps join Display, projection and wireframe stay in Views), and on a very narrow view the last ones fold into a **⋯** menu.
+   ![The Views menu](media/work-faster/02.jpg)
+3. **Display** switches edges, x-ray, wireframe, shadows, grid, point labels, the style and the colouring; the list stays open while you switch several things. **Snaps** chooses what the drawing tools snap to: endpoints, midpoints, faces, the axes, the grid, drawings, point clouds. While drawing, right-click for **Next click snaps only to…** one kind.
    ![Display toggles](media/work-faster/03.jpg)
-4. **Snaps** chooses what the drawing tools snap to: endpoints, midpoints, faces, the axes, the grid, drawings, point clouds. While drawing, right-click for **Next click snaps only to…** one kind.
-   ![Snaps](media/work-faster/04.jpg)
+4. **Navigate** picks orbit, pan, zoom window or walk for the left button, and zoom extents. On a touchpad, with any tool: **Alt + drag** orbits, **Alt + Shift + drag** pans and a pinch zooms. With a mouse, the middle button orbits and the right button pans.
+   ![Navigate](media/work-faster/04.jpg)
 5. **Right-click** a shape for what you can do to it: group, make a component, hide, isolate, export the selection, lock, delete, its properties. Right-click empty space for paste, views and section planes. Dragging with the right button still pans.
    ![Right-click a shape](media/work-faster/05.jpg)
 6. Select survey points and right-click: **Create a surface from these points**.
