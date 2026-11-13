@@ -1207,6 +1207,22 @@ test('surface editing (#239, #240): the Surface panel, a point dragged, one adde
   assert.deepEqual((await ok('surface_definition', { id: 'EG' })).definition.outline[2], [30, -30]);
 });
 
+test('a dialog opened as another closes (Coordinate system → Pick on a map) is not cancelled by the old close event', async () => {
+  const r = await w.evaluate(async () => {
+    const ui = window.mmr.app.ui;
+    ui.modal('First', document.createElement('div'));
+    ui.closeModal();
+    let got = 'pending';
+    ui.modal('Second', document.createElement('div'), [['Go', 'go']]).then((v) => (got = v));
+    await new Promise((res) => setTimeout(res, 300));
+    const open = document.getElementById('modal').open;
+    document.querySelector('#modal footer .btn.primary').click();
+    await new Promise((res) => setTimeout(res, 50));
+    return [open, got];
+  });
+  assert.deepEqual(r, [true, 'go']);
+});
+
 test('side panel (#236): Ctrl+B hides it for a wider view, a tab icon re-opens it there, the state is remembered', async () => {
   const hidden = () => w.evaluate(() => document.body.classList.contains('no-dock'));
   const viewW = () => w.evaluate(() => document.getElementById('viewport').getBoundingClientRect().width);
