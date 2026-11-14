@@ -15,7 +15,7 @@ import * as CS from './clipshader.js';
 import { Presentation, applyMaps, styleMaterial, sketchEdges, lightObject, seamless, defaultSky } from './presentation.js';
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
-import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
+import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt, highlightPreview } from './scale.js';
 import { attachClouds, syncClouds } from './cloudmaterial.js';
 import { invert as invertAffine } from '../core/underlay.js';
 import { isSurface } from '../core/project.js';
@@ -539,6 +539,7 @@ export class Viewport {
     this.objs = objs;
     for (const [id, o] of objs) if (o.userData.octree) this.clouds.attach(doc.entities.find((x) => x.id === id), o);
     this.clouds.sync(new Set([...objs].filter(([, o]) => o.userData.octree).map(([id]) => id)));
+    if (this.cloudSelection) this.showCloudSelection(this.cloudSelection); // the preview objects are new
     if (s.section_fill !== false) for (const c of CV.slots(doc).box.concat(CV.slots(doc).slab, CV.slots(doc).plane)) this.modelRoot.add(clipCaps(doc, c));
     CS.patchTree(this.modelRoot, doc);
     syncClouds(this);
@@ -877,6 +878,39 @@ export class Viewport {
     const clips = CV.clipsOf(doc);
     const keep = clips.length ? (p, entity) => CV.visible(doc, [p.x, p.y, p.z], { pane, entity, clips }) : null;
     return this.clouds.nearest(this.ray(ev).clone(), this.camera, h, px, keep);
+  }
+  // point classes (#298, #299): what the commands read and show
+  /** A cloud's octree nodes at full depth with their classes now: { nodes, view(node) } (null without an octree open). */
+  async cloudSource(e) {
+    const s = await this.clouds.source(e);
+    return s?.nodes ? s : null;
+  }
+  /** The current pane's camera seen from a cloud's file axes: { view, proj, width, height } for screen polygons. */
+  cloudCamera(e) {
+    const o = this.objs.get(e.id);
+    if (!o) throw new Error(`${e.name} is not in the view.`);
+    const b = e.pointcloud.base || [0, 0, 0];
+    const F = new THREE.Matrix4().set(1, 0, 0, -b[0], 0, 0, 1, -b[2], 0, -1, 0, b[1], 0, 0, 0, 1);
+    this.camera.updateMatrixWorld();
+    o.updateWorldMatrix(true, false);
+    const view = this.camera.matrixWorldInverse.clone().multiply(o.matrixWorld).multiply(F);
+    const r = this.input.getBoundingClientRect();
+    return { view: view.elements, proj: this.camera.projectionMatrix.elements, width: Math.round(r.width), height: Math.round(r.height) };
+  }
+  /** Highlight a point selection ({ id, sel } or null): streamed nodes and the preview. */
+  showCloudSelection(s) {
+    this.cloudSelection = s;
+    this.clouds.setSelection(s);
+    for (const o of this.objs?.values() || []) o.traverse?.((p) => p.isPoints && p.userData.cloudEntity && !p.userData.cloudNode && highlightPreview(p, s));
+    this.dirty = true;
+  }
+  /** A classification stopped (job null): the view drops the classes it showed meanwhile. */
+  cloudClassifying(e, job) {
+    if (!job) this.clouds.setPending(e.id, null);
+    this.dirty = true;
+  }
+  cloudExporting(job, path) {
+    this.clouds.exports?.set(job, path);
   }
   /** The same at fractions of the view (0–1 from the left and top). */
   cloudPointAt(fx, fy, px = 6) {

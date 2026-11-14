@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import * as OT from '../core/octree.js';
 import { cloudMaterial } from './cloudmaterial.js';
+import * as CSel from '../core/cloudselect.js';
+import * as Assets from '../core/assets.js';
 
 export const DEFAULTS = { budget: 3e6, cache_mb: 1024, while_moving: true };
 const PARALLEL = 6;
@@ -105,6 +107,17 @@ export class CloudLOD {
     }
     c.entity = e;
     c.group = group;
+    // class edits (#299) changed (an edit, undo, redo): the nodes either list touches take their classes again
+    const edits = e.pointcloud.edits || [];
+    if ((c.edits || []).join() !== edits.join()) {
+      const was = new Set(c.edits || []);
+      const now = new Set(edits);
+      const diff = [...(c.edits || []).filter((x) => !now.has(x)), ...edits.filter((x) => !was.has(x))];
+      c.edits = edits;
+      c.deltas = this.deltas(edits);
+      this.reclass(c, CSel.touched(this.deltas(diff)));
+      if (c.material) c.material.userData.classes = null;
+    }
     // the styles' material (#295), with the preview's arrays for its automatic ranges; the entity read afresh
     const pv = group.children.find((o) => o.userData.preview);
     c.material ||= cloudMaterial(e, { data: pv?.geometry.userData.cloudData || null });
@@ -113,6 +126,63 @@ export class CloudLOD {
     group.userData.octreeCloud = e.id;
     for (const entry of this.cache.values()) if (entry.cloud === c) group.add(entry.obj), (entry.obj.userData.cloudEntity = e);
     this.previewVisibility(c);
+  }
+
+  deltas(ids) {
+    try {
+      return CSel.deltasFor(ids, (x) => Assets.bytes(x));
+    } catch (err) {
+      console.error('point classes:', err);
+      return [];
+    }
+  }
+  /** A node's classes and flags now: as read, the edits, then a running classification's results (#298). */
+  classesOf(c, name, base, count) {
+    const r = CSel.effective(base, count, c.deltas || [], name);
+    const p = c.pending?.get(name);
+    if (p) r.classes.set(p.subarray(0, count));
+    return r;
+  }
+  /** Loaded nodes (of names, or all) take their classes again. */
+  reclass(c, names = null) {
+    for (const entry of this.cache.values()) {
+      if (entry.cloud !== c || (names && !names.has(entry.node.name))) continue;
+      const o = entry.obj;
+      const a = o.geometry.attributes.classification;
+      const { classes, flags } = this.classesOf(c, entry.node.name, o.userData.baseClass, a.count);
+      a.array.set(classes);
+      a.needsUpdate = true;
+      o.userData.flags = flags;
+    }
+    this.vp.dirty = true;
+  }
+  /** A running classification's classes for nodes as tiles finish ([[name, classes]]); null clears them. */
+  setPending(id, parts) {
+    const c = this.clouds.get(id);
+    if (!c) return;
+    if (!parts) {
+      const names = new Set(c.pending?.keys() || []);
+      c.pending = null;
+      return this.reclass(c, names);
+    }
+    c.pending ||= new Map();
+    for (const [name, classes] of parts) c.pending.set(name, classes);
+    this.reclass(c, new Set(parts.map((p) => p[0])));
+  }
+  /** The point selection (#299) highlighted: { id, sel } or null. */
+  setSelection(s) {
+    this.selection = s;
+    for (const entry of this.cache.values()) this.highlight(entry);
+    this.vp.dirty = true;
+  }
+  highlight(entry) {
+    const g = entry.obj.geometry;
+    const s = this.selection?.id === entry.cloud.id ? this.selection.sel.nodes.get(entry.node.name) : null;
+    if (!s && !g.attributes.selected) return;
+    const a = g.attributes.selected || g.setAttribute('selected', new THREE.BufferAttribute(new Uint8Array(g.attributes.position.count), 1)).attributes.selected;
+    a.array.fill(0);
+    if (s) for (const i of s.idx) a.array[i] = 1;
+    a.needsUpdate = true;
   }
 
   /** Clouds no longer in the document let go of their nodes. */
@@ -176,7 +246,20 @@ export class CloudLOD {
       for (let i = 0; i < cls.length; i++) if (keep.has(cls[i])) out.push(exact[i * 3], exact[i * 3 + 1], exact[i * 3 + 2]);
       return Float64Array.from(out);
     };
-    return { root: c.root, base: c.base, read };
+    // selections (#299): every node with points, and its points with their classes now
+    const nodes = [...OT.walk(c.root)].filter((n) => n.numPoints > 0);
+    const view = async (node) => {
+      const hit = this.cache.get(this.keyOf(c, node));
+      if (hit) {
+        const g = hit.obj.geometry.attributes;
+        return { count: node.numPoints, exact: hit.obj.userData.exact, classification: g.classification.array, flags: hit.obj.userData.flags, intensity: g.intensity?.array, returnNumber: g.returnNumber?.array, numberOfReturns: g.numberOfReturns?.array };
+      }
+      const bytes = await native().invoke('cloud:read-node', { folder: c.folder, file: c.file, byteOffset: node.byteOffset, byteSize: node.byteSize });
+      const d = await this.decode({ kind: c.kind, bytes, layout: c.layout, header: c.header, scale: c.scale, offset: c.offset, count: node.numPoints, min: node.box.min, base: c.base, timeBase: c.timeBase }, [bytes]);
+      const { classes, flags } = this.classesOf(c, node.name, d.classification, node.numPoints);
+      return { count: node.numPoints, exact: d.exact, classification: classes, flags, intensity: d.intensity, returnNumber: d.returnNumber, numberOfReturns: d.numberOfReturns };
+    };
+    return { root: c.root, base: c.base, read, nodes, view };
   }
 
   previewVisibility(c) {
@@ -262,6 +345,10 @@ export class CloudLOD {
       const rgb = new THREE.BufferAttribute(d.rgb, 3, true);
       g.setAttribute('rgb', rgb);
     }
+    // classes as read, then the edits (#299): every node gets them, so a cloud without classes can be classified
+    const baseClass = d.classification ? d.classification.slice() : null;
+    const cls = this.classesOf(c, node.name, baseClass, node.numPoints);
+    d.classification = cls.classes;
     for (const [k, T] of [['intensity'], ['classification'], ['returnNumber'], ['numberOfReturns'], ['gpsTime'], ['pointSource']]) if (d[k]) g.setAttribute(k, new THREE.BufferAttribute(d[k], 1, T));
     // the node's own box, in its local axes: no bounding computations
     const b = node.box;
@@ -274,6 +361,8 @@ export class CloudLOD {
     obj.userData.cloudNode = node.name;
     obj.userData.exact = d.exact;
     obj.userData.gps = d.gpsExact || null;
+    obj.userData.baseClass = baseClass;
+    obj.userData.flags = cls.flags;
     // what the styles read (#295): the node's spacing for adaptive size, the cloud's sphere, the arrays for filters
     Object.assign(obj.userData, { pointcloud: true, cloudEntity: c.entity, spacing: c.rootSpacing / 2 ** node.level, cloudSphere: c.sphere });
     g.userData.cloudData = nodeData(d, node.numPoints);
@@ -283,6 +372,7 @@ export class CloudLOD {
     this.cache.set(this.keyOf(c, node), { cloud: c, node, obj, bytes: used, used: this.frame });
     this.bytes += used;
     c.loadedNodes.add(node.name);
+    this.highlight(this.cache.get(this.keyOf(c, node)));
     this.trim();
   }
 
@@ -415,6 +505,9 @@ export function watchClouds(app) {
   document.querySelector('.viewport-wrap')?.append(overlay);
   let busy = false;
   let ticking = false;
+  const attached = new Set(); // classification jobs brought in (an undo must not bring them in again)
+  const since = new Map();
+  const exports = (lod.exports = new Map()); // job → path
   setInterval(async () => {
     const s = lod.stats;
     overlay.hidden = !lod.clouds.size;
@@ -423,7 +516,38 @@ export function watchClouds(app) {
     ticking = true;
     try {
       const building = app.store.doc.entities.filter((e) => e.pointcloud?.octree?.status === 'building');
-      if (!building.length && busy) app.ui.setStatus(''), (busy = false);
+      const classifying = app.store.doc.entities.filter((e) => e.pointcloud?.classify?.status === 'running' && !attached.has(e.pointcloud.classify.job));
+      if (!building.length && !classifying.length && !exports.size && busy) app.ui.setStatus(''), (busy = false);
+      // classifications (#298): tiles recolour the view as they finish; the result comes in as one undo step
+      for (const e of classifying) {
+        const job = e.pointcloud.classify.job;
+        const j = await window.native.invoke('cloud:job', job).catch(() => null);
+        busy = true;
+        if (j?.status === 'running') {
+          app.ui.setStatus(`${e.name}: classifying, ${j.stage} · ${Math.round((j.fraction || 0) * 100)} %`);
+          const p = await window.native.invoke('cloud:parts', job, since.get(job) || 0).catch(() => null);
+          if (p?.parts.length) lod.setPending(e.id, p.parts), since.set(job, p.next);
+          continue;
+        }
+        attached.add(job);
+        const r = await app.reg.run('attach_point_cloud_classes', { id: e.id }).catch((err) => ({ error: err.message }));
+        lod.setPending(e.id, null);
+        if (r.status === 'done') app.ui.toast(`${e.name}: ${r.changed.toLocaleString()} points classified in ${r.seconds} s`);
+        else app.ui.toast(`${e.name}: classification ${r.status || 'failed'}${r.error ? `: ${r.error}` : ''}`, r.status === 'cancelled' ? 'info' : 'danger');
+      }
+      // exports (#299)
+      for (const [job, path] of exports) {
+        const j = await window.native.invoke('cloud:job', job).catch(() => null);
+        busy = true;
+        if (j?.status === 'running') {
+          app.ui.setStatus(`Exporting ${path.split(/[\/]/).pop()} · ${Math.round((j.fraction || 0) * 100)} %`);
+          continue;
+        }
+        exports.delete(job);
+        const r = j?.status === 'done' ? await window.native.invoke('cloud:task-result', job).catch(() => null) : null;
+        if (r) app.ui.toast(`${r.points.toLocaleString()} points written to ${path.split(/[\/]/).pop()} (${r.format})`);
+        else app.ui.toast(`Export of ${path.split(/[\/]/).pop()} ${j?.status || 'failed'}${j?.error ? `: ${j.error}` : ''}`, 'danger');
+      }
       for (const e of building) {
         const oc = e.pointcloud.octree;
         const j = await window.native.invoke('cloud:job', oc.job).catch(() => null);

@@ -437,6 +437,13 @@ export class IO {
   cloudOpen(opts) {
     return native().invoke('cloud:open', opts);
   }
+  // classification and export of a whole octree (#298, #299)
+  cloudTask(task, opts) {
+    return native().invoke('cloud:task', { task, opts });
+  }
+  cloudTaskResult(id) {
+    return native().invoke('cloud:task-result', id);
+  }
 
   /** Size and GeoTIFF tags of a TIFF. */
   tiffInfo(bytes) {

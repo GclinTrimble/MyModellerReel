@@ -4,6 +4,7 @@
 // drawn (material.onBeforeRender), so pane 2 can show intensity while pane 1 shows RGB.
 import * as THREE from 'three';
 import * as CS from '../core/cloudstyle.js';
+import * as CL from '../core/classify.js';
 import * as CV from '../core/clip.js';
 import { pointNormals } from '../core/cloudfeatures.js';
 import { patchClip, CLIP_GLSL } from './clipshader.js';
@@ -36,6 +37,7 @@ attribute float gpsTime;
 attribute float pointSource;
 attribute float hag;
 attribute float spacingRank;
+attribute float selected; // the point selection (#299); 0 when a geometry has none
 uniform int uMode;
 uniform int uHas; // 1 rgb, 2 intensity, 4 class, 8 returns, 16 time, 32 source, 64 normal, 128 hag, 256 spacing
 uniform vec2 uRange;
@@ -119,6 +121,7 @@ void main() {
     vAlpha = f;
   }
   vColor = pow(max(c, 0.0), vec3(2.2)); // ramps, classes and rgb are sRGB; the output step encodes again
+  if (selected > 0.5) vColor = mix(vColor, vec3(1.0, 0.55, 0.0), 0.85);
   if (uDepth == 1) {
     // x-ray: each point adds (night) or takes away (light sky) a little light; dense walls and kerbs build up
     float l = dot(c, vec3(0.299, 0.587, 0.114));
@@ -177,12 +180,19 @@ function stateFor(mat, pane) {
     f,
     range,
     ramp: lut(`r${JSON.stringify(ramp)}`, () => CS.rampBytes(ramp)),
-    classes: lut(`c${JSON.stringify(st.class_colors || {})}|${flags}`, () => CS.classBytes(st.class_colors, f.hide || [])),
+    classes: lut(`c${JSON.stringify(classColors(st))}|${flags}`, () => CS.classBytes(classColors(st), f.hide || [])),
     needs: { hag: !!(f.above_ground || st.above_ground), spacing: f.spacing > 0, normal: st.color_by === 'normal' },
   };
   mat.userData.states.set(pane, s);
   return s;
 }
+
+/** Class colours: the document's user classes (#298: 64 kerb, 65 vehicle, define_point_class), then the style's own. */
+function classColors(st) {
+  const user = { ...Object.fromEntries(Object.entries(CL.USER_CLASSES).map(([c, v]) => [c, v[1]])), ...Object.fromEntries(Object.entries(env.doc?.pointClasses || {}).map(([c, v]) => [c, v.color])) };
+  return { ...user, ...(st.class_colors || {}) };
+}
+const classNameOf = (c) => env.doc?.pointClasses?.[c]?.name || CL.USER_CLASSES[c]?.[0] || CS.className(c);
 
 /** Attributes a filter needs that only the CPU can make (heights above ground, spacing ranks), added once. */
 function ensure(geometry, needs) {
@@ -464,15 +474,19 @@ export function legendOf(o, pane = 1) {
   const s = stateFor(m, pane);
   const d = m.userData.data;
   let classes = m.userData.classes;
-  if (!classes && s.st.color_by === 'classification') classes = m.userData.classes = d?.classification ? CS.classCounts(d, {}) : [];
-  return CS.legend(s.st, s.range, (classes || []).map((c) => ({ ...c, visible: !s.f.hide?.includes(c.code) })));
+  // the counts (#298): the full ones when a classification read every point, else the preview's
+  const full = m.userData.entity.pointcloud?.counts;
+  if (!classes && s.st.color_by === 'classification') classes = m.userData.classes = full ? Object.entries(full).map(([code, count]) => ({ code: +code, count })) : d?.classification ? CS.classCounts(d, {}) : [];
+  const L = CS.legend({ ...s.st, class_colors: classColors(s.st) }, s.range, (classes || []).map((c) => ({ ...c, visible: !s.f.hide?.includes(c.code) })));
+  if (L.kind === 'classes') L.items = L.items.map((it) => ({ ...it, name: classNameOf(it.code), count: classes.find((c) => c.code === it.code)?.count }));
+  return L;
 }
 
 /** Legend HTML for a view corner. */
 export function legendHtml(L, name) {
   const esc = (x) => String(x).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
   if (L.kind === 'ramp') return `<div class="cloud-legend-title">${esc(name)} · ${esc(L.title)}</div><div class="cloud-legend-ramp" style="background:linear-gradient(90deg,${L.stops.join(',')})"></div><div class="cloud-legend-ends"><span>${esc(L.low)}</span><span>${esc(L.high)}</span></div>`;
-  if (L.kind === 'classes') return `<div class="cloud-legend-title">${esc(name)} · ${esc(L.title)}</div>${L.items.map((c) => `<div class="cloud-legend-class${c.visible ? '' : ' off'}"><i style="background:${c.color}"></i>${c.code} ${esc(c.name)}</div>`).join('')}`;
+  if (L.kind === 'classes') return `<div class="cloud-legend-title">${esc(name)} · ${esc(L.title)}</div>${L.items.map((c) => `<div class="cloud-legend-class${c.visible ? '' : ' off'}"><i style="background:${c.color}"></i>${c.code} ${esc(c.name)}${c.count !== undefined ? ` <span class="cloud-legend-count">${c.count.toLocaleString()}</span>` : ''}</div>`).join('')}`;
   return '';
 }
 

@@ -184,6 +184,12 @@ export const GUIDE = `MyModellerReel conventions:
   COPC (Cloud Optimized Point Cloud, streamed in place), PLY and XYZ / PTS / CSV; big ones become a Potree 2.0 octree
   (open spec) in a cache folder with every attribute, streamed at full detail where you look (point_cloud_job for
   progress, set_cloud_budget, pick_cloud_point for a point's exact coordinates and class). E57 is not read yet.
+  Classes (ASPRS LAS 1.4): classify_cloud runs noise, ground (morphological filter), vegetation, buildings, road / kerbs,
+  wires passes (each optional; within a clip volume, only_unclassified; locked points stay), in the background on an
+  octree (attached as one undo step, with counts before and after); classify_ground then reuses class 2. Fix by hand:
+  select_points (screen polygon through everything or front_only, within a clip, by class / intensity / elevation /
+  returns, grow_from a point over its plane), then set_point_class (class, lock, delete). Name user classes 64–255 with
+  define_point_class. export_point_cloud writes LAS 1.4 or PLY with the edited classes (LAZ / COPC: not yet).
 - Standards, always: prefer open formats and OGC standards (ogc.org/standards) for anything exchanged: GeoJSON / OGC API
   Features encodings, CityGML / CityJSON, LandXML, IFC, EPSG codes for coordinate systems (urn:ogc:def:crs:EPSG::n),
   CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.
@@ -4847,6 +4853,7 @@ function registerCore(reg, ctx) {
     const oc = e.pointcloud.octree;
     if (oc?.status === 'ready' && ctx.io?.cloudTask) {
       const job = await ctx.io.cloudTask('export', { kind: oc.kind || 'potree', folder: oc.folder, file: oc.kind === 'copc' ? oc.source : null, deltas: editsOf(e).map((x) => Assets.bytes(x)), path: a.path, format, selection: what === 'selection' ? [...pointSel.sel.nodes].filter(([, s]) => !s.shadow).map(([name, s]) => [name, s.idx]) : null, scope: scope?.scope || null, classes: a.classes || null, coordinates: a.coordinates || 'world', base, wkt: PC.wktOf(crs) });
+      ctx.view?.cloudExporting?.(job.id, a.path);
       return { id: e.id, job: job.id, path: a.path, format: format === 'ply' ? 'PLY' : 'LAS 1.4', note: 'Writing in the background: point_cloud_job reports it.' };
     }
     const v = previewNode(e, false).v;
