@@ -1,5 +1,5 @@
 // MyModellerReel main process: the window, settings, file access, the AI provider proxy and the local HTTP API.
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
 // tests drive the window while it sits behind others: keep it painting (screenshots, render loop)
 if (process.env.MMR_TEST) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const path = require('node:path');
@@ -102,6 +102,19 @@ function createWindow(page) {
   });
 }
 
+
+// 3Dconnexion SpaceMouse (#303): WebHID in the page may open 3Dconnexion devices (and the older Logitech-made ones),
+// nothing else; the chooser picks the first one without asking.
+const isSpaceMouse = (d) => d?.vendorId === 0x256f || (d?.vendorId === 0x046d && d.productId >> 8 === 0xc6);
+function allowSpaceMouse() {
+  const ses = session.defaultSession;
+  ses.on('select-hid-device', (e, details, pick) => {
+    e.preventDefault();
+    pick(details.deviceList.find(isSpaceMouse)?.deviceId);
+  });
+  ses.setPermissionCheckHandler(() => true); // as without a handler; which hid devices is decided below
+  ses.setDevicePermissionHandler((d) => d.deviceType === 'hid' && isSpaceMouse(d.device));
+}
 ipcMain.handle('app:close-confirmed', () => {
   win.__confirmed = true;
   win.close();
@@ -802,6 +815,7 @@ else {
     });
     // Sign-in is required (#115): the window shows only the sign-in screen, and nothing else starts (API, MCP,
     // plugins) until a session exists. Closing the window then quits.
+    allowSpaceMouse();
     const gated = needsSignIn();
     createWindow(gated ? 'signin.html' : 'index.html');
     win.__confirmed = gated;
