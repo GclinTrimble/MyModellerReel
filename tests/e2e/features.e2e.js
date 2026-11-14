@@ -1943,3 +1943,55 @@ test('features in a scan (#300): planes, corners and kerbs from a streamed octre
   assert.equal(await w.evaluate(() => window.mmr.doc.entities.length), before);
   await ok('clear_clips');
 });
+
+test('scan to plan (#301): footprints and massing from a streamed octree, accepted in one undo step; wall lines from a slice; kerbs as breaklines', async () => {
+  const { makeScan, writeLas, SITE } = await import('../fixtures/scan.js');
+  const file = path.join(home, 'plan.las');
+  fs.writeFileSync(file, writeLas(makeScan({ points: 2000000 })));
+  await ok('new_model');
+  await ok('import_point_cloud', { path: file, octree: true, name: 'Corridor scan' });
+  let state = null;
+  for (let i = 0; i < 300 && state?.octree !== 'ready'; i++) {
+    await new Promise((res) => setTimeout(res, 200));
+    state = await ok('point_cloud_job', { id: 'Corridor scan' });
+  }
+  assert.equal(state.octree, 'ready');
+  const b = await w.evaluate(() => window.mmr.doc.geo.base);
+  const O = SITE.origin;
+  const L = (x, n, z = 0) => [O[0] + x - b[0], O[2] + z - b[2], -(O[1] + n - b[1])];
+  // the Site menu form for footprints opens on the command
+  const menu = w.evaluate(() => window.mmr.app.ui.actions.extractFootprints.run());
+  await w.waitForSelector('#modal[open] .form');
+  assert.ok((await w.textContent('#modal[open]')).includes('Extract footprint'));
+  await w.keyboard.press('Escape');
+  await menu;
+  // footprints of the building class read at full depth, with blocks to the eaves, as a proposal
+  const before = await w.evaluate(() => JSON.stringify(window.mmr.doc.entities));
+  const f = await ok('extract_footprint', { extrude: true, propose: true });
+  assert.equal(f.count, 2);
+  assert.ok(f.scope.points > 100000, `building points at full depth: ${f.scope.points}`);
+  assert.ok(await w.evaluate(() => !document.getElementById('proposal-bar').hidden), 'the proposal bar shows');
+  assert.ok(f.footprints.every((x) => x.quality.guessed === 0 && Math.abs(x.area - 120) < 1.2), JSON.stringify(f.footprints));
+  const corners = await w.evaluate(() => window.mmr.doc.entities.filter((e) => e.tag === 'Footprints').flatMap((e) => e.curve.points.map((q) => [q[0] + e.position[0], q[2] + e.position[2]])));
+  for (const B of SITE.buildings) for (const [e, n] of B.footprint) assert.ok(corners.some(([x, z]) => Math.hypot(x - (e - b[0]), z + (n - b[1])) < 0.05), `a footprint corner within 5 cm of ${e}, ${n}`);
+  const eaves = f.footprints.map((x) => x.eave).sort((p, q) => p - q);
+  assert.ok(Math.abs(eaves[0] - 5) < 0.1 && Math.abs(eaves[1] - 6) < 0.1, `eaves ${eaves}`);
+  await ok('propose', { action: 'accept' });
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.filter((e) => e.tag === 'Massing' && e.mesh).length), 2, 'two blocks');
+  await ok('undo');
+  assert.equal(await w.evaluate(() => JSON.stringify(window.mmr.doc.entities)), before, 'one undo takes them all away');
+  // wall lines from a plan cut 1.2 m up
+  // a plan cut through the walls of both buildings (their floors are 1.6 m apart), building points only
+  await ok('add_slice', { at: 'elevation', z: O[2] + 5, thickness: 0.4, name: 'Plan cut' });
+  const t = await ok('trace_slice', { name: 'Plan cut', classes: [6] });
+  assert.ok(t.closed >= 2, `closed outlines: ${t.closed}`);
+  assert.ok(t.lines.filter((x) => x.closed).slice(0, 2).every((x) => Math.abs(x.area - 120) < 1.2 && x.quality.max <= 0.03), JSON.stringify(t.lines.slice(0, 2)));
+  await ok('delete_clip', { name: 'Plan cut' });
+  // kerbs along Main road, the ground re-triangulated on them
+  await ok('create_alignment', { name: 'Main road', points: [[L(0, 40)[0], L(0, 40)[2]], [L(100, 40)[0], L(100, 40)[2]]] });
+  await ok('classify_ground', { id: 'Corridor scan', cell: 1 });
+  const k = await ok('extract_edges', { kind: 'kerb', alignment: 'Main road', as_breaklines: true });
+  assert.equal(k.count, 4);
+  assert.ok(k.edges.every((x) => x.length > 95 && ['Kerb top', 'Kerb bottom'].includes(x.layer)), JSON.stringify(k.edges));
+  assert.equal(k.breaklines.surfaces.length, 1);
+});

@@ -280,7 +280,6 @@ TASKS.push(
   },
   {
     name: 'scan-footprints',
-    skip: 'extract_footprint (#301) is not on main yet',
     prompt: 'Find the building footprints on this site scan and draft them on a Footprints layer.',
     setup: SCAN,
     check: (doc) => {

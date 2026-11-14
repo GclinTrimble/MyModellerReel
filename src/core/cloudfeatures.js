@@ -890,8 +890,10 @@ export function stepEdges(points, path, { spacing = 1, width = 10, strip = 0.25,
     .filter((c) => c.length >= minStations)
     .map((c) => {
       const off = c.map((h) => h.offset);
+      const dev = [];
       c.forEach((h, k) => {
         const m = off.slice(Math.max(0, k - 2), k + 3).sort((a, b) => a - b)[Math.min(k + 3, off.length) - Math.max(0, k - 2) >> 1];
+        dev.push(Math.abs(m - h.offset));
         if (Math.abs(m - h.offset) < 0.01) return;
         for (const key of ['top', 'bottom']) (h[key][0] = h.p[0] + h.r[0] * m), (h[key][2] = h.p[2] + h.r[1] * m);
         h.offset = m;
@@ -904,7 +906,7 @@ export function stepEdges(points, path, { spacing = 1, width = 10, strip = 0.25,
         });
       }
       const line = (key) => simplify3(c.map((h) => h[key]), 0.005);
-      return { offset: c.reduce((s, h) => s + h.offset, 0) / c.length, side: c[0].side, top: line('top'), bottom: line('bottom'), height: c.reduce((s, h) => s + h.height, 0) / c.length, stations: c.length, from: c[0].s, to: c.at(-1).s };
+      return { offset: c.reduce((s, h) => s + h.offset, 0) / c.length, side: c[0].side, top: line('top'), bottom: line('bottom'), height: c.reduce((s, h) => s + h.height, 0) / c.length, stations: c.length, from: c[0].s, to: c.at(-1).s, residual: { mean: r3(dev.reduce((s, d) => s + d, 0) / dev.length), max: r3(Math.max(...dev)) } };
     });
 }
 
