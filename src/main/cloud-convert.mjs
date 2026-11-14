@@ -70,6 +70,8 @@ export async function openSource(file) {
 }
 
 /** A random sample of up to n points (reservoir), kept as x, y, z doubles and 8-bit colour. */
+const PREVIEW_ATTRS = [['intensity', Uint16Array], ['classification', Uint8Array], ['returnNumber', Uint8Array], ['numberOfReturns', Uint8Array], ['gpsTime', Float64Array], ['pointSource', Uint16Array]];
+
 class Preview {
   constructor(n, seed = 7) {
     this.n = n;
@@ -78,6 +80,7 @@ class Preview {
     this.y = new Float64Array(n);
     this.z = new Float64Array(n);
     this.rgb = null;
+    this.attrs = {}; // intensity, classification, returns, GPS time, source: the styles (#295) colour the preview by them
     this.s = seed;
   }
   rnd() {
@@ -93,11 +96,13 @@ class Preview {
       this.y[k] = b.y[i];
       this.z[k] = b.z[i];
       if (this.rgb && b.r) (this.rgb[k * 3] = b.r[i]), (this.rgb[k * 3 + 1] = b.g[i]), (this.rgb[k * 3 + 2] = b.b[i]);
+      for (const [f, T] of PREVIEW_ATTRS) if (b[f]) (this.attrs[f] ||= new T(this.n))[k] = b[f][i];
     }
   }
   result() {
     const n = Math.min(this.n, this.seen);
-    return { count: n, x: this.x.slice(0, n), y: this.y.slice(0, n), z: this.z.slice(0, n), rgb: this.rgb ? this.rgb.slice(0, n * 3) : null };
+    const attrs = Object.fromEntries(Object.entries(this.attrs).map(([f, a]) => [f, a.slice(0, n)]));
+    return { count: n, x: this.x.slice(0, n), y: this.y.slice(0, n), z: this.z.slice(0, n), rgb: this.rgb ? this.rgb.slice(0, n * 3) : null, ...attrs };
   }
 }
 
@@ -309,6 +314,7 @@ export function octreePreview(folder, n = 300000) {
         const b = { count: d.count, x: new Float64Array(d.count), y: new Float64Array(d.count), z: new Float64Array(d.count) };
         for (let i = 0; i < d.count; i++) (b.x[i] = d.position[i * 3]), (b.y[i] = d.position[i * 3 + 1]), (b.z[i] = d.position[i * 3 + 2]);
         if (d.rgb) for (const [k, c] of ['r', 'g', 'b'].entries()) b[c] = Uint8Array.from({ length: d.count }, (_, i) => d.rgb[i * 3 + k] >> 8);
+        for (const [f, name] of [['intensity', 'intensity'], ['classification', 'classification'], ['returnNumber', 'return number'], ['numberOfReturns', 'number of returns'], ['gpsTime', 'gps-time'], ['pointSource', 'point source id']]) if (d[name]) b[f] = d[name];
         preview.add(b);
       }
       queue.push(...node.children.filter(Boolean));

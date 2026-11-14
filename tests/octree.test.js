@@ -11,6 +11,11 @@ import * as OT from '../src/core/octree.js';
 import { keyName } from '../src/core/copc.js';
 import { convertCloud, readOctree } from '../src/main/cloud-convert.mjs';
 
+// this file converts a million points: below normal priority, so the suite's timing tests running beside it keep the CPU
+try {
+  os.setPriority(os.constants.priority.PRIORITY_LOW);
+} catch {}
+
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-octree-'));
 const countBy = (arr, n = arr.length) => {
   const c = {};
@@ -61,7 +66,7 @@ test('a 1 M point cloud converts to Potree 2.0 and reads back: same count, bound
     const stages = new Set();
     let preview = null;
     // small chunks: the out-of-core path (upper nodes in memory, chunks on disk)
-    const { metadata } = await convertCloud(las, path.join(dir, 'octree'), { maxChunk: 150000, onProgress: (p) => stages.add(p.stage), onPreview: (p) => (preview = p) });
+    const { metadata } = await convertCloud(las, path.join(dir, 'octree'), { maxChunk: 400000, onProgress: (p) => stages.add(p.stage), onPreview: (p) => (preview = p) });
     assert.deepEqual([...stages], ['counting', 'sorting', 'building', 'done']);
     assert.equal(preview.count, 300000);
     assert.equal(metadata.points, 1e6);
@@ -84,11 +89,14 @@ test('a 1 M point cloud converts to Potree 2.0 and reads back: same count, bound
         if (d['number of returns'][i] === 2) returns2++;
         for (let k = 0; k < 3; k++) (lo[k] = Math.min(lo[k], d.position[i * 3 + k])), (hi[k] = Math.max(hi[k], d.position[i * 3 + k]));
       }
-      for (let i = 0; i < d.count; i++) {
-        const [x, y, z] = [d.position[i * 3], d.position[i * 3 + 1], d.position[i * 3 + 2]];
-        const b = node.box;
-        assert.ok(x >= b.min[0] - 1e-6 && x <= b.max[0] + 1e-6 && y >= b.min[1] - 1e-6 && y <= b.max[1] + 1e-6 && z >= b.min[2] - 1e-6 && z <= b.max[2] + 1e-6, `${node.name} holds its own points`);
+      const b = node.box;
+      let inside = true;
+      for (let i = 0; i < d.count * 3; i++) {
+        const v = d.position[i];
+        const k = i % 3;
+        if (v < b.min[k] - 1e-6 || v > b.max[k] + 1e-6) inside = false;
       }
+      assert.ok(inside, `${node.name} holds its own points`);
     }
     assert.equal(n, 1e6);
     assert.deepEqual(cls, countBy(s.classification));
