@@ -23,6 +23,7 @@ import * as PH from './physics.js';
 import * as MD from './modeling.js';
 import * as SVG from './svg.js';
 import * as PC from './pointcloud.js';
+import * as CS from './cloudstyle.js';
 import * as RS from './raster.js';
 import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
@@ -4376,21 +4377,84 @@ function registerCore(reg, ctx) {
       pos[k * 3 + 2] = -(pc.y[i] - base[1]);
       if (col) (col[k * 3] = pc.r[i]), (col[k * 3 + 1] = pc.g[i]), (col[k * 3 + 2] = pc.b[i]);
     });
-    const bytes = new Uint8Array(pos.byteLength + (col ? col.byteLength : 0));
-    bytes.set(new Uint8Array(pos.buffer), 0);
-    if (col) bytes.set(col, pos.byteLength);
+    const { attributes, parts } = CS.encodeAttributes(pc, keep); // preview layout 2 (#295): after the rgb block
+    const blocks = [new Uint8Array(pos.buffer), ...(col ? [col] : []), ...parts];
+    const bytes = new Uint8Array(blocks.reduce((s, b) => s + b.byteLength, 0));
+    blocks.reduce((at, b) => (bytes.set(b, at), at + b.byteLength), 0);
     const asset = Assets.put(bytes, { mime: 'application/x-mmr-points', name: a.path.split(/[\\/]/).pop() });
-    const e = D.addEntity(doc, { type: 'pointcloud', name: a.name || a.path.split(/[\\/]/).pop().replace(/\.\w+$/, ''), pointcloud: { asset, count: keep.length, colors: !!col, format: pc.format, of: pc.count }, material: { color: '#7a8a96' } });
+    const e = D.addEntity(doc, { type: 'pointcloud', name: a.name || a.path.split(/[\\/]/).pop().replace(/\.\w+$/, ''), pointcloud: { asset, count: keep.length, colors: !!col, format: pc.format, of: pc.count, ...(parts.length ? { layout: 2, attributes } : {}) }, material: { color: '#7a8a96' } });
     ctx.selection.set([e.id]);
     return { id: e.id, name: e.name, points: keep.length, in_file: pc.count, format: pc.format, colors: !!col, base };
   }, true);
 
-  def('terrain', 'classify_ground', 'A terrain surface from a point cloud: the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), name: common.name }, ['id']), (a) => {
+  // point cloud display (#295–#297): style, filters, classes; the renderer reads pointcloud.style / .filter
+  const cloudOf = (id) => {
+    const [e] = D.resolve(ctx.doc, id || ctx.doc.entities.find((x) => x.pointcloud)?.id);
+    if (!e?.pointcloud) throw new Error(`${e?.name || 'That'} is not a point cloud.`);
+    return e;
+  };
+  const cloudData = (e) => CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset));
+  /** Indices of a cloud's points that pass its filter (pane 1) and an extra one: what you see is what analysis uses. */
+  const cloudKept = (e, extra = {}) => {
+    const d = cloudData(e);
+    const f = { ...CS.filterOf(e), ...extra };
+    const more = { hag: f.above_ground ? CS.heightAboveGround(d.position, d.count, d.classification) : undefined, spacing: f.spacing ? CS.spacingRanks(d.position, d.count) : undefined };
+    const out = [];
+    for (let i = 0; i < d.count; i++) if (CS.passes(CS.pointAt(d, i, e.position?.[1] || 0, more), f)) out.push(i);
+    return { d, f, more, kept: out };
+  };
+  const PAIR = (d) => ({ type: 'array', items: { type: 'number' }, description: d });
+  const CLOUD_PANE = num('a view pane 2–4 gets its own override (default: the cloud itself, every pane)');
+  def('view', 'set_cloud_style', 'How a point cloud draws (#295, #296): color_by rgb | intensity | elevation | classification | return_number | gps_time | point_source | normal | single | rgb_intensity | depth, over range [low, high] (default fitted: intensity 2–98 %) with gamma and a ramp (viridis, terrain, grey, spectral, warm_cool, or 2–3 "#rrggbb" stops); class_colors { code: "#rrggbb" }; point size (pixels, or metres when size_mode is attenuated), size_mode fixed | attenuated | adaptive (closes gaps at any zoom), shape square | round | paraboloid, opacity, edl (eye-dome lighting: edges and depth without normals) with edl_strength and edl_radius. Reading depth: depth off | xray (density: dense walls and kerbs glow, plan views for drafting) | depth (colour by distance) | fog (fade beyond the focus: fog_near to fog_far m past it; focus "cursor" follows the point under the cursor with Alt held, "slab" the active clip, or a distance in m). outside: points cut away by the section plane or clip are hidden (default) or drawn as a dim ghost. pane: a different style in one view pane. null clears a field.', obj({ id: str('the point cloud (default the first one)'), color_by: str('what colours the points', CS.COLOR_BY), range: PAIR('[low, high] of the mode (intensity 0–65535, elevation m, gps time s after the first point)'), gamma: num('intensity gamma (default 1)'), ramp: { description: 'viridis | terrain | grey | spectral | warm_cool, or ["#rrggbb", "#rrggbb"(, "#rrggbb")]' }, class_colors: { type: 'object', description: '{ "6": "#e0533d" }: colours per ASPRS class code' }, color: str('#rrggbb for single'), size: num('pixels (fixed, adaptive minimum) or metres (attenuated)'), size_mode: str('', CS.SIZE_MODES), min_px: num('smallest point, px'), max_px: num('largest point, px'), shape: str('', CS.SHAPES), opacity: num('0–1'), edl: bool('eye-dome lighting'), edl_strength: num('default 1'), edl_radius: num('pixels, default 1.4'), depth: str('depth aid', CS.DEPTH), xray_strength: num('x-ray strength, default 1'), xray_saturation: num('x-ray colour, 0 grey to 1 full (default 0.35)'), above_ground: bool('elevation colours heights above the ground class'), fog_near: num('m past the focus where fading starts (default 2)'), fog_far: num('m past the focus where points are gone (default 10)'), focus: { description: '"cursor" | "slab" | a distance in m from the camera' }, outside: str('points outside the section or clip', ['hidden', 'ghost']), pane: CLOUD_PANE }), (a) => {
+    const e = cloudOf(a.id);
+    const { id: _, pane, ...change } = a;
+    if (change.range && !(change.range.length === 2 && change.range[1] > change.range[0])) throw new Error('range is [low, high] with high above low.');
+    if (Array.isArray(change.ramp) && !(change.ramp.length >= 2 && change.ramp.length <= 3 && change.ramp.every((c) => /^#[0-9a-f]{6}$/i.test(c)))) throw new Error('A custom ramp is two or three "#rrggbb" stops.');
+    if (typeof change.ramp === 'string' && !CS.RAMPS[change.ramp]) throw new Error(`No ramp "${change.ramp}": ${Object.keys(CS.RAMPS).join(', ')}.`);
+    if (change.color_by === 'intensity' && !e.pointcloud.attributes?.intensity) throw new Error(`${e.name} has no intensity (import it again from a LAS file to keep it).`);
+    if (change.color_by === 'classification' && !e.pointcloud.attributes?.classification) throw new Error(`${e.name} has no classification.`);
+    if (change.color_by === 'rgb' && !e.pointcloud.colors) throw new Error(`${e.name} has no colours: try intensity, elevation or single.`);
+    e.pointcloud = { ...e.pointcloud, style: CS.merge(e.pointcloud.style, change, pane) };
+    const st = CS.styleOf(e, pane || 1);
+    return { id: e.id, pane: pane || 'all', style: st, range: CS.autoRange(st, cloudData(e), e.position?.[1] || 0) };
+  }, true);
+  def('view', 'set_cloud_filter', 'Show and hide points of a cloud (#297): a display filter, nothing is deleted; snapping, picking, class counts and analysis (classify_ground) use what is shown. classes { show, hide } (ASPRS codes; show alone keeps only those; { show: "all" } shows every class), elevation [min, max] m (above_ground: heights over the ground class), intensity [min, max], returns first | last | only | all, time [t0, t1] s after the first point (a strip), source [point source ids], density 0–100 % drawn (the same points every frame), spacing m (at most one point per spacing, for clean plans). pane: a filter for one view pane only. null clears a field.', obj({ id: str('the point cloud (default the first one)'), classes: { type: 'object', description: '{ show?: [codes] | "all", hide?: [codes] }' }, elevation: PAIR('[min, max] m'), above_ground: bool('elevation measured above the ground'), intensity: PAIR('[min, max] 0–65535'), returns: str('', CS.RETURNS), time: PAIR('[t0, t1] s after the first point'), source: { type: 'array', items: { type: 'number' }, description: 'point source ids (flight lines)' }, density: num('% of points drawn, 0–100'), spacing: num('m, at most one point per spacing'), pane: CLOUD_PANE }), (a) => {
+    const e = cloudOf(a.id);
+    const { id: _, pane, classes, ...change } = a;
+    if (change.density !== undefined && change.density !== null && !(change.density >= 0 && change.density <= 100)) throw new Error('density is 0–100 (%).');
+    if (classes) {
+      const cur = new Set(CS.filterOf(e, pane || 1).hide || []);
+      const present = e.pointcloud.attributes?.classification ? CS.classCounts(cloudData(e)).map((c) => c.code) : [1];
+      if (classes.show === 'all') cur.clear();
+      else if (classes.show && !classes.hide) present.forEach((c) => (classes.show.includes(c) ? cur.delete(c) : cur.add(c)));
+      else for (const c of classes.show || []) cur.delete(c);
+      for (const c of classes.hide || []) cur.add(c);
+      change.hide = [...cur].sort((x, y) => x - y);
+    }
+    if (change.returns === 'all') change.returns = null;
+    e.pointcloud = { ...e.pointcloud, filter: CS.merge(e.pointcloud.filter, change, pane) };
+    const { kept, d } = cloudKept(e, pane > 1 ? CS.filterOf(e, pane) : {});
+    return { id: e.id, pane: pane || 'all', filter: CS.filterOf(e, pane || 1), shown: kept.length, of: d.count };
+  }, true);
+  def('view', 'list_cloud_classes', "A point cloud's classes (ASPRS LAS 1.4): code, name, count of points, whether the class is shown, and how many points are drawn under the filter.", obj({ id: str('the point cloud (default the first one)'), pane: CLOUD_PANE }), (a) => {
+    const e = cloudOf(a.id);
+    const d = cloudData(e);
+    const f = CS.filterOf(e, a.pane || 1);
+    const more = { hag: f.above_ground ? CS.heightAboveGround(d.position, d.count, d.classification) : undefined, spacing: f.spacing ? CS.spacingRanks(d.position, d.count) : undefined };
+    const classes = CS.classCounts(d, f, e.position?.[1] || 0, more);
+    return { id: e.id, classified: !!d.classification, classes, points: d.count, shown: classes.reduce((s, c) => s + c.shown, 0) };
+  });
+
+  def('terrain', 'classify_ground', 'A terrain surface from a point cloud: the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated. Uses the points the cloud shows (set_cloud_filter); classes and returns narrow it further.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes (e.g. [2] when the scan is already classified)' }, returns: str('', CS.RETURNS), name: common.name }, ['id']), (a) => {
     const doc = ctx.doc;
     const [pcE] = D.resolve(doc, a.id);
     if (!pcE.pointcloud) throw new Error(`${pcE.name} is not a point cloud.`);
-    const p = pcPositions(pcE);
-    const n = pcE.pointcloud.count;
+    const all = pcPositions(pcE);
+    const extra = { ...(a.returns ? { returns: a.returns } : {}), ...(a.classes ? { hide: [...Array(256).keys()].filter((c) => !a.classes.includes(c)) } : {}) };
+    const { kept } = cloudKept(pcE, extra);
+    const n = kept.length;
+    const p = new Float32Array(n * 3);
+    kept.forEach((i, k) => p.set(all.subarray(i * 3, i * 3 + 3), k * 3));
     const pc = { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), count: n };
     for (let i = 0; i < n; i++) (pc.x[i] = p[i * 3]), (pc.y[i] = -p[i * 3 + 2]), (pc.z[i] = p[i * 3 + 1]);
     const idx = PC.classifyGround(pc, { cell: a.cell || 1, tolerance: a.tolerance ?? 0.25, slope: a.slope ?? 0.3, window: a.window || 20 });
@@ -5044,6 +5108,7 @@ function registerCore(reg, ctx) {
     ids: { type: 'array', items: { type: 'string' }, description: 'cut only these entities (ids or names; default everything)' },
     layers: { type: 'array', items: { type: 'string' }, description: 'cut only the entities on these layers' },
     panes: { type: 'array', items: { type: 'number' }, description: 'cut only in these view panes, 1–4 (default every pane)' },
+    outside: str('point clouds: what it cuts away is hidden (default) or a faint ghost (#296; not snapped to)', ['hidden', 'ghost']),
   };
   const clipInfo = (c0) => {
     const c = CV.normalize(c0);

@@ -6,6 +6,8 @@ import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-
 import * as Assets from '../core/assets.js';
 import * as PDF from '../core/pdf.js';
 import * as DW from '../core/drawings.js';
+import * as CS from '../core/cloudstyle.js';
+import { styleCloud, shown } from './cloudmaterial.js';
 
 // picking through a bounding volume tree (#111): big imports stay quick to click on
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -20,33 +22,46 @@ export function bvh(g) {
 // ---------------------------------------------------------------- point clouds
 
 const clouds = new Map();
-/** A point cloud entity as THREE.Points (positions and colours from its asset), shared per asset. */
+/** A point cloud entity as THREE.Points (positions, colours and attributes from its asset), shared per asset. */
 export function cloudObject(e) {
   const pc = e.pointcloud;
-  let g = clouds.get(pc.asset);
+  const key = `${pc.asset}|${pc.layout || 1}`;
+  let g = clouds.get(key);
   if (!g) {
     const bytes = Assets.get(pc.asset)?.bytes;
     g = new THREE.BufferGeometry();
     if (bytes) {
-      const pos = new Float32Array(bytes.slice(0, pc.count * 12).buffer);
-      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      if (pc.colors) g.setAttribute('color', new THREE.BufferAttribute(new Uint8Array(bytes.slice(pc.count * 12, pc.count * 15).buffer), 3, true));
+      const d = CS.decodePreview(pc, bytes);
+      g.setAttribute('position', new THREE.BufferAttribute(d.position, 3));
+      if (d.rgb) g.setAttribute('rgb', new THREE.BufferAttribute(d.rgb, 3, true));
+      if (d.intensity) g.setAttribute('intensity', new THREE.BufferAttribute(d.intensity, 1));
+      if (d.classification) g.setAttribute('classification', new THREE.BufferAttribute(d.classification, 1));
+      if (d.returns) {
+        g.setAttribute('returnNumber', new THREE.BufferAttribute(d.returns.map((r) => r & 15), 1));
+        g.setAttribute('numberOfReturns', new THREE.BufferAttribute(d.returns.map((r) => r >> 4), 1));
+      }
+      if (d.gpsTime) g.setAttribute('gpsTime', new THREE.BufferAttribute(d.gpsTime, 1));
+      if (d.pointSource) g.setAttribute('pointSource', new THREE.BufferAttribute(d.pointSource, 1));
       g.computeBoundingSphere();
+      g.computeBoundingBox();
+      const s = g.boundingBox.getSize(new THREE.Vector3());
+      g.userData.spacing = Math.sqrt(Math.max(s.x * s.z, 1e-6) / Math.max(1, d.count)); // average plan spacing, for adaptive size
+      g.userData.cloudData = d;
+      clouds.set(key, g); // a missing file may be imported again under the same asset id
     }
-    if (bytes) clouds.set(pc.asset, g); // a missing file may be imported again under the same asset id
   }
-  const o = new THREE.Points(g, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: !!pc.colors, color: pc.colors ? 0xffffff : e.material.color }));
-  o.userData.pointcloud = true;
+  const o = styleCloud(new THREE.Points(g), e, g.userData.cloudData);
   o.raycast = () => {};
   return o;
 }
-/** Snap points from a cloud: a few thousand of its points. */
+/** Snap points from a cloud: a few thousand of the points it shows (its filter and the section). */
 export function cloudSnaps(o, max = 4000) {
   const p = o.geometry.attributes.position;
   if (!p) return [];
+  const ok = shown(o);
   const step = Math.max(1, Math.floor(p.count / max));
   const out = [];
-  for (let i = 0; i < p.count; i += step) out.push({ p: new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld), kind: 'Point cloud' });
+  for (let i = 0; i < p.count; i += step) if (ok(i)) out.push({ p: new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld), kind: 'Point cloud' });
   return out;
 }
 

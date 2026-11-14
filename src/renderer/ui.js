@@ -13,6 +13,8 @@ import { pickSteps } from '../core/fields.js';
 import { sketchPad } from './sketch.js';
 import * as S from '../core/survey.js';
 import * as Assets from '../core/assets.js';
+import * as CS from '../core/cloudstyle.js';
+import { legendHtml } from './cloudmaterial.js';
 import * as SW from '../core/sitework.js';
 import { isSurface } from '../core/project.js';
 import * as TR from '../core/terrain.js';
@@ -451,6 +453,7 @@ export class UI {
       unhideAll: { label: 'Unhide all', icon: 'eye', run: run('run_script', { code: 'for (const e of api.doc.entities) e.visible = true;' }) },
       lock: { label: 'Lock', icon: 'lock-simple', run: () => sel().length && app.reg.run('set_properties', { locked: true }) },
       unlockAll: { label: 'Unlock all', icon: 'lock-simple-open', run: run('run_script', { code: 'for (const e of api.doc.entities) e.locked = false;' }) },
+      cloudDepth: { label: 'Point cloud depth: off, x-ray, depth colour, fog', icon: 'drop-half', key: 'Shift+D', run: () => this.setCloudDepth() },
       zoomExtents: { label: 'Zoom extents', icon: 'corners-out', key: 'Shift+Z', run: () => app.reg.run('zoom_extents', { ...app.panes?.target() }) },
       layout1: { label: 'One view', icon: 'square', run: run('set_layout', { count: 1 }) },
       layout2: { label: 'Two views side by side', icon: 'square-split-horizontal', run: run('set_layout', { count: 2, arrangement: 'columns' }) },
@@ -1089,6 +1092,7 @@ export class UI {
           ? [
               D('eye', 'Display: edges, x-ray, shadows, grid, style… (stays open)', () => this.displayItems()),
               D('magnet', 'Snaps: which points and faces the drawing tools snap to (stays open)', () => this.snapSettings()),
+              ...(doc.entities.some((e) => e.pointcloud) ? [D('drop-half', 'Depth in point clouds: off, x-ray, depth colour, fog (Shift+D)', () => this.depthItems(pane))] : []),
               ...['edges', 'shadows'].map((k) => B(A[k].icon, A[k].label, A[k].run, s[k])),
             ]
           : [D('eye', 'Display and snaps (stays open)', () => [...this.displayItems(), '-', ...this.snapSettings()])],
@@ -1383,6 +1387,22 @@ export class UI {
     if ((await this.modal('Base point', body, [['Set', 'go'], ['Cancel', null]])) !== 'go') return;
     const val = (x) => +x.querySelector('input').value;
     return app.reg.run('set_base_point', { at, e: val(fe), n: val(fn), z: val(fz), north_angle: val(fa) }).then((r) => this.toast(`Base point E ${r.base[0]} N ${r.base[1]} Z ${r.base[2]}`)).catch((e) => this.toast(e.message, 'danger'));
+  }
+
+  /** Point cloud depth aids (#296) for every cloud, in one pane or all: off, x-ray, depth colour, fog. */
+  depthItems(pane = 1) {
+    const doc = this.app.store.doc;
+    const now = (CS.styleOf(doc.entities.find((e) => e.pointcloud) || {}, pane).depth) || 'off';
+    return ['Depth', ...[['off', 'Off'], ['xray', 'X-ray density'], ['depth', 'Depth colour'], ['fog', 'Fog (hold Alt over a point: focus)']].map(([v, label]) => ({ label, icon: 'drop-half', checked: () => now === v, run: () => this.setCloudDepth(v, pane) }))];
+  }
+  /** Set (or with no value cycle) the depth aid of every cloud in a pane. */
+  async setCloudDepth(v, pane) {
+    const clouds = this.app.store.doc.entities.filter((e) => e.pointcloud);
+    if (!clouds.length) return this.toast('Import a point cloud first.');
+    const p = pane ?? (this.app.panes ? this.app.panes.focusI + 1 : 1);
+    const next = v || CS.DEPTH[(CS.DEPTH.indexOf(CS.styleOf(clouds[0], p).depth) + 1) % CS.DEPTH.length];
+    for (const e of clouds) await this.app.reg.run('set_cloud_style', { id: e.id, depth: next, pane: p > 1 ? p : undefined }).catch((x) => this.toast(x.message, 'danger'));
+    this.toast(`Depth: ${next}`);
   }
 
   /** The display toggles (#194): they keep the list open, like a panel. */
@@ -2399,10 +2419,85 @@ export class UI {
       ),
       this.paramsCard(e),
       e.analysis && !e.derived?.report ? h('div.card', {}, h('div.overline', {}, 'Analysis'), this.legend(e)) : null,
-      e.underlay ? null : matFields,
+      e.pointcloud ? this.cloudCard(e) : null,
+      e.underlay || e.pointcloud ? null : matFields,
       this.metaCard(e),
       tracks.length ? h('div.card', {}, h('div.overline', {}, 'Animation'), ...tracks.map((t) => h('div.small', {}, `${t.property}: ${t.keys.length} keys, ${t.keys[0].t}s → ${t.keys.at(-1).t}s`))) : null,
       actions,
+    );
+  }
+
+  /** A point cloud's style, depth aids and filter (#295–#297), for the whole cloud or one view pane, with its legend. */
+  cloudCard(e) {
+    const app = this.app;
+    const run = (n, a) => app.reg.run(n, a).catch((x) => this.toast(x.message, 'danger'));
+    const panes = app.store.doc.settings.layout?.count || 1;
+    this.cloudPane = Math.min(this.cloudPane || 1, panes);
+    const pane = this.cloudPane > 1 ? this.cloudPane : undefined;
+    const st = CS.styleOf(e, this.cloudPane);
+    const f = CS.filterOf(e, this.cloudPane);
+    const A = e.pointcloud.attributes || {};
+    const style = (k) => (v) => run('set_cloud_style', { id: e.id, pane, [k]: v });
+    const filter = (k) => (v) => run('set_cloud_filter', { id: e.id, pane, [k]: v });
+    const select = (label, value, opts, on) => h('label.row.small.param-row', {}, h('span', {}, label), h('select.grow', { 'aria-label': label, onchange: (ev) => on(ev.target.value) }, opts.map(([v, l]) => h('option', { value: v, selected: v === value }, l))));
+    const number = (label, value, on, attrs = {}) => h('label.row.small.param-row', {}, h('span', {}, label), h('input.grow', { type: 'number', step: 'any', value: value ?? '', 'aria-label': label, ...attrs, onchange: (ev) => on(ev.target.value === '' ? null : +ev.target.value) }));
+    const pair = (label, value, on, ph = ['min', 'max']) => {
+      const [a, b] = [0, 1].map((k) => h('input', { type: 'number', step: 'any', value: value?.[k] ?? '', placeholder: ph[k], 'aria-label': `${label} ${ph[k]}`, style: { width: '50%' } }));
+      const go = () => on(a.value === '' || b.value === '' ? null : [+a.value, +b.value]);
+      a.onchange = b.onchange = go;
+      return h('div.small.param-row', {}, h('span', {}, label), h('div.row', { style: { gap: '4px' } }, a, b));
+    };
+    const check = (label, value, on) => h('label.row.small', {}, h('input', { type: 'checkbox', checked: !!value, onchange: (ev) => on(ev.target.checked) }), label);
+    const has = { rgb: e.pointcloud.colors, intensity: A.intensity, rgb_intensity: e.pointcloud.colors && A.intensity, classification: A.classification, return_number: A.returns, gps_time: A.time, point_source: A.source, normal: false };
+    const modes = CS.COLOR_BY.filter((m) => !(m in has) || has[m]).map((m) => [m, m.replace('_', ' ')]);
+    const legend = h('div.cloud-panel-legend');
+    const classes = h('div.cloud-classes');
+    app.reg.run('list_cloud_classes', { id: e.id, pane }).then((r) => {
+      const L = CS.legend(st, CS.autoRange(st, CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset)), e.position[1]), r.classes);
+      legend.innerHTML = legendHtml(L, e.name);
+      classes.replaceChildren(
+        h('div.row.small', {}, h('span.grow.muted', {}, `${r.shown.toLocaleString()} of ${r.points.toLocaleString()} points shown`), h('button.btn', { onclick: () => run('set_cloud_filter', { id: e.id, pane, classes: { show: 'all' } }) }, 'All')),
+        ...(r.classified ? r.classes : []).map((c) =>
+          h('div.row.small', {},
+            h('input', { type: 'checkbox', checked: c.visible, 'aria-label': `Show ${c.name}`, onchange: (ev) => run('set_cloud_filter', { id: e.id, pane, classes: ev.target.checked ? { show: [c.code], hide: [] } : { hide: [c.code] } }) }),
+            h('i.cloud-swatch', { style: { background: CS.classColor(c.code, st.class_colors) } }),
+            h('span.grow', {}, `${c.code} ${c.name}`),
+            h('span.muted', { title: 'shown / points' }, `${c.shown.toLocaleString()} / ${c.count.toLocaleString()}`),
+            h('button.btn', { title: 'Only this class', onclick: () => run('set_cloud_filter', { id: e.id, pane, classes: { show: [c.code] } }) }, 'Only'),
+          ),
+        ),
+      );
+    }).catch(() => {});
+    return h(
+      'div.card',
+      {},
+      h('div.overline', {}, 'Point cloud'),
+      h('div.small.muted', {}, `${e.pointcloud.count.toLocaleString()} points${e.pointcloud.of ? ` (of ${e.pointcloud.of.toLocaleString()} in the file)` : ''}`),
+      panes > 1 ? select('Applies to', String(this.cloudPane), [['1', 'Every pane'], ...Array.from({ length: panes - 1 }, (_, k) => [String(k + 2), `Pane ${k + 2} only`])], (v) => ((this.cloudPane = +v), this.refresh?.())) : null,
+      select('Colour by', st.color_by, modes, style('color_by')),
+      select('Ramp', typeof st.ramp === 'string' ? st.ramp : '', [['', 'Default'], ...Object.keys(CS.RAMPS).map((r) => [r, r.replace('_', ' ')])], (v) => style('ramp')(v || null)),
+      pair('Range', st.range, style('range'), ['auto', 'auto']),
+      st.color_by === 'single' ? h('label.row.small.param-row', {}, h('span', {}, 'Colour'), h('input', { type: 'color', value: st.color, onchange: (ev) => style('color')(ev.target.value) })) : null,
+      legend,
+      select('Size', st.size_mode, CS.SIZE_MODES.map((m) => [m, m]), style('size_mode')),
+      number(st.size_mode === 'attenuated' ? 'Size m' : 'Size px', st.size, style('size'), { min: 0 }),
+      select('Shape', st.shape, CS.SHAPES.map((m) => [m, m]), style('shape')),
+      h('label.row.small.param-row', {}, h('span', {}, 'Opacity'), h('input.grow', { type: 'range', min: 0.05, max: 1, step: 0.05, value: st.opacity, onchange: (ev) => style('opacity')(+ev.target.value) })),
+      check('Eye-dome lighting (edges and depth)', st.edl, style('edl')),
+      select('Depth', st.depth, [['off', 'Off'], ['xray', 'X-ray density'], ['depth', 'Depth colour'], ['fog', 'Fog (Alt: focus)']], style('depth')),
+      st.depth === 'xray' ? h('label.row.small.param-row', {}, h('span', {}, 'X-ray'), h('input.grow', { type: 'range', min: 0.1, max: 4, step: 0.1, value: st.xray_strength, onchange: (ev) => style('xray_strength')(+ev.target.value) })) : null,
+      st.depth === 'xray' ? h('label.row.small.param-row', {}, h('span', {}, 'X-ray colour'), h('input.grow', { type: 'range', min: 0, max: 1, step: 0.05, value: st.xray_saturation ?? 0.35, onchange: (ev) => style('xray_saturation')(+ev.target.value) })) : null,
+      st.color_by === 'elevation' ? check('Heights above the ground', st.above_ground, style('above_ground')) : null,
+      st.depth === 'fog' ? pair('Fog m', [st.fog_near, st.fog_far], (v) => v && run('set_cloud_style', { id: e.id, pane, fog_near: v[0], fog_far: v[1] }), ['near', 'far']) : null,
+      select('Outside the cut', st.outside || 'hidden', [['hidden', 'Hidden'], ['ghost', 'Ghost']], style('outside')),
+      h('div.overline', {}, 'Show and hide points'),
+      classes,
+      A.returns ? select('Returns', f.returns || 'all', CS.RETURNS.map((r) => [r, r]), filter('returns')) : null,
+      pair('Elevation', f.elevation, filter('elevation')),
+      check('Elevation above the ground', f.above_ground, filter('above_ground')),
+      A.intensity ? pair('Intensity', f.intensity, filter('intensity')) : null,
+      h('label.row.small.param-row', {}, h('span', {}, 'Density %'), h('input.grow', { type: 'range', min: 1, max: 100, step: 1, value: f.density ?? 100, 'aria-label': 'Density', onchange: (ev) => filter('density')(+ev.target.value >= 100 ? null : +ev.target.value) })),
+      number('Spacing m', f.spacing, filter('spacing'), { min: 0 }),
     );
   }
 

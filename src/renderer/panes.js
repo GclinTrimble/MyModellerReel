@@ -39,6 +39,7 @@ class Pane {
     else parent.append(this.canvas);
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(win.devicePixelRatio);
+    this.renderer.mmrPane = this.i + 1; // cloud styles per pane (#295)
     Object.assign(this.renderer, { localClippingEnabled: true, outputColorSpace: THREE.SRGBColorSpace, toneMapping: THREE.NeutralToneMapping });
     this.controls = new OrbitControls(this.camera, this.canvas);
     Object.assign(this.controls, { zoomToCursor: true, screenSpacePanning: true, mouseButtons: { ...vp.controls.mouseButtons }, touches: { ...vp.controls.touches } });

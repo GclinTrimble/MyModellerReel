@@ -31,6 +31,7 @@ export function normalize(c) {
     if (c.kind === 'slab') out.thickness = Math.max(1e-3, Math.abs(c.thickness ?? 1));
   }
   for (const k of ['ids', 'layers', 'panes']) if (c[k]?.length) out[k] = [...c[k]];
+  if (c.outside === 'ghost') out.outside = 'ghost'; // point clouds draw what it cuts away as a ghost (#296)
   return out;
 }
 
