@@ -289,3 +289,99 @@ export function classifyGround(pc, { cell = 1, tolerance = 0.25, slope = 0.3, wi
   }
   return out.length > maxPoints ? out.filter((_, n) => n % Math.ceil(out.length / maxPoints) === 0) : out;
 }
+
+// ---------------------------------------------------------------- writing (#299): LAS 1.4 and PLY
+
+/**
+ * A LAS 1.4 header (375 bytes) with its VLRs: { count, format (6, or 7 with colour), scale [3], offset [3], min, max,
+ * byReturn (15 counts), wkt (OGC WKT of the CRS, written as the LASF_Projection 2112 VLR), software }.
+ */
+export function las14Header({ count, format = 6, scale = [0.001, 0.001, 0.001], offset = [0, 0, 0], min = [0, 0, 0], max = [0, 0, 0], byReturn = [], wkt = '', software = 'MyModellerReel' }) {
+  const enc = new TextEncoder();
+  const wktBytes = wkt ? enc.encode(wkt + '\0') : null;
+  const vlrSize = wktBytes ? 54 + wktBytes.length : 0;
+  const u8 = new Uint8Array(375 + vlrSize);
+  const dv = new DataView(u8.buffer);
+  u8.set(enc.encode('LASF'));
+  dv.setUint16(6, wkt ? 16 : 0, true); // global encoding: the CRS is WKT
+  u8[24] = 1;
+  u8[25] = 4;
+  u8.set(enc.encode('OTHER').subarray(0, 32), 26);
+  u8.set(enc.encode(software).subarray(0, 31), 58);
+  const now = new Date();
+  dv.setUint16(90, Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 864e5), true);
+  dv.setUint16(92, now.getFullYear(), true);
+  dv.setUint16(94, 375, true);
+  dv.setUint32(96, 375 + vlrSize, true);
+  dv.setUint32(100, wkt ? 1 : 0, true);
+  u8[104] = format;
+  dv.setUint16(105, format === 7 ? 36 : 30, true);
+  dv.setUint32(107, 0, true); // legacy counts stay 0 for formats 6+
+  [...scale, ...offset].forEach((v, k) => dv.setFloat64(131 + k * 8, v, true));
+  [max[0], min[0], max[1], min[1], max[2], min[2]].forEach((v, k) => dv.setFloat64(179 + k * 8, v, true));
+  dv.setBigUint64(247, BigInt(count), true);
+  for (let r = 0; r < 15; r++) dv.setBigUint64(255 + r * 8, BigInt(byReturn[r] || 0), true);
+  if (wktBytes) {
+    u8.set(enc.encode('LASF_Projection'), 375 + 2);
+    dv.setUint16(375 + 18, 2112, true);
+    dv.setUint16(375 + 20, wktBytes.length, true);
+    u8.set(enc.encode('OGC WKT'), 375 + 22);
+    u8.set(wktBytes, 375 + 54);
+  }
+  return u8;
+}
+
+/** LAS 1.4 point records (format 6, or 7 with colour) of the points idx of a batch (pointcloud.js batch fields). */
+export function las14Records(b, idx, { format = 6, scale = [0.001, 0.001, 0.001], offset = [0, 0, 0] } = {}) {
+  const len = format === 7 ? 36 : 30;
+  const u8 = new Uint8Array(idx.length * len);
+  const dv = new DataView(u8.buffer);
+  for (let k = 0; k < idx.length; k++) {
+    const i = idx[k];
+    const p = k * len;
+    dv.setInt32(p, Math.round((b.x[i] - offset[0]) / scale[0]), true);
+    dv.setInt32(p + 4, Math.round((b.y[i] - offset[1]) / scale[1]), true);
+    dv.setInt32(p + 8, Math.round((b.z[i] - offset[2]) / scale[2]), true);
+    dv.setUint16(p + 12, b.intensity ? b.intensity[i] : 0, true);
+    const rn = b.returnNumber ? b.returnNumber[i] || 1 : 1;
+    u8[p + 14] = (rn & 15) | (((b.numberOfReturns ? b.numberOfReturns[i] || rn : 1) & 15) << 4);
+    u8[p + 15] = b.classFlags ? b.classFlags[i] & 15 : 0;
+    u8[p + 16] = b.classification ? b.classification[i] : 1;
+    u8[p + 17] = b.userData ? b.userData[i] : 0;
+    dv.setInt16(p + 18, b.scanAngle ? Math.round(b.scanAngle[i] / 0.006) : 0, true);
+    dv.setUint16(p + 20, b.pointSourceId ? b.pointSourceId[i] : 0, true);
+    dv.setFloat64(p + 22, b.gpsTime ? b.gpsTime[i] : 0, true);
+    if (format === 7) [b.r, b.g, b.b].forEach((c, ch) => dv.setUint16(p + 30 + 2 * ch, c ? c[i] * 257 : 0, true));
+  }
+  return u8;
+}
+
+/** A binary PLY header for count points (x, y, z doubles; colour; intensity; classification), its count padded so it can be rewritten. */
+export function plyHeader(count, { rgb = false } = {}) {
+  const lines = ['ply', 'format binary_little_endian 1.0', 'comment MyModellerReel point cloud', `element vertex ${String(count).padEnd(12)}`, 'property double x', 'property double y', 'property double z'];
+  if (rgb) lines.push('property uchar red', 'property uchar green', 'property uchar blue');
+  lines.push('property ushort intensity', 'property uchar classification', 'end_header', '');
+  return new TextEncoder().encode(lines.join('\n'));
+}
+
+/** PLY records of the points idx of a batch. */
+export function plyRecords(b, idx, { rgb = false } = {}) {
+  const len = 24 + (rgb ? 3 : 0) + 3;
+  const u8 = new Uint8Array(idx.length * len);
+  const dv = new DataView(u8.buffer);
+  for (let k = 0; k < idx.length; k++) {
+    const i = idx[k];
+    let p = k * len;
+    dv.setFloat64(p, b.x[i], true);
+    dv.setFloat64(p + 8, b.y[i], true);
+    dv.setFloat64(p + 16, b.z[i], true);
+    p += 24;
+    if (rgb) (u8[p] = b.r ? b.r[i] : 0), (u8[p + 1] = b.g ? b.g[i] : 0), (u8[p + 2] = b.b ? b.b[i] : 0), (p += 3);
+    dv.setUint16(p, b.intensity ? b.intensity[i] : 0, true);
+    u8[p + 2] = b.classification ? b.classification[i] : 1;
+  }
+  return u8;
+}
+
+/** A minimal OGC WKT for an EPSG code (name and authority), for the LAS CRS VLR when the source had none. */
+export const wktOf = (crs) => (crs?.epsg ? `PROJCS["${String(crs.name || `EPSG:${crs.epsg}`).replace(/"/g, '')}",AUTHORITY["EPSG","${crs.epsg}"]]` : '');
