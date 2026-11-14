@@ -54,14 +54,18 @@ export function cloudObject(e) {
   o.raycast = () => {};
   return o;
 }
-/** Snap points from a cloud: a few thousand of the points it shows (its filter and the section). */
-export function cloudSnaps(o, max = 4000) {
+/** Snap points from a cloud: a few thousand of the points it shows (its filter and the section), or with keep (a world-point test: the clips) up to max of those kept. */
+export function cloudSnaps(o, max = 4000, keep = null) {
   const p = o.geometry?.attributes.position; // an octree group snaps near the cursor instead (cloudlod.js)
   if (!p) return [];
   const ok = shown(o);
-  const step = Math.max(1, Math.floor(p.count / max));
+  const v = new THREE.Vector3();
+  const at = (i) => v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+  const idx = [];
+  for (let i = 0; i < p.count; i += keep ? 1 : Math.max(1, Math.floor(p.count / max))) if (ok(i) && (!keep || keep(at(i)))) idx.push(i);
+  const step = Math.max(1, idx.length / max);
   const out = [];
-  for (let i = 0; i < p.count; i += step) if (ok(i)) out.push({ p: new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld), kind: 'Point cloud' });
+  for (let j = 0; j < idx.length; j += step) out.push({ p: at(idx[Math.floor(j)]).clone(), kind: 'Point cloud' });
   return out;
 }
 

@@ -51,6 +51,7 @@ import * as F from './formats.js';
 import * as Units from './units.js';
 import * as Clip from './clipboard.js';
 import * as CV from './clip.js';
+import * as SL from './slices.js';
 import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
@@ -157,6 +158,11 @@ export const GUIDE = `MyModellerReel conventions:
   a plane), set_clip (move, size, rotate, keep inside / outside, push one face, panes, ids), align_clip (to two
   points of a wall or kerb, a face, the view, level), fit_clip, list_clips, delete_clip, clear_clips. Inside boxes
   combine by set_style clip_combine (any / all); planes and slabs always cut. Section planes are clips of kind plane.
+- Slices of a scan: add_slice (level at z or z above: 'ground' for a plan, along a line for an elevation, across an
+  alignment at a station for a cross-section, through a face), slice_series (levels or stations every step; step_slice
+  or PageDown / PageUp step), view_clip (a pane square-on to it, pane 2 keeps the 3D view), slice_points (the points
+  in its 2D frame, or store: a point set to snap to). Read their stats (count, bounds, density, height histogram)
+  rather than asking for points. add_scene keeps the slices that cut; animate_section { clip } sweeps one in a video.
 - the person: ask_user (a question with choice buttons, waits), show_form (a command's form filled in for them to adjust and Run), pick_in_view (they click a point or an object), show_panel; rate_ai_turn / list_ai_feedback (their verdicts on your answers, kept as training data).
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
 - Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
@@ -3944,8 +3950,23 @@ function registerCore(reg, ctx) {
     return { removed: before - doc.animation.audio.length };
   }, true);
 
-  def('animate', 'animate_section', 'Section reveal: the section plane sweeps through the model between start and end (from and to: points on the plane, or distances along normal from the model\'s middle). normal: the side that is cut away (default down: a plan cut rising).', obj({ normal: v3('cut-away side (default [0, 1, 0]: everything above is cut)'), from: { description: '[x, y, z] or a distance along normal' }, to: { description: '[x, y, z] or a distance' }, start: T('default 0'), end: T('default start + 4'), ease: str('easing', Object.keys(A.EASES)) }), (a) => {
+  def('animate', 'animate_section', 'Section reveal: the section plane sweeps through the model between start and end (from and to: points on the plane, or distances along normal from the model\'s middle). normal: the side that is cut away (default down: a plan cut rising). clip: sweep a clip volume instead (a slab or plane: along its own normal by default), for videos that sweep through a scan.', obj({ normal: v3('cut-away side (default [0, 1, 0]: everything above is cut)'), from: { description: '[x, y, z] or a distance along normal' }, to: { description: '[x, y, z] or a distance' }, start: T('default 0'), end: T('default start + 4'), ease: str('easing', Object.keys(A.EASES)), clip: str('a slab or plane clip to sweep (its point moves)') }), (a) => {
     const doc = ctx.doc;
+    if (a.clip) {
+      const c = CV.normalize(clipOf(a.clip));
+      if (c.kind === 'box') throw new Error('animate_section sweeps a slab or a plane; animate a box\'s center with animate.');
+      const n = G.norm(a.normal || c.normal);
+      const b = fitBounds('model');
+      const mid = c.point; // distances are along n from where the clip is now
+      const d = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => G.dot(G.sub([0, 1, 2].map((j) => ((k >> j) & 1 ? b.max : b.min)[j]), mid), n)); // the model's corners
+      const pt = (v, dd) => D.round3(Array.isArray(v) ? v : G.add(mid, G.scl(n, v ?? dd)));
+      const start = A.timeOf(doc, a.start, 0);
+      const end = A.timeOf(doc, a.end, start + 4);
+      const [from, to] = [pt(a.from, Math.min(...d)), pt(a.to, Math.max(...d))];
+      A.setKey(doc, `clip:${c.name}`, 'point', start, from, 'linear');
+      A.setKey(doc, `clip:${c.name}`, 'point', end, to, a.ease || 'ease-in-out');
+      return { clip: c.name, from, to, start, end };
+    }
     const n = G.norm(a.normal || [0, 1, 0]);
     const box = D.unionBox(doc.entities.filter((e) => e.mesh && !e.parent).map((e) => D.worldBox(doc, e)));
     const mid = box.min[0] === Infinity ? [0, 0, 0] : box.min.map((x, k) => (x + box.max[k]) / 2);
@@ -5338,6 +5359,165 @@ function registerCore(reg, ctx) {
     syncSection();
     return { clip: c, ...clipList() };
   }, true);
+  // slices (#292): slab clips placed by elevation, a line, a station or a face, seen square-on, stepped through in
+  // series, their scan points counted and kept (the maths in slices.js)
+  const cloudsOf = (c) => ctx.doc.entities.filter((e) => e.pointcloud && shown(e) && (!c || CV.inScope(ctx.doc, c, e)));
+  const slicePoints = (c, max = 2e6) => SL.merge(cloudsOf(c).map((e) => SL.pointsInClip(e, c, { max, matrix: D.worldMatrix(ctx.doc, e).elements })));
+  const sliceStats = (c) => {
+    const r = slicePoints(c);
+    const st = SL.stats(c, r.points, { count: r.count });
+    if (st.histogram) st.histogram.from = r4(projZ(st.histogram.from)); // elevations, like z
+    return st;
+  };
+  const groundY = (at) => {
+    const s = allSurfaces()[0];
+    const z = s && surfaceSampler(ctx.doc, s).z(at[0], at[1]);
+    if (Number.isFinite(z)) return z;
+    const pts = SL.merge(cloudsOf(null).map((e) => SL.pointsInClip(e, null, { max: 2e5, matrix: D.worldMatrix(ctx.doc, e).elements }))).points;
+    if (!pts.length) throw new Error("above: 'ground' needs a ground surface or a point cloud.");
+    return SL.groundLevel(pts, { at });
+  };
+  const placeSlice = (a) => {
+    const doc = ctx.doc;
+    if (a.at === 'elevation') {
+      if (a.z === undefined) throw new Error("at: 'elevation' needs z.");
+      let mid = [0, 0, 0];
+      try {
+        mid = centre(fitBounds('model'));
+      } catch {
+        /* an empty model: the slab sits over the origin */
+      }
+      return SL.level(a.above === 'ground' ? groundY([mid[0], mid[2]]) + a.z : modelY(a.z), [mid[0], mid[2]]);
+    }
+    if (a.at === 'line') {
+      let pts = a.points?.map((p) => (Array.isArray(p) ? p : D.worldMatrix(doc, pointsByRefs([p])[0]).elements.slice(12, 15)));
+      if (!pts && a.id) {
+        const [e] = D.resolve(doc, a.id);
+        if (!e.curve) throw new Error(`${e.name} is not a curve: give two points.`);
+        const m = D.worldMatrix(doc, e);
+        const k = a.segment || 0;
+        pts = e.curve.points.slice(k, k + 2).map((p) => new Vector3(...p).applyMatrix4(m).toArray());
+      }
+      if (pts?.length !== 2) throw new Error("at: 'line' needs two points (or a curve id and segment).");
+      return SL.alongLine(pts[0], pts[1]);
+    }
+    if (a.at === 'station') {
+      if (!a.alignment || a.station === undefined) throw new Error("at: 'station' needs an alignment and a station.");
+      const [al] = D.resolve(doc, a.alignment);
+      if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
+      return SL.atStation(SW.alignmentPath(doc, al), a.station, { along: a.along });
+    }
+    if (a.at === 'face') {
+      if (a.id === undefined || a.face === undefined) throw new Error("at: 'face' needs id and face.");
+      const [e] = D.resolve(doc, a.id);
+      if (!e.mesh) throw new Error(`${e.name} has no faces.`);
+      const m = D.worldMesh(doc, e);
+      const fi = pickFace(doc, e, a.face);
+      const f = m.f[fi];
+      return SL.throughFace(G.scl(f.reduce((s, i) => G.add(s, m.v[i]), [0, 0, 0]), 1 / f.length), G.faceNormal(m, fi), a.offset || 0);
+    }
+    throw new Error(`at must be elevation, line, station or face; got ${JSON.stringify(a.at)}.`);
+  };
+  const sliceMeta = (a) => ({ at: a.at, ...(a.at === 'elevation' ? { z: a.z, ...(a.above ? { above: a.above } : {}) } : {}), ...(a.at === 'station' ? { alignment: a.alignment, station: a.station, ...(a.along ? { along: true } : {}) } : {}) });
+  const addSlab = (name, slab, a, meta, enabled = true) => {
+    const list = clips();
+    if (list.some((x) => x.name === name)) throw new Error(`A clip is already called "${name}".`);
+    if (enabled && list.filter((c) => c.kind === 'slab' && c.enabled !== false).length >= CV.LIMITS.slab) throw new Error(`At most ${CV.LIMITS.slab} slabs cut at once: delete_clip or set_clip enabled:false one first.`);
+    const c = { ...CV.normalize({ kind: 'slab', ...slab, thickness: a.thickness ?? 0.2, panes: a.panes, enabled, name }), slice: meta };
+    list.push(c);
+    return c;
+  };
+  /** A pane looks square-on at a slab (parallel, fitted to its points); the pane remembers the slice for stepping. */
+  const lookAtSlice = (c, pane = 1) => {
+    const st = sliceStats(c);
+    if (pane > LY.normalize(ctx.doc.settings.layout).count) reg.commands.get('set_layout').run({ count: pane });
+    const { L, cfg } = paneCfg(pane);
+    Object.assign(cfg, { view: 'custom', projection: 'parallel', slice: c.name });
+    if (pane === 1) ctx.doc.settings.projection = 'parallel';
+    ctx.doc.settings.layout = { ...ctx.doc.settings.layout, ...L };
+    ctx.view?.syncPanes?.();
+    const cam = inPane(pane, () => {
+      if (!ctx.view) return SL.viewCamera(c, st);
+      ctx.view.setCamera(SL.viewCamera(c, st, { fov: ctx.view.getCamera().fov, aspect: ctx.view.persp?.aspect || 1.5 }));
+      return ctx.view.getCamera();
+    });
+    return { camera: cam, stats: st };
+  };
+  const SLICE = {
+    at: str('elevation: level, at z (or z above the ground); line: upright along two points; station: across an alignment (or along it); face: parallel to a face', ['elevation', 'line', 'station', 'face']),
+    z: num('elevation: the height (project), or the height above the ground with above'),
+    above: str('elevation: z is measured from the ground (a ground surface, else the low points of the scan)', ['ground']),
+    points: { type: 'array', description: 'line: two points, [x, y, z] or survey point names' },
+    id: str('line: a curve (with segment); face: the entity'),
+    segment: num('line: the curve segment (0 = first)'),
+    alignment: str('station: the alignment (or any curve)'),
+    station: num('station: m along it'),
+    along: bool('station: along the alignment (an elevation of it) instead of across'),
+    face: num('face: its face index'),
+    offset: num('face: m along its normal (default 0)'),
+    thickness: num('m between the slab faces (default 0.2)'),
+    panes: CLIP_FIELDS.panes,
+  };
+  const STATS = 'Returns the slab and its statistics: points inside, their bounds in the slab\'s frame (u right, v up), size, density (points / m²) and, for a level slab, a height histogram.';
+  def('view', 'add_slice', `A slice of the model or scan: a slab clip (default 0.2 m thick) at an elevation (absolute, or above: ground), upright along a line, across an alignment at a station (along: true for along it), or parallel to a face. ${STATS} view_clip looks at it square-on.`, obj({ ...SLICE, name: str('default Slice 1, 2…') }, ['at']), (a) => {
+    const c = addSlab(a.name || D.uniqueName({ entities: clips() }, 'Slice 1'), placeSlice(a), a, sliceMeta(a));
+    syncSection();
+    return { clip: c, stats: sliceStats(c) };
+  }, true);
+  def('view', 'slice_series', `Slices every step from → to: levels (at: elevation, floor levels) or stations along an alignment (at: station). Shown one at a time (the first); step_slice, PageDown / PageUp step through them. Making a series of the same name again replaces it. ${STATS}`, obj({ ...SLICE, at: str('elevation (levels) or station (along an alignment)', ['elevation', 'station']), from: num('first z or station'), to: num('last z or station'), step: num('m between slices'), name: str('the series and its slices\' prefix (default Level or Station)') }, ['at', 'from', 'to', 'step']), (a) => {
+    if (!['elevation', 'station'].includes(a.at)) throw new Error("A series runs at: 'elevation' (levels) or 'station' (along an alignment).");
+    const key = a.at === 'elevation' ? 'z' : 'station';
+    const values = SL.seriesValues(a.from, a.to, a.step);
+    const series = a.name || (a.at === 'elevation' ? 'Level' : 'Station');
+    ctx.doc.clips = clips().filter((c) => c.slice?.series !== series);
+    const made = values.map((v, i) => addSlab(`${series} ${v}`, placeSlice({ ...a, [key]: v }), a, { ...sliceMeta({ ...a, [key]: v }), series, index: i }, i === 0));
+    syncSection();
+    return { series, slices: made.map((c, i) => ({ name: c.name, [key]: values[i], count: slicePoints(c, 0).count })), active: made[0].name, stats: sliceStats(made[0]) };
+  }, true);
+  const seriesOf = (name) => {
+    const all = clips().filter((c) => c.slice?.series);
+    const s = name || all.find((c) => c.enabled !== false)?.slice.series || all[0]?.slice.series;
+    const list = all.filter((c) => c.slice.series === s).sort((x, y) => x.slice.index - y.slice.index);
+    if (!list.length) throw new Error(name ? `No slice series "${name}". Series: ${[...new Set(all.map((c) => c.slice.series))].join(', ') || 'none'}.` : 'No slice series: slice_series makes one.');
+    return list;
+  };
+  def('view', 'step_slice', 'Show the next slice of a series (by 1, PageDown), the previous one (by −1, PageUp) or one by index; the pane looking at the series follows. Returns its statistics.', obj({ series: str('the series (default the one showing)'), by: num('default 1'), index: num('or: 0 = the first') }), (a) => {
+    const list = seriesOf(a.series);
+    const cur = Math.max(0, list.findIndex((c) => c.enabled !== false));
+    const i = SL.stepIndex(a.index ?? cur, a.index === undefined ? (a.by ?? 1) : 0, list.length);
+    list.forEach((c, k) => (c.enabled = k === i));
+    syncSection();
+    const c = list[i];
+    const out = { series: c.slice.series, name: c.name, index: i, of: list.length };
+    const L = LY.normalize(ctx.doc.settings.layout);
+    const pane = L.panes.findIndex((p) => list.some((x) => x.name === p.slice)) + 1;
+    if (!pane) return { ...out, stats: sliceStats(c) };
+    if (!ctx.view) return { ...out, ...lookAtSlice(c, pane) };
+    // the pane keeps its framing (zoomed on the road, say): its camera moves with the slab
+    const prev = list.find((x) => x.name === L.panes[pane - 1].slice);
+    L.panes[pane - 1].slice = c.name;
+    ctx.doc.settings.layout = { ...ctx.doc.settings.layout, ...L };
+    const camera = inPane(pane, () => (ctx.view.setCamera(SL.carry(prev, c, ctx.view.getCamera())), ctx.view.getCamera()));
+    return { ...out, camera, stats: sliceStats(c) };
+  }, true);
+  def('view', 'view_clip', 'Look at a slab or plane clip square-on: a parallel camera facing it, fitted to the points inside, its own up (north up for a level slice). pane 2 keeps the 3D view in pane 1 (a second pane is added if needed); step_slice keeps that pane on the series.', obj({ name: str('the clip'), pane: PANE }, ['name']), (a) => {
+    const c = clipOf(a.name);
+    if (c.kind === 'box') throw new Error('view_clip looks at a slab or a plane; a box has no one face.');
+    if (a.pane !== undefined && !(Number.isInteger(a.pane) && a.pane >= 1 && a.pane <= 4)) throw new Error('pane is 1 to 4.');
+    return { clip: c.name, pane: a.pane || 1, ...lookAtSlice(c, a.pane || 1) };
+  }, true);
+  def('view', 'slice_points', 'The scan points of a slab in its 2D frame (u right, v up, m from its middle), thinned to max, with the statistics: the input for drawing over a slice. store: keep them as a point set on the slab\'s middle plane (snap to it, draw over it) and return only the statistics.', obj({ name: str('the slab'), max: num('points returned (default 500) or kept with store (default 50000)'), store: bool('keep them as a point set'), as: str('store: the point set name (default "<slab> points")') }, ['name']), (a) => {
+    const c = clipOf(a.name);
+    const st = sliceStats(c);
+    if (!a.store) {
+      return { clip: c.name, frame: SL.frame(c), stats: st, points: SL.project2d(c, slicePoints(c, a.max ?? 500).points) };
+    }
+    const flat = SL.flatten(c, slicePoints(c, a.max ?? 50000).points);
+    if (!flat.length) throw new Error(`No scan points inside ${c.name}.`);
+    const asset = Assets.put(new Uint8Array(flat.buffer), { mime: 'application/x-mmr-points', name: `${c.name}.points` });
+    const e = D.addEntity(ctx.doc, { type: 'pointcloud', name: a.as || D.uniqueName(ctx.doc, `${c.name} points`), pointcloud: { asset, count: flat.length / 3, colors: false, format: 'slice', of: st.count }, material: { color: '#c8553d' }, meta: { slice: c.name } });
+    return { clip: c.name, id: e.id, name: e.name, stored: flat.length / 3, stats: st };
+  }, true);
   // the section planes of #187, kept as wrappers: plane clips, one cutting at a time
   const planes = () => clips().filter((c) => c.kind === 'plane');
   const activate = (name) => {
@@ -5382,13 +5562,14 @@ function registerCore(reg, ctx) {
     syncSection();
     return sectionList();
   }, true);
-  def('view', 'add_scene', 'Save the current camera as a named scene (a shot you can return to or animate between).', obj({ name: str('scene name') }), (a) => {
+  def('view', 'add_scene', 'Save the current camera as a named scene (a shot you can return to or animate between), with the clip volumes that cut (a slice comes back with it). pane: the camera of another view pane.', obj({ name: str('scene name'), pane: PANE }), (a) => {
     const doc = ctx.doc;
-    const cam = ctx.view?.getCamera() ?? doc.camera;
+    const cam = inPane(a.pane, () => ctx.view?.getCamera()) ?? doc.camera;
     const name = a.name || `Scene ${doc.scenes.length + 1}`;
     doc.scenes = doc.scenes.filter((s) => s.name !== name);
-    doc.scenes.push({ name, camera: cam });
-    return { scenes: doc.scenes.map((s) => s.name) };
+    const cut = clips().filter((c) => c.enabled !== false);
+    doc.scenes.push({ name, camera: cam, ...(cut.length ? { clips: JSON.parse(JSON.stringify(cut)) } : {}) });
+    return { scenes: doc.scenes.map((s) => s.name), clips: cut.map((c) => c.name) };
   }, true);
   def('view', 'view_back', 'Back to the previous view (camera), like a browser back button.', obj({}), () => {
     if (!ctx.view?.viewBack) throw new Error('Needs the desktop app.');
@@ -5402,12 +5583,24 @@ function registerCore(reg, ctx) {
     if (!ctx.view?.zoomWindow) throw new Error('Needs the desktop app.');
     return inPane(a.pane, () => ctx.view.zoomWindow(a.x0, a.y0, a.x1, a.y1));
   });
-  def('view', 'go_to_scene', 'Jump the camera to a saved scene.', obj({ name: str('scene name'), pane: PANE }, ['name']), (a) => {
+  def('view', 'go_to_scene', 'Jump the camera to a saved scene (its projection too); a scene saved with clip volumes brings them back and turns the others off.', obj({ name: str('scene name'), pane: PANE }, ['name']), (a) => {
     const s = ctx.doc.scenes.find((x) => x.name === a.name);
     if (!s) throw new Error(`No scene "${a.name}".`);
+    if (s.clips) {
+      const keep = new Map(s.clips.map((c) => [c.name, c]));
+      ctx.doc.clips = [...clips().filter((c) => !keep.has(c.name)).map((c) => ({ ...c, enabled: false })), ...s.clips.map((c) => JSON.parse(JSON.stringify(c)))];
+      syncSection();
+    }
+    if (s.camera.projection) {
+      if ((a.pane || 1) > 1) {
+        const { L, cfg } = paneCfg(a.pane);
+        cfg.projection = s.camera.projection;
+        ctx.doc.settings.layout = { ...ctx.doc.settings.layout, ...L };
+      } else ctx.doc.settings.projection = s.camera.projection;
+    }
     inPane(a.pane, () => ctx.view?.setCamera(s.camera));
     return s;
-  });
+  }, true);
 
   // ---------------------------------------------------------------- animate
   const now = () => ctx.timeline?.time ?? 0;

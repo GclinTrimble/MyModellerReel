@@ -97,6 +97,7 @@ export class ClipGizmo {
     const box = vp.modelBox?.();
     const extent = box && !box.isEmpty?.() ? Math.max(10, box.getSize(new THREE.Vector3()).length()) : 20;
     for (const c0 of CV.clipsOf(doc)) {
+      if (c0.enabled === false && c0.slice?.series && c0.name !== this.name) continue; // a series shows one slice at a time (#292)
       let c = CV.normalize(c0);
       const sel = c.name === this.name;
       if (sel && preview) c = CV.normalize({ ...c, ...preview });
