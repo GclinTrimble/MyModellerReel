@@ -20,8 +20,7 @@ export const TOOLSETS = {
   // working in a scan (#302); the commands of #298–#301 join as they land (a name not registered is skipped)
   pointcloud: {
     categories: [],
-    names: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'select_points', 'set_point_class', 'clear_point_selection', 'point_selection', 'define_point_class', 'detect_planes', 'detect_corners', 'detect_edges', 'add_clip', 'fit_clip', 'align_clip', 'set_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'screenshot', 'propose', 'classify_ground', 'pick_cloud_point', 'import_point_cloud', 'point_cloud_job', 'export_point_cloud', 'step_slice', 'list_clips'],
-    // to add as they land: extract_footprint, trace_slice, extract_edges (#301)
+    names: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'select_points', 'set_point_class', 'clear_point_selection', 'point_selection', 'define_point_class', 'detect_planes', 'detect_corners', 'detect_edges', 'add_clip', 'fit_clip', 'align_clip', 'set_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'screenshot', 'propose', 'classify_ground', 'pick_cloud_point', 'import_point_cloud', 'point_cloud_job', 'export_point_cloud', 'step_slice', 'list_clips', 'extract_footprint', 'trace_slice', 'extract_edges'],
     words: ['scan', 'point cloud', 'las', 'laz', 'copc', 'potree', 'lidar', 'intensity', 'x-ray', 'xray', 'classify'],
     hints: ['slice', 'limit box', 'clip', 'façade', 'facade', 'corner', 'footprint', 'kerb', 'curb', 'edge of pavement', 'wall line'], // also mean other work: a smaller nudge
   },

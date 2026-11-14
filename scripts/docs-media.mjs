@@ -1821,6 +1821,61 @@ const PAGES = {
     await run('set_properties', { ids: earlier, visible: true });
     await clean();
   },
+  async 'scan-to-plan'() {
+    // the synthetic corridor scan of tests/fixtures/scan.js (2 M points, classified): two buildings, kerbs along Main road
+    await fresh();
+    const { makeScan, writeLas, SITE } = await import('../tests/fixtures/scan.js');
+    const file = path.join(os.tmpdir(), 'mmr-detect-corridor.las');
+    if (!fs.existsSync(file)) fs.writeFileSync(file, writeLas(makeScan({ points: 2000000 })));
+    await run('import_point_cloud', { path: file.split(path.sep).join('/'), octree: true, name: 'Corridor scan' });
+    for (let i = 0; i < 600 && (await run('point_cloud_job', { id: 'Corridor scan' })).octree !== 'ready'; i++) await wait(500);
+    const b = await js('return api.doc.geo.base;');
+    const O = SITE.origin;
+    const L = (x, n, z = 0) => [O[0] + x - b[0], O[2] + z - b[2], -(O[1] + n - b[1])]; // fixture local → model
+    await run('create_alignment', { name: 'Main road', points: [[L(0, 40)[0], L(0, 40)[2]], [L(100, 40)[0], L(100, 40)[2]]], station_interval: 20 });
+    await run('set_style', { grid: false });
+    await camera(L(110, -25, 45), L(50, 45, 2));
+    await none();
+    await shot('A classified scan of a road corridor: two buildings, trees, kerbs along Main road');
+    // slice: a plan cut through the walls, traced into wall lines
+    await run('add_slice', { at: 'elevation', z: O[2] + 5, thickness: 0.4, name: 'Plan cut' });
+    await camera(L(44, 28, 70), L(44, 59, 2));
+    await shot(`add_slice at ${O[2] + 5} m: a 0.4 m plan cut through the walls of both buildings`);
+    const t = await run('trace_slice', { name: 'Plan cut', classes: [6], propose: true });
+    await run('set_properties', { ids: ['Corridor scan'], visible: false });
+    await shot(`trace_slice: ${t.closed} closed wall outlines from ${t.segments} fitted segments, residual under 3 cm; a proposal to accept`);
+    await run('propose', { action: 'accept' });
+    await run('set_properties', { ids: ['Corridor scan'], visible: true });
+    await run('delete_clip', { name: 'Plan cut' });
+    // detect: the planes of the buildings, for reference
+    await run('add_clip', { kind: 'box', name: 'Buildings', center: L(44, 58.5, 6), size: [64, 14, 20] });
+    const p = await run('detect_planes', { within: 'Buildings', min_points: 300 });
+    await camera(L(70, 18, 30), L(44, 58, 4));
+    await shot(`detect_planes: ${p.count} planes, walls orange, roofs blue and purple`);
+    await run('set_tag_visibility', { tag: 'Detected', visible: false });
+    await run('set_tag_visibility', { tag: 'Walls', visible: false });
+    // footprint: regular, square outlines with their quality, kept as a proposal; then the massing
+    const f = await run('extract_footprint', { within: 'Buildings', extrude: true, propose: true });
+    await run('set_tag_visibility', { tag: 'Massing', visible: false });
+    await run('set_properties', { ids: ['Corridor scan'], visible: false });
+    await camera(L(44, 25, 70), L(44, 58.5, 2));
+    await shot(`extract_footprint: ${f.footprints.map((x) => `${x.area.toFixed(1)} m², ${x.quality.points} wall points, ${x.quality.guessed} guessed`).join('; ')}`);
+    await run('set_tag_visibility', { tag: 'Massing', visible: true });
+    await run('set_properties', { ids: ['Corridor scan'], visible: true });
+    await run('set_cloud_filter', { classes: { hide: [6] } }); // the scan's buildings out of the way of the blocks
+    await camera(L(75, 30, 25), L(44, 58, 3));
+    await shot(`extrude: true: a block up to each eave read from the roof (${f.footprints.map((x) => `${x.eave.toFixed(2)} m`).join(', ')})`);
+    await run('propose', { action: 'accept' });
+    await run('set_cloud_filter', { classes: { show: 'all' } });
+    await run('delete_clip', { name: 'Buildings' });
+    // kerbs: the lines along the road, as breaklines of the ground made from the scan
+    await run('classify_ground', { id: 'Corridor scan', cell: 1 });
+    const k = await run('extract_edges', { kind: 'kerb', alignment: 'Main road', as_breaklines: true });
+    await run('set_properties', { ids: ['Corridor scan'], visible: false });
+    await camera(L(25, 31, 7), L(33, 38, 2));
+    await shot(`extract_edges kerb: ${k.count} continuous lines (${k.edges.map((e) => Math.round(e.length)).join(', ')} m) on Kerb top and Kerb bottom, breaklines of the ground`);
+    await clean();
+  },
   async 'web-map-layers'() {
     await fresh();
     await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });

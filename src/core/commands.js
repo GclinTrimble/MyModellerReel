@@ -56,6 +56,7 @@ import * as Clip from './clipboard.js';
 import * as CV from './clip.js';
 import * as SL from './slices.js';
 import * as CF from './cloudfeatures.js';
+import * as XT from './extract.js';
 import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
@@ -5989,30 +5990,30 @@ function registerCore(reg, ctx) {
     return { scope: scopeReply(scope, Date.now() - t0), count: made.length, corners: made.slice(0, 50).map(({ line, pt, k }) => ({ id: line.id, point: pt.name, at: [r3(pt.point.e), r3(pt.point.n), r3(pt.point.z)], angle: r3(k.angle), height: r3(k.height) })), ...(given ? {} : { planes: planeIds.length }), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
   }, true);
   const EDGE_KINDS = ['intersections', 'kerb', 'step', 'wall_top'];
+  /** The path cross profiles run along (an alignment, or two points) and the corridor box read around it (or a clip). */
+  const corridorOf = (a) => {
+    let path;
+    if (a.alignment) {
+      const [al] = D.resolve(ctx.doc, a.alignment);
+      if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
+      path = SW.alignmentPath(ctx.doc, al);
+    } else if (a.points?.length === 2) {
+      const [p, q] = a.points.map((x) => (Array.isArray(x) ? x : D.worldMatrix(ctx.doc, pointsByRefs([x])[0]).elements.slice(12, 15)));
+      path = [[...p, 0], [...q, Math.hypot(q[0] - p[0], q[2] - p[2])]];
+    } else throw new Error(`kind '${a.kind}' needs an alignment (or two points) for its cross profiles.`);
+    if (a.within) return { path, clip: clipOf(a.within) };
+    // only the corridor around it is read (a box over the alignment, width either side)
+    const w = (a.width ?? 10) + 1;
+    const xs = path.map((p) => p[0]);
+    const zs = path.map((p) => p[2]);
+    const [x0, x1, z0, z1] = [Math.min(...xs) - w, Math.max(...xs) + w, Math.min(...zs) - w, Math.max(...zs) + w];
+    return { path, clip: CV.normalize({ kind: 'box', name: 'corridor', center: [(x0 + x1) / 2, 0, (z0 + z1) / 2], size: [x1 - x0, 1e5, z1 - z0], rotation: [0, 0, 0] }) };
+  };
   def('terrain', 'detect_edges', 'Find edges in a scan. intersections: where planes meet (eaves, ridges, verges, wall feet), clipped to where both have points; wall_top: the top of each wall; kerb: kerb top and bottom lines (steps of min_height to 0.4 m) and step: any height jump (wall tops, retaining walls, terraces), both from cross profiles every spacing m along an alignment (or two points). Curves on the Detected layer with their fit in meta. Returns counts and per edge its kind, length, height.', obj({ ...PLANE_ARGS, kind: str('what to find', EDGE_KINDS), alignment: str('kerb / step: the alignment (or any curve) the profiles cross'), points: { type: 'array', description: 'kerb / step: or two points [x, y, z] (or survey point names) giving the direction' }, spacing: num('kerb / step: m between profiles (default 1)'), width: num('kerb / step: m either side of the alignment (default 10)'), min_height: num('kerb / step: the smallest jump, m (default 0.05 kerb, 0.2 step)'), planes: { type: 'array', items: { type: 'string' }, description: 'intersections / wall_top: detected plane ids (default: find them now)' }, ...PLANE_OPTS }, ['kind']), async (a) => {
     if (!EDGE_KINDS.includes(a.kind)) throw new Error(`kind is one of ${EDGE_KINDS.join(', ')}.`);
     const t0 = Date.now();
     const step = a.kind === 'kerb' || a.kind === 'step';
-    let path = null;
-    let clip = a.within ? clipOf(a.within) : null;
-    if (step) {
-      if (a.alignment) {
-        const [al] = D.resolve(ctx.doc, a.alignment);
-        if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
-        path = SW.alignmentPath(ctx.doc, al);
-      } else if (a.points?.length === 2) {
-        const [p, q] = a.points.map((x) => (Array.isArray(x) ? x : D.worldMatrix(ctx.doc, pointsByRefs([x])[0]).elements.slice(12, 15)));
-        path = [[...p, 0], [...q, Math.hypot(q[0] - p[0], q[2] - p[2])]];
-      } else throw new Error(`kind '${a.kind}' needs an alignment (or two points) for its cross profiles.`);
-      // only the corridor around it is read (a box over the alignment, width either side)
-      if (!clip) {
-        const w = (a.width ?? 10) + 1;
-        const xs = path.map((p) => p[0]);
-        const zs = path.map((p) => p[2]);
-        const [x0, x1, z0, z1] = [Math.min(...xs) - w, Math.max(...xs) + w, Math.min(...zs) - w, Math.max(...zs) + w];
-        clip = CV.normalize({ kind: 'box', name: 'corridor', center: [(x0 + x1) / 2, 0, (z0 + z1) / 2], size: [x1 - x0, 1e5, z1 - z0], rotation: [0, 0, 0] });
-      }
-    }
+    const { path, clip } = step ? corridorOf(a) : { path: null, clip: a.within ? clipOf(a.within) : null };
     const scope = await scopePoints(a, clip);
     const given = !step && a.planes ? givenPlanes(a.planes) : undefined;
     const req = step
@@ -6033,6 +6034,123 @@ function registerCore(reg, ctx) {
       else for (const t of out.tops) made.push({ e: addPolyline(t.points, 'Wall top 1', tag, COLORS.top, { detected: 'wall_top', edge: { length: r3(t.length) } }), length: t.length });
     }
     return { scope: scopeReply(scope, Date.now() - t0), kind: a.kind, count: made.length, edges: made.slice(0, 50).map((m) => ({ id: m.e.id, name: m.e.name, length: r3(m.length), ...(m.part ? { part: m.part, height: r3(m.height) } : {}) })), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+  }, true);
+  // scan to plan (#301): footprints, wall lines in a slice and kerb / pavement / wall-top lines, regular drafting
+  // on layers with a quality report each (the maths in extract.js); low-confidence results drawn in WARN
+  const WARN = '#ff8c1a';
+  const LAYER_COLORS = { Footprints: '#3d8bd9', Massing: '#d9d4c7', Walls: '#c0392b', 'Wall centres': '#7f8c8d', 'Kerb top': '#c0392b', 'Kerb bottom': '#e0b400', 'Edge of pavement': '#2f9e6e', 'Wall top': '#8e44ad', 'Step top': '#c0392b', 'Step bottom': '#e0b400' };
+  const onLayer = (name) => {
+    L.ensureLayer(ctx.doc, name).color ||= LAYER_COLORS[name] || '#e07b39';
+    return name;
+  };
+  /** A drafted curve on a layer: closed or not, its quality in meta; the warning colour when something was guessed. */
+  const drafted = (pts, { name, layer, closed = false, meta, warn = false }) => {
+    const { origin } = G.recenter({ v: pts, f: [] });
+    const o = D.round3(origin);
+    const color = warn ? WARN : L.ensureLayer(ctx.doc, onLayer(layer)).color;
+    return D.addEntity(ctx.doc, { type: 'curve', name: D.uniqueName(ctx.doc, name), curve: { kind: 'polyline', points: pts.map((p) => G.sub(p, o).map(r4)), closed }, position: o, tag: layer, material: { color }, meta });
+  };
+  const EXTRACT_ARGS = { ...PLANE_ARGS, propose: bool('keep the result as a proposal the user accepts or rejects in one step (propose accept / reject); Plumb should set it') };
+  def('terrain', 'extract_footprint', 'Building footprints from a scan: the building points (classes, default [6]: classify_cloud first) in a band above the ground (walls, default 1–2.5 m; the roof outline seen from above where there are none), outlined, then regularised (the main direction from the edges, edges within tolerance_deg squared to it, collinear edges merged, jogs under min_edge removed, each edge moved onto its wall). One closed curve per building on the Footprints layer with area, perimeter and a quality report (points per edge, residuals, guessed edges where a wall was hidden, drawn orange). extrude: a block from the ground to the eave read from the roof, on the Massing layer.', obj({ ...EXTRACT_ARGS, band: PAIR('[low, high] m above the ground (default [1, 2.5])'), above: { description: "'ground' (default: the ground surface, else the scan's low points) or an elevation (project z) the band is measured from" }, regularise: bool('square the edges (default true)'), tolerance_deg: num('edges within this of the main direction (or square to it) are snapped (default 5)'), min_edge: num('m: shorter edges (jogs) are removed (default 0.3)'), extrude: bool('a block per footprint up to its eave (Massing layer)'), layer: str('default Footprints') }), async (a) => {
+    const t0 = Date.now();
+    const scope = await scopePoints({ ...a, classes: a.classes ?? [6] });
+    const ground = a.above === undefined || a.above === 'ground' ? (x, z) => groundY([x, z]) : () => modelY(Number(a.above));
+    const found = XT.footprints(scope.points, { ground, band: a.band || [1, 2.5], tolerance: a.regularise === false ? 0 : a.tolerance_deg ?? 5, minEdge: a.min_edge ?? 0.3 });
+    if (!found.length) throw new Error('No building found in those points: check the classes (classify_cloud) or the clip.');
+    if (a.propose) ctx.store?.beginProposal?.();
+    const layer = a.layer || 'Footprints';
+    const made = found.map((f) => {
+      const quality = { ...f.quality, edges: f.edges.map((e) => ({ length: e.length, points: e.points, mean: e.mean, max: e.max, coverage: e.coverage, ...(e.guessed ? { guessed: true } : {}) })) };
+      const e = drafted(f.ring.map(([x, n]) => [x, f.ground, -n]), { name: 'Footprint 1', layer, closed: true, warn: f.quality.guessed > 0, meta: { extracted: 'footprint', area: r3(f.area), perimeter: r3(f.perimeter), eave: r3(f.eave - f.ground), top: r3(f.top - f.ground), roof: f.roof, from: f.source, angle: f.angle, quality } });
+      let solid = null;
+      if (a.extrude) {
+        solid = D.addEntity(ctx.doc, { name: D.uniqueName(ctx.doc, 'Building 1'), tag: onLayer('Massing'), material: { color: '#d9d4c7' }, meta: { extracted: 'massing', footprint: e.id, eave: r3(f.eave - f.ground) } });
+        R.derive(ctx.doc, solid, 'extrude_curve', { height: r3(f.eave - f.ground) }, [e.id]);
+      }
+      return { id: e.id, name: e.name, area: r3(f.area), perimeter: r3(f.perimeter), eave: r3(f.eave - f.ground), roof: f.roof, ...(solid ? { solid: solid.id } : {}), quality: f.quality };
+    });
+    return { scope: scopeReply(scope, Date.now() - t0), layer, count: made.length, footprints: made.slice(0, 50), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+  }, true);
+  def('terrain', 'trace_slice', 'Wall lines from a slice (add_slice, at a level: a plan cut; or upright: a section): straight segments fitted to its scan points (RANSAC, residual under distance), joined into polylines (corners met, T junctions extended, collinear gaps up to max_gap bridged and reported as guessed). On the Walls layer with their quality (points, residuals, guessed gaps; orange when any). centre_lines: the two faces of each wall as a centre line with its thickness (Wall centres layer).', obj({ name: str('the slice (a slab clip)'), distance: num('m a point may lie off its line (default 0.03)'), min_length: num('m: shorter segments are dropped (default 0.3)'), max_gap: num('m: collinear gaps bridged, a door (default 1)'), centre_lines: bool('also a centre line per wall, with its thickness'), classes: PLANE_ARGS.classes, max_points: num('points read at most (default 300000)'), layer: str('default Walls'), propose: EXTRACT_ARGS.propose }, ['name']), async (a) => {
+    const t0 = Date.now();
+    const c = clipOf(a.name);
+    if (c.kind !== 'slab') throw new Error(`${c.name} is a ${c.kind}: trace_slice works on a slice (add_slice).`);
+    const r = await scopePoints({ classes: a.classes }, c, a.max_points ?? 3e5);
+    const f = SL.frame(c);
+    const uv = new Float64Array((r.points.length / 3) * 2);
+    for (let i = 0; i < r.points.length; i += 3) uv.set(SL.to2d(f, [r.points[i], r.points[i + 1], r.points[i + 2]]), (i / 3) * 2);
+    const segs = XT.fitSegments(uv, { distance: a.distance ?? 0.03, minLength: a.min_length ?? 0.3 });
+    const lines = XT.joinSegments(segs, { gap: a.max_gap ?? 1 });
+    if (a.propose) ctx.store?.beginProposal?.();
+    const layer = a.layer || 'Walls';
+    const to3 = (p) => SL.to3d(f, p);
+    const made = lines.map((l) => {
+      const quality = { segments: l.segments, points: l.points, mean: l.mean, max: l.max, guessed: l.guessed.map((g) => ({ at: to3(g.from).map(r3), length: g.length })) };
+      const e = drafted(l.pts.map(to3), { name: l.closed ? 'Wall outline 1' : 'Wall line 1', layer, closed: l.closed, warn: l.guessed.length > 0, meta: { extracted: 'wall', slice: c.name, length: r3(l.length), ...(l.closed ? { area: r3(l.area) } : {}), quality } });
+      return { id: e.id, name: e.name, closed: l.closed, length: r3(l.length), ...(l.closed ? { area: r3(l.area) } : {}), quality: { ...quality, guessed: quality.guessed.length } };
+    });
+    const centres = a.centre_lines ? XT.centreLines(segs).map((w) => drafted([to3(w.a), to3(w.b)], { name: 'Wall centre 1', layer: 'Wall centres', meta: { extracted: 'wall_centre', thickness: w.thickness } })) : [];
+    return { clip: c.name, points: r.count, segments: segs.length, count: made.length, closed: made.filter((m) => m.closed).length, lines: made.slice(0, 50), ...(a.centre_lines ? { centre_lines: centres.length } : {}), guessed: lines.reduce((s, l) => s + l.guessed.length, 0), ms: Date.now() - t0, ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+  }, true);
+  /** Lines laid into the ground surfaces as breaklines: a TIN gets them drawn on it, a scan's ground mesh is re-triangulated on them. */
+  const breaklinesInto = (lines, ref) => {
+    const targets = ref ? [surfaceOf(ref)] : allSurfaces().filter((s) => s.derived?.generator === 'surface' || (s.meta?.surface && !s.derived));
+    if (!targets.length) throw new Error('as_breaklines needs a ground surface: classify_ground (from the scan) or create_surface first.');
+    for (const s of targets) {
+      if (s.derived?.generator === 'surface') {
+        editTin(s.id, (p) => void (p.lines ||= []).push(...lines.map((l) => l.map((q) => q.map(r3)))));
+        continue;
+      }
+      if (s.derived) throw new Error(`${s.name} is made by ${s.derived.generator}: give a ground surface.`);
+      const w = XT.withBreaklines(D.worldMesh(ctx.doc, s), lines);
+      const { mesh, origin } = G.recenter({ v: w.v, f: w.f });
+      Object.assign(s, { mesh, position: D.round3(origin), rotation: [0, 0, 0], scale: [1, 1, 1] });
+    }
+    return targets.map((s) => s.name);
+  };
+  const EXTRACT_KINDS = { kerb: ['Kerb top', 'Kerb bottom'], edge_of_pavement: [null, 'Edge of pavement'], step: ['Step top', 'Step bottom'], wall_top: ['Wall top'] };
+  def('terrain', 'extract_edges', 'Civil edges from a scan as drafting: kerb (top and bottom lines, Kerb top / Kerb bottom layers), edge_of_pavement (the low side of each step: Edge of pavement), step (any height jump: Step top / bottom), all from cross profiles along an alignment (or two points), and wall_top (the top of each wall: Wall top). Lines that stop and carry on within gap m are joined (the gap reported as guessed, drawn orange). Each line has its quality: profiles, coverage, residual, guessed gaps. as_breaklines: the ground surfaces (or surface) follow them.', obj({ ...EXTRACT_ARGS, kind: str('what to draw', Object.keys(EXTRACT_KINDS)), alignment: str('kerb / pavement / step: the alignment (or any curve) the profiles cross'), points: { type: 'array', description: 'or two points [x, y, z] (or survey point names) giving the direction' }, spacing: num('m between profiles (default 1)'), width: num('m either side of the alignment (default 10)'), min_height: num('the smallest jump, m (default 0.05 kerb, 0.02 pavement, 0.2 step)'), gap: num('m: a line that stops and carries on within this is joined (default 5)'), as_breaklines: bool('the ground surfaces follow the lines (a TIN gets them drawn on it, a scan ground mesh is re-triangulated)'), surface: str('as_breaklines: only this surface'), layer: str('one layer for every line (default: by kind)'), ...PLANE_OPTS }, ['kind']), async (a) => {
+    const layers = EXTRACT_KINDS[a.kind];
+    if (!layers) throw new Error(`kind is one of ${Object.keys(EXTRACT_KINDS).join(', ')}.`);
+    const t0 = Date.now();
+    const out = [];
+    let scope;
+    if (a.kind === 'wall_top') {
+      scope = await scopePoints(a, a.within ? clipOf(a.within) : null);
+      const r = await runFeatures(scope.points, { planes: planeReq(a), tops: {} });
+      for (const t of r.tops) out.push({ part: 0, pts: t.points, guessed: [], quality: { plane_rms: r3(r.planes[t.plane]?.rms ?? 0) } });
+    } else {
+      const { path, clip } = corridorOf(a);
+      scope = await scopePoints(a, clip);
+      const minHeight = a.min_height ?? { kerb: 0.05, edge_of_pavement: 0.02, step: 0.2 }[a.kind];
+      const spacing = a.spacing ?? 1;
+      const r = await runFeatures(scope.points, { steps: { path, spacing, width: a.width ?? 10, minHeight, maxHeight: a.kind === 'step' ? 50 : 0.4 } });
+      // each side of the route on its own: its chains joined across gaps, top and bottom alike
+      for (const side of [-1, 1]) {
+        const chains = r.steps.filter((s) => Math.sign(s.offset) === side);
+        if (!chains.length) continue;
+        const res = { mean: r3(chains.reduce((t, s) => t + s.residual.mean * s.stations, 0) / chains.reduce((t, s) => t + s.stations, 0)), max: Math.max(...chains.map((s) => s.residual.max)) };
+        for (const [part, key] of [[0, 'top'], [1, 'bottom']]) {
+          if (!layers[part]) continue;
+          // shortcut: chains on one side are joined in station order; two parallel kerbs on one side (a refuge) would interleave
+          for (const l of XT.bridgeLines(chains.map((s) => s[key]), { gap: a.gap ?? 5 })) {
+            const profiles = chains.filter((s) => l.pts.includes(s[key][0])).reduce((t, s) => t + s.stations, 0);
+            const len = DR.length(DR.flat(l.pts));
+            out.push({ part, pts: l.pts, side: chains[0].side, guessed: l.guessed, height: r3(chains.reduce((t, s) => t + s.height, 0) / chains.length), quality: { profiles, coverage: r3(Math.min(1, (profiles * spacing) / (len || 1))), residual: res } });
+          }
+        }
+      }
+    }
+    if (a.propose) ctx.store?.beginProposal?.();
+    const made = out.map((o) => {
+      const layer = a.layer || layers[o.part];
+      const quality = { ...o.quality, guessed: o.guessed.map((g) => ({ at: g.from.map(r3), length: g.length })) };
+      const e = drafted(o.pts, { name: `${layers[o.part]} 1`, layer, warn: o.guessed.length > 0, meta: { extracted: a.kind, part: layers[o.part], ...(o.height ? { height: o.height } : {}), quality } });
+      return { o, reply: { id: e.id, name: e.name, layer, length: r3(DR.length(DR.flat(o.pts))), ...(o.height ? { height: o.height } : {}), quality: { ...quality, guessed: quality.guessed.length } } };
+    });
+    // a kerb's top and bottom share a plan line: the top goes 2 cm to its high side, so the surface has a face to build
+    const breaklines = a.as_breaklines ? breaklinesInto(made.map(({ o }) => (o.part === 0 && o.side && layers[1] ? XT.nudge(o.pts, o.side * 0.02) : o.pts)), a.surface) : null;
+    return { scope: scopeReply(scope, Date.now() - t0), kind: a.kind, count: made.length, edges: made.slice(0, 50).map((m) => m.reply), ...(breaklines ? { breaklines: { surfaces: breaklines, lines: made.length } } : {}), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
   }, true);
   // the section planes of #187, kept as wrappers: plane clips, one cutting at a time
   const planes = () => clips().filter((c) => c.kind === 'plane');
