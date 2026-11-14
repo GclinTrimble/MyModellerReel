@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as C from '../src/core/classify.js';
+import * as F from './fixtures/scan.js';
 
 const rnd = ((s) => () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296))(9);
 const interleave = (pts) => Float64Array.from(pts.flat());
@@ -46,4 +47,41 @@ test('growPlane stops at a corner: one wall of two', () => {
   const wrong = got.filter((j) => pts[j][0] < 0.01 && pts[j][1] > 0.4).length;
   assert.equal(wrong, 0, 'nothing of the other wall');
   assert.ok(got.length > onWall * 0.95, `${got.length} of ${onWall}`);
+});
+
+/** F1 of predicted (pred(i)) against truth (truth(i)) over n points. */
+function f1(n, pred, truth) {
+  let [tp, fp, fn] = [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const [p, t] = [pred(i), truth(i)];
+    if (p && t) tp++;
+    else if (p) fp++;
+    else if (t) fn++;
+  }
+  return (2 * tp) / (2 * tp + fp + fn);
+}
+
+test('classification of the scan fixture: ground ≥ 97 %, buildings ≥ 90 %, high vegetation ≥ 85 % (F1)', () => {
+  const s = F.makeScan({ points: 200000 });
+  const pos = new Float64Array(s.count * 3);
+  for (let i = 0; i < s.count; i++) (pos[i * 3] = s.x[i]), (pos[i * 3 + 1] = s.y[i]), (pos[i * 3 + 2] = s.z[i]);
+  const t0 = performance.now();
+  const r = C.classifyPoints({ count: s.count, pos, intensity: s.intensity, classification: new Uint8Array(s.count).fill(1) }, { steps: [...C.DEFAULT_STEPS, 'road'] });
+  const ms = performance.now() - t0;
+  const P = Object.fromEntries(F.PARTS.map((p, i) => [p, i]));
+  const c = r.classes;
+  const part = s.part;
+  const scores = {
+    ground: f1(s.count, (i) => [2, 11, 64].includes(c[i]), (i) => [P.terrain, P.road, P.kerb, P.ditch].includes(part[i])),
+    buildings: f1(s.count, (i) => c[i] === 6, (i) => part[i] === P.building || part[i] === P.roof),
+    high_vegetation: f1(s.count, (i) => c[i] === 5, (i) => part[i] === P.tree),
+    noise: f1(s.count, (i) => c[i] === 7 || c[i] === 18, (i) => part[i] === P.noise),
+    road: f1(s.count, (i) => c[i] === 11, (i) => part[i] === P.road),
+    kerb: f1(s.count, (i) => c[i] === 64, (i) => part[i] === P.kerb),
+  };
+  console.log('fixture F1 %', JSON.stringify(Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, Math.round(v * 1000) / 10]))), `${Math.round(ms)} ms for ${s.count} points`);
+  assert.ok(scores.ground >= 0.97, `ground ${scores.ground}`);
+  assert.ok(scores.buildings >= 0.9, `buildings ${scores.buildings}`);
+  assert.ok(scores.high_vegetation >= 0.85, `high vegetation ${scores.high_vegetation}`);
+  assert.ok(scores.noise >= 0.8, `noise ${scores.noise}`);
 });

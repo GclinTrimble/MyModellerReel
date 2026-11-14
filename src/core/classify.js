@@ -66,8 +66,11 @@ const grow = (n) => {
   if (scratch.d.length < n) scratch.d = new Float64Array(n * 2), scratch.i = new Uint32Array(n * 2);
 };
 
-/** Indices of the points within r of (x, y, z), or its k nearest (opts { r } or { k }), into out. */
-export function neighboursAt(g, x, y, z, { r, k, max = 4096 } = {}, out = new Uint32Array(Math.max(k || 0, 64))) {
+/**
+ * Indices of the points within r of (x, y, z), or its k nearest (opts { r } or { k }; rmax: give up beyond that
+ * distance, returning fewer), into out. max caps a radius search.
+ */
+export function neighboursAt(g, x, y, z, { r, k, max = 4096, rmax = Infinity } = {}, out = new Uint32Array(Math.max(k || 0, 64))) {
   const { pos, cell, min, dims, map, start, order } = g;
   const cx = Math.floor((x - min[0]) / cell);
   const cy = Math.floor((y - min[1]) / cell);
@@ -99,14 +102,17 @@ export function neighboursAt(g, x, y, z, { r, k, max = 4096 } = {}, out = new Ui
         }
     return out.subarray(0, n);
   }
-  // k nearest: shells of cells until the k-th distance is inside the searched cube
+  // k nearest: shell after shell of cells until the k-th distance is inside what was searched (or past rmax)
   if (out.length < k) out = new Uint32Array(k);
   const reach = Math.max(dims[0], dims[1], dims[2]);
-  for (let s = 1; ; s++) {
-    let n = 0;
+  const face = Math.min(x - min[0] - cx * cell, (cx + 1) * cell - (x - min[0]), y - min[1] - cy * cell, (cy + 1) * cell - (y - min[1]), z - min[2] - cz * cell, (cz + 1) * cell - (z - min[2]));
+  let n = 0;
+  for (let s = 0; ; s++) {
     for (let iz = Math.max(0, cz - s); iz <= Math.min(dims[2] - 1, cz + s); iz++)
-      for (let iy = Math.max(0, cy - s); iy <= Math.min(dims[1] - 1, cy + s); iy++)
-        for (let ix = Math.max(0, cx - s); ix <= Math.min(dims[0] - 1, cx + s); ix++) {
+      for (let iy = Math.max(0, cy - s); iy <= Math.min(dims[1] - 1, cy + s); iy++) {
+        const rim = Math.abs(iz - cz) === s || Math.abs(iy - cy) === s;
+        for (let ix = Math.max(0, cx - s); ix <= Math.min(dims[0] - 1, cx + s); ix += rim || s === 0 ? 1 : 2 * s) {
+          if (!rim && ix !== cx - s && ix !== cx + s) continue;
           const c = map.get(ix + dims[0] * (iy + dims[1] * iz));
           if (c === undefined) continue;
           grow(n + start[c + 1] - start[c]);
@@ -119,14 +125,15 @@ export function neighboursAt(g, x, y, z, { r, k, max = 4096 } = {}, out = new Ui
             scratch.i[n++] = j;
           }
         }
-    // the cube of half-side s cells holds every point nearer than s cells plus the query's distance to its cell's faces
-    const safe = (s * cell + Math.min(x - min[0] - cx * cell, (cx + 1) * cell - (x - min[0]), y - min[1] - cy * cell, (cy + 1) * cell - (y - min[1]), z - min[2] - cz * cell, (cz + 1) * cell - (z - min[2]))) ** 2;
-    if (n >= k || s > reach) {
+      }
+    const last = s >= reach || s * cell > rmax;
+    if (n >= k || last) {
       const m = Math.min(k, n);
       selectSmallest(scratch.d, scratch.i, n, m);
+      n = m; // the rest can never be among the k nearest
       let worst = 0;
       for (let t = 0; t < m; t++) worst = Math.max(worst, scratch.d[t]);
-      if (worst <= safe || s > reach) {
+      if ((m === k && worst <= (s * cell + face) ** 2) || last) {
         out.set(scratch.i.subarray(0, m));
         return out.subarray(0, m);
       }
@@ -323,4 +330,394 @@ export function planarSegments(g, f, { angle = 12, distance = 0.08, radius, minP
     sizes.push(pts.length);
   }
   return { segment, sizes };
+}
+
+// ---------------------------------------------------------------- classes and parameters
+
+/** ASPRS LAS 1.4 R15 codes the passes write, and the user classes 64+ the document starts with. */
+export const ASPRS = { unclassified: 1, ground: 2, lowVegetation: 3, mediumVegetation: 4, highVegetation: 5, building: 6, lowNoise: 7, wire: 14, tower: 15, road: 11, highNoise: 18 };
+export const USER_CLASSES = { 64: ['Kerb', '#e8c547'], 65: ['Vehicle', '#4fb3d9'] };
+export const STEPS = ['noise', 'ground', 'vegetation', 'buildings', 'road', 'wires'];
+export const DEFAULT_STEPS = ['noise', 'ground', 'vegetation', 'buildings'];
+/** The classes each step owns: a point holding one that the step no longer finds goes back to 1. */
+export const OWNS = { noise: [7, 18], ground: [2], vegetation: [3, 4, 5], buildings: [6], road: [11], wires: [14, 15] };
+export const PARAMS = {
+  noise: { k: 8, sigma: 3, isolated: 0 }, // isolated: m (0 = 8 × the typical spacing)
+  ground: { method: 'pmf', cell: 1, max_window: 20, slope: 0.3, dh0: 0.3, dh_max: 2.5, tolerance: 0.25 },
+  vegetation: { bands: [0.5, 2], min_height: 0.15 },
+  buildings: { min_height: 2.5, min_area: 4, angle: 10, distance: 0.1 },
+  road: { intensity: null, roughness: 0.03, kerb_class: 64, kerb: [0.07, 0.35] },
+  wires: { min_height: 3, linearity: 0.85 },
+};
+export const paramsOf = (p = {}) => Object.fromEntries(Object.entries(PARAMS).map(([k, v]) => [k, { ...v, ...(p[k] || {}) }]));
+
+// ---------------------------------------------------------------- noise
+
+/**
+ * Statistical outliers: a point whose mean distance to its k nearest is beyond mean + sigma standard deviations, or
+ * that has fewer than 3 points within isolated metres. Returns a Uint8Array flag per point and the median mean distance.
+ */
+export function outliers(g, { k = 8, sigma = 3, isolated = 0 } = {}, use = null) {
+  const n = g.count;
+  const mean = new Float32Array(n);
+  const third = new Float32Array(n);
+  let out = new Uint32Array(k + 1);
+  const p = g.pos;
+  let [mu, m2, cnt] = [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    if (use && !use[i]) continue;
+    const nb = neighbours(g, i, { k: k + 1, rmax: 16 * g.cell }, out);
+    let s = 0;
+    let [d1, d2, d3] = [Infinity, Infinity, Infinity]; // the three nearest others
+    for (const j of nb) {
+      if (j === i) continue;
+      const d = Math.hypot(p[j * 3] - p[i * 3], p[j * 3 + 1] - p[i * 3 + 1], p[j * 3 + 2] - p[i * 3 + 2]);
+      s += d;
+      if (d < d1) [d1, d2, d3] = [d, d1, d2];
+      else if (d < d2) [d2, d3] = [d, d2];
+      else if (d < d3) d3 = d;
+    }
+    third[i] = d3;
+    mean[i] = nb.length > k ? s / k : 16 * g.cell; // too few within reach: far from everything
+    cnt++;
+    const d = mean[i] - mu;
+    mu += d / cnt;
+    m2 += d * (mean[i] - mu);
+  }
+  const limit = mu + sigma * Math.sqrt(m2 / (cnt || 1));
+  const sample = [];
+  for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 20000))) if (!use || use[i]) sample.push(mean[i]);
+  sample.sort((a, b) => a - b);
+  const median = sample[sample.length >> 1] || 0;
+  const iso = isolated || 8 * median;
+  const flag = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if ((!use || use[i]) && (mean[i] > limit || third[i] > iso)) flag[i] = 1;
+  return { flag, spacing: median };
+}
+
+// ---------------------------------------------------------------- ground
+
+/** A 2D grid over the points' x, y: { x0, y0, cell, nx, ny, at(x, y) → cell index }. */
+export function grid2(pos, n, cell, use) {
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) {
+    if (use && !use(i)) continue;
+    const [x, y] = [pos[i * 3], pos[i * 3 + 1]];
+    if (x < x0) x0 = x;
+    if (y < y0) y0 = y;
+    if (x > x1) x1 = x;
+    if (y > y1) y1 = y;
+  }
+  if (x0 === Infinity) [x0, y0, x1, y1] = [0, 0, 0, 0];
+  const nx = Math.floor((x1 - x0) / cell) + 1;
+  const ny = Math.floor((y1 - y0) / cell) + 1;
+  return { x0, y0, cell, nx, ny, at: (x, y) => Math.min(ny - 1, Math.max(0, Math.floor((y - y0) / cell))) * nx + Math.min(nx - 1, Math.max(0, Math.floor((x - x0) / cell))) };
+}
+
+/** Empty cells (NaN) take the value of the nearest filled one (breadth first). */
+function fill(z, nx, ny) {
+  const q = [];
+  for (let c = 0; c < z.length; c++) if (!Number.isNaN(z[c])) q.push(c);
+  if (!q.length) return z.fill(0);
+  for (let h = 0; h < q.length; h++) {
+    const c = q[h];
+    const [x, y] = [c % nx, (c / nx) | 0];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const [a, b] = [x + dx, y + dy];
+      if (a < 0 || b < 0 || a >= nx || b >= ny) continue;
+      const d = b * nx + a;
+      if (Number.isNaN(z[d])) (z[d] = z[c]), q.push(d);
+    }
+  }
+  return z;
+}
+
+/** A square min (or max) filter of half-width h cells, separable. */
+function filter(z, nx, ny, h, max) {
+  const t = new Float64Array(z.length);
+  const out = new Float64Array(z.length);
+  for (let y = 0; y < ny; y++)
+    for (let x = 0; x < nx; x++) {
+      let v = z[y * nx + x];
+      for (let a = Math.max(0, x - h); a <= Math.min(nx - 1, x + h); a++) {
+        const w = z[y * nx + a];
+        if (max ? w > v : w < v) v = w;
+      }
+      t[y * nx + x] = v;
+    }
+  for (let y = 0; y < ny; y++)
+    for (let x = 0; x < nx; x++) {
+      let v = t[y * nx + x];
+      for (let b = Math.max(0, y - h); b <= Math.min(ny - 1, y + h); b++) {
+        const w = t[b * nx + x];
+        if (max ? w > v : w < v) v = w;
+      }
+      out[y * nx + x] = v;
+    }
+  return out;
+}
+
+/** Bilinear height of a grid of cell values (at cell centres) at x, y. */
+export function sampleGrid(G, z, x, y) {
+  if (G.nx < 2 || G.ny < 2) return z[G.at(x, y)];
+  const fx = Math.min(G.nx - 1, Math.max(0, (x - G.x0) / G.cell - 0.5));
+  const fy = Math.min(G.ny - 1, Math.max(0, (y - G.y0) / G.cell - 0.5));
+  const [ix, iy] = [Math.min(G.nx - 2, Math.floor(fx)), Math.min(G.ny - 2, Math.floor(fy))];
+  const [u, v] = [fx - ix, fy - iy];
+  const c = iy * G.nx + ix;
+  return (z[c] * (1 - u) + z[c + 1] * u) * (1 - v) + (z[c + G.nx] * (1 - u) + z[c + G.nx + 1] * u) * v;
+}
+
+/**
+ * Ground by a progressive morphological filter (Zhang et al. 2003) on the lowest point per cell: openings with windows
+ * of 3, 5, 9, 17… cells up to max_window metres take away what stands up more than a threshold growing with slope and
+ * window (buildings, trees, cars); embankments, cuts and ditches stay. A point is ground within tolerance of that
+ * surface, plus the local slope over a cell. use(i): the points to look at. Returns { ground, grid, surface }.
+ */
+export function groundPoints(pos, n, p = PARAMS.ground, use = null) {
+  const G = grid2(pos, n, p.cell, use);
+  const zmin = new Float64Array(G.nx * G.ny).fill(NaN);
+  for (let i = 0; i < n; i++) {
+    if (use && !use(i)) continue;
+    const c = G.at(pos[i * 3], pos[i * 3 + 1]);
+    if (!(zmin[c] <= pos[i * 3 + 2])) zmin[c] = pos[i * 3 + 2];
+  }
+  const empty = zmin.map((v) => (Number.isNaN(v) ? 1 : 0));
+  fill(zmin, G.nx, G.ny);
+  let z = zmin.slice();
+  const off = new Uint8Array(z.length);
+  let prev = 1;
+  for (let w = 3; (w - 2) * p.cell <= p.max_window; w = 2 * w - 1) {
+    const h = (w - 1) >> 1;
+    const open = filter(filter(z, G.nx, G.ny, h, false), G.nx, G.ny, h, true);
+    const dh = Math.min(p.dh_max, p.dh0 + p.slope * (w - prev) * p.cell);
+    for (let c = 0; c < z.length; c++) if (z[c] - open[c] > dh) off[c] = 1;
+    z = open;
+    prev = w;
+  }
+  const surf = new Float64Array(zmin.length).fill(NaN);
+  for (let c = 0; c < z.length; c++) if (!off[c] && !empty[c]) surf[c] = zmin[c];
+  fill(surf, G.nx, G.ny);
+  const slope = new Float64Array(surf.length);
+  for (let y = 0; y < G.ny; y++)
+    for (let x = 0; x < G.nx; x++) {
+      const gx = (surf[y * G.nx + Math.min(G.nx - 1, x + 1)] - surf[y * G.nx + Math.max(0, x - 1)]) / 2;
+      const gy = (surf[Math.min(G.ny - 1, y + 1) * G.nx + x] - surf[Math.max(0, y - 1) * G.nx + x]) / 2;
+      slope[y * G.nx + x] = Math.min(2 * p.cell, Math.hypot(gx, gy));
+    }
+  const ground = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (use && !use(i)) continue;
+    const [x, y] = [pos[i * 3], pos[i * 3 + 1]];
+    const d = pos[i * 3 + 2] - sampleGrid(G, surf, x, y);
+    const tol = p.tolerance + slope[G.at(x, y)];
+    if (d <= tol && d >= -tol - 0.5) ground[i] = 1;
+  }
+  return { ground, grid: G, surface: surf };
+}
+
+/** Height above ground of every point: the ground points' lowest per cell (holes filled), bilinear. */
+export function heightAboveGround(pos, n, isGround, cell = 1) {
+  const G = grid2(pos, n, cell);
+  const z = new Float64Array(G.nx * G.ny).fill(NaN);
+  for (let i = 0; i < n; i++) {
+    if (!isGround(i)) continue;
+    const c = G.at(pos[i * 3], pos[i * 3 + 1]);
+    if (!(z[c] <= pos[i * 3 + 2])) z[c] = pos[i * 3 + 2];
+  }
+  fill(z, G.nx, G.ny);
+  const hag = new Float32Array(n);
+  for (let i = 0; i < n; i++) hag[i] = pos[i * 3 + 2] - sampleGrid(G, z, pos[i * 3], pos[i * 3 + 1]);
+  return hag;
+}
+
+/** Otsu's threshold of values (a 256-bin histogram over their range). */
+export function otsu(values) {
+  let [lo, hi] = [Infinity, -Infinity];
+  for (const v of values) (lo = Math.min(lo, v)), (hi = Math.max(hi, v));
+  if (!(hi > lo)) return lo;
+  const bins = new Float64Array(256);
+  for (const v of values) bins[Math.min(255, Math.floor(((v - lo) / (hi - lo)) * 256))]++;
+  const total = values.length;
+  let sum = 0;
+  for (let b = 0; b < 256; b++) sum += b * bins[b];
+  let [wB, sB, best, at] = [0, 0, -1, 0];
+  for (let b = 0; b < 256; b++) {
+    wB += bins[b];
+    if (!wB || wB === total) continue;
+    sB += b * bins[b];
+    const [mB, mF] = [sB / wB, (sum - sB) / (total - wB)];
+    const between = wB * (total - wB) * (mB - mF) ** 2;
+    if (between > best) (best = between), (at = b);
+  }
+  return lo + ((at + 1) / 256) * (hi - lo);
+}
+
+// ---------------------------------------------------------------- the passes
+
+/**
+ * Classify points. input: { count, pos (interleaved x, y, z), classification (current classes), intensity? }.
+ * opts: { steps, params, writable (Uint8Array: 1 where a class may change; default all), onProgress(fraction, stage) }.
+ * Returns { classes (a new Uint8Array, unchanged where not writable), changed, spacing }.
+ */
+export function classifyPoints(input, { steps = DEFAULT_STEPS, params = {}, writable = null, onProgress = () => {} } = {}) {
+  const P = paramsOf(params);
+  const n = input.count;
+  const pos = input.pos;
+  const cur = input.classification || new Uint8Array(n).fill(1);
+  const on = new Set(steps);
+  const found = new Uint8Array(n); // 0: nothing found this run
+  const set = (i, c) => (found[i] = c);
+  // the neighbourhood scale from the density over the footprint
+  const G0 = grid2(pos, n, 1);
+  let filled = 0;
+  const seen = new Uint8Array(G0.nx * G0.ny);
+  for (let i = 0; i < n; i++) {
+    const c = G0.at(pos[i * 3], pos[i * 3 + 1]);
+    if (!seen[c]) (seen[c] = 1), filled++;
+  }
+  const spacingGuess = Math.max(0.02, Math.sqrt(filled / Math.max(1, n)));
+  const g = voxelGrid(pos, Math.max(0.05, 2 * spacingGuess), n);
+  onProgress(0.05, 'noise');
+
+  let noise = new Uint8Array(n);
+  let spacing = spacingGuess;
+  if (on.has('noise')) ({ flag: noise, spacing } = outliers(g, P.noise));
+  else for (let i = 0; i < n; i++) noise[i] = cur[i] === 7 || cur[i] === 18 ? 1 : 0;
+  onProgress(0.2, 'ground');
+
+  let ground;
+  if (on.has('ground')) ground = groundPoints(pos, n, P.ground, (i) => !noise[i]).ground;
+  else ground = Uint8Array.from(cur, (c) => (c === 2 || c === 11 || c === P.road.kerb_class ? 1 : 0));
+  const hasGround = ground.some((v) => v);
+  const hag = hasGround ? heightAboveGround(pos, n, (i) => ground[i] && !noise[i], P.ground.cell) : new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (noise[i]) on.has('noise') && set(i, hag[i] < 0 ? 7 : 18);
+    else if (ground[i] && on.has('ground')) set(i, 2);
+  }
+  onProgress(0.35, 'features');
+
+  // above-ground points: features, planes, buildings, wires, vegetation
+  const above = (i) => !noise[i] && !ground[i] && hag[i] > P.vegetation.min_height;
+  const building = new Uint8Array(n);
+  const planar = new Uint8Array(n);
+  let f = null;
+  let buf = new Uint32Array(64);
+  const near = (i, r) => {
+    const nb = neighbours(g, i, { r }, buf);
+    if (nb.buffer !== buf.buffer) buf = new Uint32Array(nb.buffer);
+    return nb;
+  };
+  if (on.has('buildings') || on.has('vegetation') || on.has('wires')) {
+    const mask = Uint8Array.from({ length: n }, (_, i) => (above(i) ? 1 : 0));
+    f = pointFeatures(g, { k: 12 }, (t) => onProgress(0.35 + 0.25 * t, 'features'), mask);
+    onProgress(0.6, 'planes');
+    const B = P.buildings;
+    const minPts = Math.max(20, Math.round(B.min_area / (spacing * spacing || 1) / 2));
+    const seg = planarSegments(g, f, { angle: B.angle, distance: B.distance, minPoints: minPts, maxScatter: 0.01, allowed: (i) => mask[i] === 1 });
+    // segments that touch form clusters; a cluster is a building when it is wide and reaches min_height
+    const parent = Int32Array.from({ length: seg.sizes.length }, (_, i) => i);
+    const root = (a) => (parent[a] === a ? a : (parent[a] = root(parent[a])));
+    for (let i = 0; i < n; i += 3) {
+      const s = seg.segment[i];
+      if (s < 0) continue;
+      for (const j of near(i, 2.5 * g.cell)) if (seg.segment[j] >= 0) parent[root(seg.segment[j])] = root(s);
+    }
+    const box = new Map();
+    for (let i = 0; i < n; i++) {
+      const s = seg.segment[i];
+      if (s < 0) continue;
+      planar[i] = 1;
+      const c = root(s);
+      let b = box.get(c);
+      if (!b) box.set(c, (b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, top: -Infinity }));
+      b.x0 = Math.min(b.x0, pos[i * 3]);
+      b.x1 = Math.max(b.x1, pos[i * 3]);
+      b.y0 = Math.min(b.y0, pos[i * 3 + 1]);
+      b.y1 = Math.max(b.y1, pos[i * 3 + 1]);
+      b.top = Math.max(b.top, hag[i]);
+    }
+    const isB = new Set([...box].filter(([, b]) => b.top >= B.min_height && Math.max(b.x1 - b.x0, b.y1 - b.y0) >= Math.sqrt(B.min_area)).map(([c]) => c));
+    for (let i = 0; i < n; i++) if (seg.segment[i] >= 0 && isB.has(root(seg.segment[i]))) building[i] = 1;
+    // roof edges and wall corners left out of the planes: mostly building around them
+    for (let pass = 0; pass < 2; pass++) {
+      const add = [];
+      for (let i = 0; i < n; i++) {
+        if (!mask[i] || building[i] || planar[i]) continue;
+        const nb = near(i, 1.5 * g.cell);
+        let b = 0;
+        for (const j of nb) b += building[j];
+        if (b * 2 > nb.length) add.push(i);
+      }
+      for (const i of add) building[i] = 1;
+    }
+    if (on.has('buildings')) for (let i = 0; i < n; i++) if (building[i]) set(i, 6);
+  }
+  onProgress(0.8, 'vegetation');
+
+  if (on.has('wires') && f) {
+    const W = P.wires;
+    for (let i = 0; i < n; i++) {
+      if (!above(i) || building[i] || hag[i] < W.min_height || f.linearity[i] < W.linearity) continue;
+      const dz = Math.abs(f.direction[i * 3 + 2]);
+      if (dz < 0.4) set(i, 14);
+      else if (dz > 0.9) set(i, 15);
+    }
+  }
+  if (on.has('vegetation')) {
+    const [b1, b2] = P.vegetation.bands;
+    for (let i = 0; i < n; i++) if (above(i) && !building[i] && !planar[i] && !found[i]) set(i, hag[i] < b1 ? 3 : hag[i] < b2 ? 4 : 5);
+  }
+  if (on.has('road') && hasGround) roadAndKerbs(input, ground, noise, P.road, set, near);
+  onProgress(0.95, 'writing');
+
+  // what this run writes: what it found; a point in a class the run owns that it no longer finds goes back to 1
+  const owned = new Set(steps.flatMap((s) => OWNS[s] || []));
+  if (on.has('road')) owned.add(P.road.kerb_class);
+  const classes = Uint8Array.from(cur);
+  let changed = 0;
+  for (let i = 0; i < n; i++) {
+    if (writable && !writable[i]) continue;
+    const c = found[i] || (owned.has(cur[i]) ? 1 : cur[i]);
+    if (c !== cur[i]) (classes[i] = c), changed++;
+  }
+  onProgress(1, 'done');
+  return { classes, changed, spacing };
+}
+
+/** Road surface (11): smooth ground of the road's intensity; kerbs (kerb_class): sharp steps of kerb height. */
+function roadAndKerbs(input, ground, noise, R, set, near) {
+  const n = input.count;
+  const pos = input.pos;
+  const ids = [];
+  for (let i = 0; i < n; i++) if (ground[i] && !noise[i]) ids.push(i);
+  if (!ids.length) return;
+  // kerbs: within 0.3 m the ground steps by kerb height, sharply (a poor plane fit, a steep normal)
+  const kerb = new Uint8Array(n);
+  for (const i of ids) {
+    const nb = near(i, 0.3);
+    let [lo, hi, m] = [Infinity, -Infinity, 0];
+    const own = new Uint32Array(nb.length);
+    for (const j of nb) if (ground[j]) (own[m++] = j), (lo = Math.min(lo, pos[j * 3 + 2])), (hi = Math.max(hi, pos[j * 3 + 2]));
+    if (m < 4 || hi - lo < R.kerb[0] || hi - lo > R.kerb[1]) continue;
+    const c = covarianceFeatures(pos, own, m);
+    if (Math.sqrt(c.eigen[2]) >= 0.02 && c.verticality >= 0.15) kerb[i] = 1;
+  }
+  // road: the darker Otsu class of ground intensity (asphalt), smooth, among mostly road neighbours
+  const inten = input.intensity;
+  const band = R.intensity || (inten ? [0, otsu(ids.map((i) => inten[i]))] : null);
+  if (band) {
+    const cand = new Uint8Array(n);
+    for (const i of ids) if (!kerb[i] && inten[i] >= band[0] && inten[i] <= band[1]) cand[i] = 1;
+    for (const i of ids) {
+      if (!cand[i]) continue;
+      const nb = near(i, 0.5);
+      let [k, m] = [0, 0];
+      const own = new Uint32Array(nb.length);
+      for (const j of nb) if (ground[j]) (own[m++] = j), (k += cand[j]);
+      if (m < 4 || k < 0.6 * m) continue;
+      if (Math.sqrt(covarianceFeatures(pos, own, m).eigen[2]) <= R.roughness) set(i, 11);
+    }
+  }
+  for (const i of ids) if (kerb[i]) set(i, R.kerb_class);
 }
