@@ -94,6 +94,23 @@ app.ctx = {
   get aiTurns() {
     return app.ai?.feedbackTurns || []; // this session's copilot turns, for rate_ai_turn (#232)
   },
+  // features in a scan (#300): the maths in a module worker, its progress in the status bar
+  features: {
+    run(points, req) {
+      const w = new Worker(new URL('./features-worker.js', import.meta.url), { type: 'module' });
+      return new Promise((resolve, reject) => {
+        w.onmessage = ({ data }) => {
+          if (data.progress !== undefined) return app.ui?.setStatus(`Detecting features: ${data.stage}, ${Math.round(data.progress * 100)} %`);
+          w.terminate();
+          app.ui?.setStatus('');
+          if (data.error) reject(new Error(data.error));
+          else resolve(data.out);
+        };
+        w.onerror = (e) => (w.terminate(), reject(new Error(e.message || 'The feature worker failed.')));
+        w.postMessage({ id: 1, points, req }, [points.buffer]);
+      });
+    },
+  },
   // my tools and skills (#242): one file each in the user library
   userLibrary: { save: (item) => native.invoke('mytools:write', item), remove: (item) => native.invoke('mytools:delete', item.kind, item.name) },
   // feature code libraries: the SQLite store in the data folder (main process)

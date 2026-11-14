@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import * as CS from '../core/cloudstyle.js';
 import * as CV from '../core/clip.js';
+import { pointNormals } from '../core/cloudfeatures.js';
 import { patchClip, CLIP_GLSL } from './clipshader.js';
 
 const MODES = Object.fromEntries(CS.COLOR_BY.map((m, i) => [m, i]));
@@ -177,7 +178,7 @@ function stateFor(mat, pane) {
     range,
     ramp: lut(`r${JSON.stringify(ramp)}`, () => CS.rampBytes(ramp)),
     classes: lut(`c${JSON.stringify(st.class_colors || {})}|${flags}`, () => CS.classBytes(st.class_colors, f.hide || [])),
-    needs: { hag: !!(f.above_ground || st.above_ground), spacing: f.spacing > 0 },
+    needs: { hag: !!(f.above_ground || st.above_ground), spacing: f.spacing > 0, normal: st.color_by === 'normal' },
   };
   mat.userData.states.set(pane, s);
   return s;
@@ -185,6 +186,10 @@ function stateFor(mat, pane) {
 
 /** Attributes a filter needs that only the CPU can make (heights above ground, spacing ranks), added once. */
 function ensure(geometry, needs) {
+  // colour by normal (#300): PCA normals of the points drawn (the preview, or an octree node at its own spacing)
+  // shortcut: computed on this thread once per geometry, about 0.1 s per 100 000 points; a worker if it shows
+  const pos = geometry.attributes.position;
+  if (needs.normal && !geometry.attributes.normal && pos?.itemSize === 3 && pos.array.length >= 30) geometry.setAttribute('normal', new THREE.BufferAttribute(pointNormals(pos.array), 3));
   const d = geometry.userData.cloudData;
   if (!d) return;
   if (needs.hag && !geometry.attributes.hag) geometry.setAttribute('hag', new THREE.BufferAttribute(CS.heightAboveGround(d.position, d.count, d.classification), 1));

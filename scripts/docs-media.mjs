@@ -1693,6 +1693,64 @@ const PAGES = {
     await run('render_video', { path: path.join(dir, 'slice-a-scan.mp4'), width: 960, height: 540, fps: 24, from: 0, to: 4 });
     await clean();
   },
+  async 'detect-planes-and-corners'() {
+    // the synthetic corridor scan of tests/fixtures/scan.js (2 M points): two buildings, trees, a retaining wall, kerbs
+    await fresh();
+    const { makeScan, writeLas, SITE } = await import('../tests/fixtures/scan.js');
+    const file = path.join(os.tmpdir(), 'mmr-detect-corridor.las');
+    if (!fs.existsSync(file)) fs.writeFileSync(file, writeLas(makeScan({ points: 2000000 })));
+    await run('import_point_cloud', { path: file.split(path.sep).join('/'), octree: true, name: 'Corridor scan' });
+    for (let i = 0; i < 600 && (await run('point_cloud_job', { id: 'Corridor scan' })).octree !== 'ready'; i++) await wait(500);
+    const b = await js('return api.doc.geo.base;');
+    const O = SITE.origin;
+    const L = (x, n, z = 0) => [O[0] + x - b[0], O[2] + z - b[2], -(O[1] + n - b[1])]; // fixture local → model
+    await run('create_alignment', { name: 'Main road', points: [[L(0, 40)[0], L(0, 40)[2]], [L(100, 40)[0], L(100, 40)[2]]], station_interval: 20 });
+    await run('set_style', { grid: false });
+    const iso = () => camera(L(110, -25, 45), L(50, 45, 2));
+    await iso();
+    await none();
+    await shot('A scan of a road corridor: two buildings, trees, a retaining wall, kerbs along Main road');
+    await run('add_clip', { kind: 'box', name: 'Buildings', center: L(44, 58.5, 6), size: [64, 14, 20] });
+    await camera(L(70, 18, 30), L(44, 58, 4));
+    await shot('add_clip: a box around the buildings, the scope of the detection');
+    const p = await run('detect_planes', { within: 'Buildings', min_points: 300 });
+    await none();
+    await shot(`detect_planes: ${p.count} planes in ${(p.scope.ms / 1000).toFixed(1)} s, walls orange, roofs and ground blue, slopes purple; none in the trees`);
+    const c = await run('detect_corners', { within: 'Buildings', planes: p.ids });
+    await run('set_tag_visibility', { tag: 'Detected', visible: true });
+    await js(`const ids = new Set(${JSON.stringify(p.ids)}); for (const e of api.doc.entities) if (ids.has(e.id)) e.material.opacity = 0.15; window.mmr.app.store.changed(); return 1;`);
+    await camera(L(5, 40, 14), L(21, 60, 4));
+    await shot(`detect_corners: ${c.count} corner lines, a CORNER point at each foot`);
+    // the Line tool from one CORNER point to the next: it snaps to them
+    const near = (x, n) => c.corners.find((k) => Math.hypot(k.at[0] - O[0] - x, k.at[1] - O[1] - n) < 0.1).point;
+    const pts = [near(15, 55), near(27, 65)]; // across the building, so the line shows
+    await js("window.mmr.app.tools.set('line'); return 1;");
+    const [qa, qb] = await js(`const v = window.mmr.app.viewport; const V = window.mmr.THREE.Vector3; v.vertexCache = null; return ${JSON.stringify(pts)}.map((n) => v.toScreen(new V(...api.doc.entities.find((e) => e.name === n).position)));`);
+    const click = (q) => [{ type: 'mouseMove', x: q.x - 8, y: q.y }, { type: 'wait', ms: 150 }, { type: 'mouseMove', x: q.x + 2, y: q.y + 1 }, { type: 'wait', ms: 250 }, { type: 'mouseDown', x: q.x + 2, y: q.y + 1, button: 'left', clickCount: 1 }, { type: 'mouseUp', x: q.x + 2, y: q.y + 1, button: 'left', clickCount: 1 }, { type: 'wait', ms: 250 }];
+    await req('POST', '/api/input', { events: [...click(qa), ...click(qb)] });
+    await shot(`The Line tool snaps to ${pts[0]} and ${pts.at(-1)}: a line from corner to corner`);
+    await req('POST', '/api/input', { events: [{ type: 'keyDown', keyCode: 'Escape' }, { type: 'keyUp', keyCode: 'Escape' }] });
+    await js("window.mmr.app.tools.set('select'); return 1;");
+    const roof = p.planes.find((x) => x.type === 'sloped');
+    await run('add_clip', { kind: 'box', name: 'Roof', center: L(66, 57, 9), size: [14, 2, 8] });
+    await run('align_clip', { name: 'Roof', to: 'face', id: roof.id, face: 0 });
+    await run('delete_clip', { name: 'Buildings' });
+    await camera(L(80, 44, 13), L(66, 57, 9.5));
+    await shot('align_clip to: face on a detected roof face: the box turns square to the roof');
+    await run('delete_clip', { name: 'Roof' });
+    const k = await run('detect_edges', { kind: 'kerb', alignment: 'Main road' });
+    await camera(L(20, 29, 7), L(30, 40, 1.5));
+    await shot(`detect_edges kerb along Main road: ${k.count} lines, kerb tops red, kerb bottoms yellow, every 1 m`);
+    const earlier = (await run('get_scene')).entities.filter((x) => x.tag === 'Detected').map((x) => x.id);
+    await run('set_properties', { ids: earlier, visible: false });
+    await run('add_clip', { kind: 'box', name: 'Buildings', center: L(44, 58.5, 6), size: [64, 14, 20] });
+    const e = await run('detect_edges', { kind: 'intersections', within: 'Buildings', propose: true });
+    await camera(L(70, 18, 30), L(44, 58, 4));
+    await shot(`propose: true: ${e.count} edges (eaves, ridge, wall feet) wait for Accept or Reject`);
+    await run('propose', { action: 'reject' });
+    await run('set_properties', { ids: earlier, visible: true });
+    await clean();
+  },
   async 'web-map-layers'() {
     await fresh();
     await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });
