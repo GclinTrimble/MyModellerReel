@@ -1697,6 +1697,103 @@ test('point cloud octree (#293, #294): the synthetic scan converts in the worker
   assert.ok(e, 'the cloud is in the scene');
 });
 
+test('classification (#298) and class edits (#299): a background pass, a lasso and the vehicle key, front only, grow, locks, cancel, undo, LAS export', async () => {
+  const F = await import('../fixtures/scan.js');
+  const T = await import('../fixtures/truck.js');
+  const PC = await import('../../src/core/pointcloud.js');
+  const file = path.join(home, 'corridor-unclassified.las');
+  fs.writeFileSync(file, F.writeLas(T.withTruck(F.makeScan({ points: 400000, seed: 5 }))));
+  await ok('new_model');
+  const id = 'Corridor scan';
+  await ok('import_point_cloud', { path: file, octree: true, name: id });
+  for (let i = 0; i < 150 && (await ok('point_cloud_job', { id })).octree !== 'ready'; i++) await new Promise((res) => setTimeout(res, 200));
+  const status = () => w.evaluate((n) => window.mmr.app.store.doc.entities.find((e) => e.name === n).pointcloud.classify?.status, id);
+  const until = async (fn, ms = 60000) => {
+    const end = Date.now() + ms;
+    while (!(await fn()) && Date.now() < end) await new Promise((res) => setTimeout(res, 250));
+    return fn();
+  };
+  const counts = async () => Object.fromEntries((await ok('list_cloud_classes', { id })).classes.map((c) => [c.code, c.count]));
+  // the automatic pass, in the background, brought in by the app
+  const r = await ok('classify_cloud', { id });
+  assert.equal(r.status, 'running');
+  const job = await ok('point_cloud_job', { id });
+  assert.equal(job.task, 'classify');
+  assert.equal(await until(async () => (await status()) === 'done'), true, 'attached when it finished');
+  const c1 = await counts();
+  assert.ok(c1[2] > 200000 && c1[6] > 15000 && c1[5] > 10000, JSON.stringify(c1));
+  assert.equal(Object.values(c1).reduce((a, b) => a + b, 0), 400000 + Math.round(0.012 * 400000), 'every point counted');
+  await ok('set_cloud_style', { id, color_by: 'classification' });
+  // the van, tagged building: lasso it on screen, keep its building points, press 0
+  const base = await w.evaluate((n) => window.mmr.app.store.doc.entities.find((e) => e.name === n).pointcloud.base, id);
+  const at = (e, n, up = 0) => [e - base[0], F.groundAt(e, n) - base[2] + up, -(n - base[1])];
+  const [vx, vy] = [(T.TRUCK.min[0] + T.TRUCK.max[0]) / 2, (T.TRUCK.min[1] + T.TRUCK.max[1]) / 2];
+  await ok('set_camera', { position: at(vx + 12, vy - 13, 9), target: at(vx, vy, 1.4) });
+  const corners = [];
+  for (const x of [T.TRUCK.min[0], T.TRUCK.max[0]]) for (const y of [T.TRUCK.min[1], T.TRUCK.max[1]]) for (const z of [0.2, 3]) corners.push(at(x, y, z));
+  const sc = await w.evaluate((cs) => { const vp = window.mmr.app.viewport; return cs.map((p) => { const v = vp.camera.position.clone().set(...p).project(vp.camera); return [(v.x + 1) / 2, (1 - v.y) / 2]; }); }, corners);
+  const [x0, x1, y0, y1] = [Math.min(...sc.map((p) => p[0])) - 0.03, Math.max(...sc.map((p) => p[0])) + 0.03, Math.min(...sc.map((p) => p[1])) - 0.03, Math.max(...sc.map((p) => p[1])) + 0.03];
+  await w.evaluate(() => window.mmr.app.tools.set('pointselect'));
+  const sel = await ok('select_points', { id, polygon: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], classes: [6] });
+  assert.ok(sel.selected > 3000, `the van's points: ${sel.selected}`);
+  assert.ok(sel.bounds.min[0] > T.TRUCK.min[0] - 0.1 && sel.bounds.max[0] < T.TRUCK.max[0] + 0.1 && sel.bounds.min[1] > T.TRUCK.min[1] - 0.1 && sel.bounds.max[1] < T.TRUCK.max[1] + 0.1, `only the van: ${JSON.stringify(sel.bounds)}`);
+  const edits0 = await w.evaluate((n) => window.mmr.app.store.doc.entities.find((e) => e.name === n).pointcloud.edits.length, id);
+  await w.evaluate(() => window.mmr.app.tools.key(new KeyboardEvent('keydown', { key: '0' })));
+  await until(async () => (await counts())[65] === sel.selected, 10000);
+  const c2 = await counts();
+  assert.equal(c2[65], sel.selected, 'the vehicle key');
+  assert.equal(c2[6], c1[6] - sel.selected, 'the legend counts follow');
+  await w.evaluate(() => window.mmr.app.viewport.render());
+  assert.match(await w.evaluate(() => document.querySelector('.cloud-legend')?.textContent || ''), /Vehicle/);
+  const t0 = Date.now();
+  await ok('undo');
+  const undoMs = Date.now() - t0;
+  const c3 = await counts();
+  assert.equal(c3[65] || 0, 0, 'one undo step takes the edit back');
+  assert.equal(c3[6], c1[6]);
+  assert.equal(await w.evaluate((n) => window.mmr.app.store.doc.entities.find((e) => e.name === n).pointcloud.edits.length, id), edits0);
+  assert.ok(undoMs < 1000, `undo in ${undoMs} ms`);
+  await ok('redo');
+  // lock the vehicle; a later automatic pass leaves it
+  await ok('select_points', { id, classes: [65] });
+  await ok('set_point_class', { lock: true });
+  await ok('classify_cloud', { id, steps: ['ground', 'buildings'] });
+  await until(async () => (await status()) === 'done');
+  assert.equal((await counts())[65], sel.selected, 'locked points are untouched');
+  // cancel leaves the cloud as it was
+  const before = await counts();
+  await ok('classify_cloud', { id, steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'] });
+  await ok('cancel_point_cloud_job', { id });
+  assert.equal(await until(async () => (await status()) === 'cancelled', 10000), true);
+  assert.deepEqual(await counts(), before, 'cancel: the classes as they were');
+  // front only: the near wall of the flat-roofed building, not the one behind it
+  const b = F.SITE.buildings[0];
+  const [ox, oy] = F.SITE.origin;
+  await ok('clear_point_selection');
+  await ok('set_camera', { position: [ox + 21 - base[0], b.base - base[2] + 3, -(oy + 40 - base[1])], target: [ox + 21 - base[0], b.base - base[2] + 3, -(oy + 60 - base[1])] });
+  const whole = [[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]];
+  const all = await ok('select_points', { id, polygon: whole, classes: [6], elevation: [b.base + 0.5, b.base + 5.5] });
+  const front = await ok('select_points', { id, polygon: whole, classes: [6], elevation: [b.base + 0.5, b.base + 5.5], front_only: true });
+  assert.ok(all.bounds.max[1] > oy + 64, 'through everything reaches the far wall');
+  assert.ok(front.bounds.max[1] < oy + 58 && front.selected < all.selected * 0.6, `front only stops at the near wall: ${JSON.stringify(front.bounds)} ${front.selected} of ${all.selected}`);
+  // grow from a point of that wall: its plane, to its corners and no further
+  const g = await ok('select_points', { id, grow_from: [ox + 21, oy + 55, b.base + 3] });
+  assert.ok(g.bounds.max[1] - g.bounds.min[1] < 0.3, `one wall: ${JSON.stringify(g.bounds)}`);
+  assert.ok(g.bounds.max[0] - g.bounds.min[0] > 10, 'the whole wall, corner to corner');
+  await ok('clear_point_selection');
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  // export to LAS 1.4 with the edited classes, in the background
+  const out = path.join(home, 'corridor-classified.las');
+  const ex = await ok('export_point_cloud', { id, path: out });
+  assert.ok(ex.job);
+  await until(async () => fs.existsSync(out), 30000);
+  const h = PC.lasHeader(new Uint8Array(fs.readFileSync(out).subarray(0, 4096)));
+  assert.equal(h.version, '1.4');
+  assert.equal(h.count, 400000 + Math.round(0.012 * 400000));
+  const back = PC.parsePointCloud(new Uint8Array(fs.readFileSync(out)), 'x.las');
+  assert.equal(back.classification.filter((c) => c === 65).length, sel.selected, 'the edited classes in the file');
+});
+
 test('slices (#292): a plan slice of a scan, square-on in pane 2, snapping to its points, a series stepped with PageDown, a scene, a sweep', async () => {
   await ok('new_model');
   await w.evaluate(() => window.mmr.app.ui.setRibbon(null));

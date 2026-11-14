@@ -232,7 +232,14 @@ function frontOnly(found, scr, [w, h], tol = null) {
     for (let k = 0; k < f.idx.length; k++) (x0 = Math.min(x0, f.sx[k])), (x1 = Math.max(x1, f.sx[k])), (y0 = Math.min(y0, f.sy[k])), (y1 = Math.max(y1, f.sy[k]));
   }
   if (!n) return;
-  const cell = Math.max(2, 1.5 * Math.sqrt(((x1 - x0 + 1) * (y1 - y0 + 1)) / n));
+  // the cell: the smallest size at which the points cover nearly as much screen as at twice that size (no holes)
+  const covered = (c) => {
+    const seen = new Set();
+    for (const f of use) for (let k = 0; k < f.idx.length; k++) seen.add(Math.floor(f.sx[k] / c) * 65536 + Math.floor(f.sy[k] / c));
+    return seen.size * c * c;
+  };
+  let cell = 2;
+  for (const c of [2, 3, 4, 6, 8, 12, 16, 24]) if (((cell = c), covered(c) >= 0.85 * covered(2 * c))) break;
   const [nx, ny] = [Math.ceil(w / cell) + 1, Math.ceil(h / cell) + 1];
   const at = (x, y) => Math.min(ny - 1, Math.max(0, Math.floor(y / cell))) * nx + Math.min(nx - 1, Math.max(0, Math.floor(x / cell)));
   const z0 = new Float32Array(nx * ny).fill(Infinity);
