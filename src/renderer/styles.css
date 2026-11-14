@@ -394,6 +394,17 @@ body.signin { grid-template-rows: var(--my-titlebar-height) 1fr; }
 .span-bar.motion { background: repeating-linear-gradient(135deg, var(--my-accent-tint-strong) 0 6px, transparent 6px 12px); color: var(--my-text); }
 .span-bar.shot { background: var(--my-surface-3, var(--my-surface-2)); color: var(--my-text); border: 1px solid var(--my-border-strong, var(--my-border)); border-left: 3px solid var(--my-accent); }
 .span-bar.audio { background: repeating-linear-gradient(90deg, var(--my-accent-tint-strong) 0 2px, transparent 2px 5px); color: var(--my-text); }
+.span-bar.setup { background: var(--my-surface-2); color: var(--my-text-muted); border: 1px solid var(--my-border); border-left: 3px solid var(--my-mustard); }
+/* a survey replay: one dot per measurement, over its setup band (#284) */
+.tl-dot {
+  position: absolute; top: 7px; width: 7px; height: 7px; margin-left: -3px; border-radius: 50%; cursor: pointer; z-index: 4;
+  background: var(--my-accent); border: 1px solid var(--my-surface);
+}
+.tl-dot:hover { transform: scale(1.6); }
+.tl-dot.dr { background: var(--my-mustard); }
+.tl-dot.gnss { background: var(--mmr-fern-deep, var(--my-accent)); }
+.tl-dot.keyed, .tl-dot.computed { background: var(--my-text-muted); }
+.tl-dot.flag { background: var(--my-danger, #d7442f); box-shadow: 0 0 0 2px var(--my-surface); }
 .tl-box { position: absolute; z-index: 3; border: 1px dashed var(--my-accent); background: var(--my-accent-tint); pointer-events: none; }
 .curve-editor { display: block; width: 300px; height: 300px; touch-action: none; }
 .curve-editor .ce-frame { fill: var(--my-surface-2); stroke: var(--my-border); }

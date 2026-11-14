@@ -337,6 +337,17 @@ export class Timeline {
     const run = (n, a) => this.app.reg.run(n, a).catch((e) => this.app.ui.toast(e.message, 'danger'));
     // captions and procedural motions get a row each, above the keyframe tracks
     this.special = [];
+    // a survey replay reads as the day's work: a band per setup, a dot per measurement (#284)
+    for (const r of doc.animation.replays || []) {
+      names.append(h('div', { title: `${r.name}: ${r.dots.length} measurements, ${r.mode} time${r.speed === 1 ? '' : ` × ${r.speed}`}` }, icon('crosshair'), r.name, h('span.prop', {}, `· ${r.dots.length} shots`)));
+      const lane = h('div.lane');
+      this.lanes.append(lane);
+      this.special.push({
+        lane,
+        bars: r.bands.map((b) => ({ t0: b.t0, t1: b.t1, label: b.station || 'Keyed in', cls: 'setup', title: `${b.kind === 'base' ? 'Base' : b.kind === 'station' ? 'Station' : 'Keyed in'} ${b.station}`.trim() })),
+        dots: r.dots,
+      });
+    }
     for (const c of doc.animation.captions || []) {
       names.append(h('div', { title: c.text }, icon('subtitles'), 'Caption', h('span.prop', {}, `· ${c.style}`)));
       const lane = h('div.lane');
@@ -397,6 +408,18 @@ export class Timeline {
     new ResizeObserver(() => this.layout(ruler)).observe(this.lanes);
   }
 
+  /** A replay's dots, thinned to what the lane can show: flagged shots always survive. */
+  dotsOf(row) {
+    if (!row.dots) return [];
+    let last = -Infinity;
+    return row.dots.filter((d) => {
+      const x = this.x(d.t);
+      if (!d.flagged && x - last < 3) return false;
+      last = x;
+      return true;
+    });
+  }
+
   layout(ruler) {
     const doc = this.doc;
     const dur = doc.animation.duration;
@@ -412,6 +435,18 @@ export class Timeline {
       row.lane.replaceChildren(
         ...row.bars.map((b) =>
           h(`div.span-bar.${b.cls}`, { style: { left: `${this.x(b.t0)}px`, width: `${Math.max(4, this.x(Math.min(dur, b.t1)) - this.x(b.t0))}px` }, title: b.title, onpointerdown: (e) => e.stopPropagation(), onclick: () => this.seek(b.t0), ondblclick: b.del }, b.label),
+        ),
+        ...this.dotsOf(row).map((d) =>
+          h(`div.tl-dot.${d.flagged ? 'flag' : d.kind}`, {
+            style: { left: `${this.x(d.t)}px` },
+            title: `${d.name}${d.code ? ` (${d.code})` : ''} · ${{ ts: 'prism', dr: 'reflectorless', gnss: 'GNSS', keyed: 'keyed in', computed: 'computed' }[d.kind] || d.kind}${d.cls ? ` ${d.cls}` : ''}${d.time ? ` · ${d.time}` : ''}${d.flagged ? ' · flagged by review_survey' : ''}. Click to select it.`,
+            onpointerdown: (e) => e.stopPropagation(),
+            onclick: () => {
+              this.seek(d.t);
+              const p = this.doc.entities.find((e) => e.type === 'point' && e.name === d.name);
+              if (p) this.app.select([p.id]);
+            },
+          }),
         ),
       );
     for (const tr of doc.animation.tracks) {
