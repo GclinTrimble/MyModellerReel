@@ -6,7 +6,7 @@ import { TASKS } from '../scripts/eval-tasks.js';
 import { runTask } from '../scripts/eval.mjs';
 
 test('eval: reference solutions score 100 %, doing nothing does not', async () => {
-  for (const t of TASKS) {
+  for (const t of TASKS.filter((x) => !x.skip)) {
     const r = await runTask(t, 'mock');
     assert.equal(r.score, 1, `${t.name}: ${r.failed.join('; ')}`);
     assert.equal(r.errors, 0, t.name);

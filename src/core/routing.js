@@ -17,7 +17,25 @@ export const TOOLSETS = {
   maps: { categories: ['maps'], names: ['get_scene', 'set_coordinate_system', 'set_geolocation'] },
   materials: { categories: ['materials'], names: ['get_scene', 'get_entity', 'select_where', 'report_quantities'] },
   drawings: { categories: ['drawings', 'drafting', 'layers'], names: ['get_scene', 'get_entity', 'select_where', 'create_curve', 'set_curve', 'sweep', 'create_surface'] },
+  // working in a scan (#302); the commands of #298–#301 join as they land (a name not registered is skipped)
+  pointcloud: {
+    categories: [],
+    names: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'select_points', 'set_point_class', 'clear_point_selection', 'point_selection', 'define_point_class', 'detect_planes', 'detect_corners', 'detect_edges', 'add_clip', 'fit_clip', 'align_clip', 'set_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'screenshot', 'propose', 'classify_ground', 'pick_cloud_point', 'import_point_cloud', 'point_cloud_job', 'export_point_cloud', 'step_slice', 'list_clips'],
+    // to add as they land: extract_footprint, trace_slice, extract_edges (#301)
+    words: ['scan', 'point cloud', 'las', 'laz', 'copc', 'potree', 'lidar', 'intensity', 'x-ray', 'xray', 'classify'],
+    hints: ['slice', 'limit box', 'clip', 'façade', 'facade', 'corner', 'footprint', 'kerb', 'curb', 'edge of pavement', 'wall line'], // also mean other work: a smaller nudge
+  },
 };
+
+const has = (q, list) => list?.some((w) => new RegExp(`(^|[^a-zç])${w}s?($|[^a-zç])`).test(q));
+/** The toolset a request is about (its words: "scan", "point cloud"; or hints: "kerb lines", "slice"), or null; strong: by its words. */
+export function toolsetMatch(query) {
+  const q = String(query || '').toLowerCase();
+  for (const [name, t] of Object.entries(TOOLSETS)) if (has(q, t.words)) return { name, strong: true };
+  for (const [name, t] of Object.entries(TOOLSETS)) if (has(q, t.hints)) return { name, strong: false };
+  return null;
+}
+export const toolsetFor = (query) => toolsetMatch(query)?.name || null;
 
 /** Always offered: enough to look, undo and reach every other command. */
 export const ALWAYS = ['get_scene', 'get_entity', 'list_commands', 'run_script', 'select', 'undo', 'ask_user'];
@@ -89,10 +107,14 @@ export const EXAMPLES = {
   add_slice: { at: 'station', alignment: 'Main road', station: 120, thickness: 0.5 },
   slice_series: { at: 'station', alignment: 'Main road', from: 0, to: 200, step: 20 },
   view_clip: { name: 'Slice 1', pane: 2 },
-  slice_points: { name: 'Slice 1', max: 300 },
+  slice_points: { name: 'Slice 1', max: 150 },
   detect_planes: { within: 'Box 1', min_area: 2, regularise: true },
   detect_corners: { within: 'Box 1', min_angle: 30 },
   detect_edges: { kind: 'kerb', alignment: 'Main road', spacing: 1 },
+  describe_cloud: { id: 'Site scan', within: 'Culvert box' },
+  extract_footprint: { id: 'Site scan', classes: [6], layer: 'Footprints', propose: true },
+  trace_slice: { name: 'Level 1', layer: 'Walls', propose: true },
+  extract_edges: { id: 'Site scan', kind: 'kerb', alignment: 'Main road', layer: 'Kerbs', propose: true },
   use_ai_model: { provider: 'ollama', model: 'mistral' },
   corridor_surface: { corridor: 'Road' },
   corridor_volumes: { corridor: 'Road', bulking: 1.25, shrinkage: 0.9 },
@@ -162,7 +184,7 @@ const SYNONYMS = {
   earthworks: ['corridor_volumes', 'corridor_solids', 'cut_fill'],
   embankment: ['create_corridor', 'set_corridor'],
   ditch: ['set_corridor', 'create_corridor'],
-  pavement: ['corridor_solids', 'set_corridor'],
+  pavement: ['corridor_solids', 'set_corridor', 'edges', 'slice'], // edge of pavement in a scan
   asphalt: ['corridor_solids', 'set_corridor'],
   superelevation: ['set_corridor'],
   haul: ['corridor_volumes'],
@@ -233,25 +255,31 @@ const SYNONYMS = {
   shadows: ['set_sun_time', 'animate_sun'],
   sketch: ['set_style'],
   lens: ['set_camera'],
-  scan: ['import_point_cloud', 'classify_ground', 'vectorise_underlay'],
+  scan: ['import_point_cloud', 'classify_ground', 'vectorise_underlay', 'cloud', 'describe'],
+  la: ['cloud', 'import'], // las, stemmed
+  potree: ['cloud', 'octree', 'import'],
+  classify: ['cloud', 'classes', 'filter', 'classify_cloud', 'list_cloud_classes', 'set_point_class', 'select_points', 'point_cloud_job', 'classify_ground'],
+  facade: ['detect_planes', 'detect_corners', 'planes', 'detect', 'slice', 'clip', 'wall'],
+  corner: ['corners', 'detect', 'cloud'],
+  footprint: ['extract', 'describe', 'cloud', 'slice'],
+  kerb: ['detect_edges', 'edges', 'extract', 'detect', 'slice', 'cloud', 'classify_cloud', 'select_points', 'define_point_class'],
+  curb: ['detect_edges', 'kerb', 'edges', 'extract', 'detect', 'slice', 'cloud'],
   lidar: ['import_point_cloud', 'classify_ground', 'set_cloud_style', 'set_cloud_filter', 'list_cloud_classes', 'pick_cloud_point'],
   cloud: ['import_point_cloud', 'classify_ground', 'set_cloud_style', 'set_cloud_filter', 'list_cloud_classes', 'point_cloud_job', 'pick_cloud_point'],
-  intensity: ['set_cloud_style'],
+  intensity: ['set_cloud_style', 'cloud', 'style'],
   classification: ['classify_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'select_points', 'set_point_class'],
-  classify: ['classify_cloud', 'list_cloud_classes', 'set_point_class', 'select_points', 'point_cloud_job', 'classify_ground'],
   classes: ['list_cloud_classes', 'define_point_class', 'set_point_class', 'classify_cloud'],
   vegetation: ['classify_cloud', 'set_cloud_filter'],
   noise: ['classify_cloud', 'select_points', 'set_point_class'],
-  kerb: ['classify_cloud', 'select_points', 'define_point_class'],
-  kerbs: ['classify_cloud', 'select_points'],
+  kerbs: ['classify_cloud', 'select_points', 'detect_edges'],
   ground: ['classify_cloud', 'classify_ground'],
   reclassify: ['select_points', 'set_point_class', 'clear_point_selection'],
   lasso: ['select_points', 'set_point_class'],
   points: ['select_points', 'point_selection', 'set_point_class'],
   las: ['import_point_cloud', 'export_point_cloud'],
-  xray: ['set_cloud_style', 'set_style'],
+  xray: ['set_cloud_style', 'set_style', 'cloud', 'style'],
   laz: ['import_point_cloud', 'point_cloud_job', 'export_point_cloud'],
-  copc: ['import_point_cloud'],
+  copc: ['import_point_cloud', 'cloud'],
   octree: ['import_point_cloud', 'point_cloud_job', 'rebuild_point_cloud_octree', 'set_cloud_budget'],
   budget: ['set_cloud_budget'],
   scanned: ['vectorise_underlay', 'import_image'],
@@ -281,7 +309,7 @@ const SYNONYMS = {
   // clip volumes (#290, #291)
   clips: ['list_clips', 'clear_clips', 'delete_clip'],
   box: ['create_box', 'add_clip', 'fit_clip'], // a box to build stays first
-  limit: ['add_clip', 'fit_clip'],
+  limit: ['add_clip', 'fit_clip', 'clip'],
   crop: ['add_clip', 'fit_clip', 'set_clip'],
   isolate: ['add_clip', 'fit_clip'],
   slab: ['add_slice', 'add_clip', 'set_clip'],
@@ -291,12 +319,8 @@ const SYNONYMS = {
   cross: ['road_section', 'add_slice'],
   square: ['view_clip'],
   // features in a scan (#300)
-  facade: ['detect_planes', 'detect_corners'],
   facades: ['detect_planes', 'detect_corners'],
   corners: ['detect_corners', 'detect_planes'],
-  kerb: ['detect_edges'],
-  kerbs: ['detect_edges'],
-  curb: ['detect_edges'],
   eaves: ['detect_edges'],
   detect: ['detect_planes', 'detect_corners', 'detect_edges'],
   ollama: ['detect_local_models', 'use_ai_model'],
@@ -317,6 +341,9 @@ const stem = (w) => w.replace(/(ing|ed|es|s)$/, '') || w;
 export const tokens = (text) =>
   String(text || '')
     .toLowerCase()
+    .replace(/x-ray/g, 'xray')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // façade → facade
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length > 1 && !STOP.has(w))
     .map(stem);
@@ -333,6 +360,7 @@ export function rankCommands(list, { query = '', toolset = null, limit = 0 } = {
   const q = tokens(query);
   if (q.length) {
     const want = new Set(q.flatMap((w) => [w, ...(SYNONYMS[w] || []).map(stem)]));
+    const auto = !toolset && toolsetMatch(query); // a scan request: its commands come before generic ones
     const score = (c) => {
       const name = tokens(c.name.replace(/_/g, ' '));
       const desc = tokens(c.description);
@@ -343,7 +371,7 @@ export function rankCommands(list, { query = '', toolset = null, limit = 0 } = {
         if (c.category === w) s += 1;
         s += Math.min(2, desc.filter((d) => d === w).length);
       }
-      return s;
+      return s && auto && inToolset(c, auto.name) ? s + (auto.strong ? 8 : 2) : s;
     };
     cmds = cmds
       .map((c) => [c, score(c)])
@@ -361,6 +389,10 @@ export function rankCommands(list, { query = '', toolset = null, limit = 0 } = {
 export function routeTools(list, { query = '', used = [], toolset = null, limit = 18 } = {}) {
   const byName = new Map(list.map((c) => [c.name, c]));
   const pick = new Set([...ALWAYS, ...used].filter((n) => byName.has(n)));
+  const auto = !toolset && toolsetFor(query);
+  // a request plainly about a toolset (a scan): its best matches first, then its core in order, then the rest
+  if (auto) for (const c of rankCommands(list, { query, toolset: auto }).slice(0, 6)) pick.add(c.name);
+  if (auto) for (const n of TOOLSETS[auto].names.slice(0, 4)) if (byName.has(n)) pick.add(n);
   for (const c of rankCommands(list, { query, toolset })) {
     if (pick.size >= limit) break;
     pick.add(c.name);

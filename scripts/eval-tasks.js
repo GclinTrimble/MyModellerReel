@@ -2,6 +2,8 @@
 // (the calls a good model would make; the "mock" model replays it, which also checks that every scorer can reach 1).
 import fs from 'node:fs';
 import * as D from '../src/core/document.js';
+import { addScanCloud } from '../tests/fixtures/scancloud.js';
+import { SITE, groundAt } from '../tests/fixtures/scan.js';
 
 const ents = (doc) => doc.entities;
 const size = (doc, e) => {
@@ -193,5 +195,119 @@ TASKS.push(
       return checks([['P3 rod height fixed to 1.5 m', !!p3 && close(p3.th, 1.5, 0.001)], ['P3 moved up 0.5 m', z !== undefined && close(z, 10.1, 0.002)], ['the other shots untouched', others.every((o) => !Object.keys(o.edits).length)]]);
     },
     solution: [['review_survey', {}], ['edit_survey_observations', { names: ['P3'], target_height: 1.5 }]],
+  },
+);
+
+// Scan tasks (#302) on the synthetic corridor scan (tests/fixtures/scan.js): model x east, y up, z south of its corner.
+const SCAN = [(ctx) => addScanCloud(ctx.doc, { points: 60000 })];
+const DENSE = (ctx) => addScanCloud(ctx.doc, { points: 1e6 });
+const O = SITE.origin;
+const local = ([e, n]) => [e - O[0], -(n - O[1])]; // E, N → model x, z
+const clipsOf = (doc) => (doc.clips || []).filter((c) => c.enabled !== false);
+const CULVERT = (() => {
+  const [[e, n0], [, n1]] = SITE.culvert.axis;
+  const r = SITE.culvert.diameter / 2;
+  const y = groundAt(e, (n0 + n1) / 2) - O[2] + r; // the pipe axis sits one radius above the ditch invert
+  return { min: [e - O[0] - r, y - r, -(n1 - O[1])], max: [e - O[0] + r, y + r, -(n0 - O[1])] };
+})();
+const vol = (s) => s[0] * s[1] * s[2];
+/** World points of a curve entity. */
+const curveWorld = (doc, e) => {
+  const m = D.worldMatrix(doc, e).elements;
+  return e.curve.points.map(([x, y, z]) => [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]]);
+};
+const onLayer = (doc, re) => ents(doc).filter((e) => e.curve && re.test(e.tag || ''));
+/** Plan distance from [x, z] to a segment. */
+const segDist = ([x, z], [a, b]) => {
+  const [dx, dz] = [b[0] - a[0], b[1] - a[1]];
+  const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz)));
+  return Math.hypot(x - a[0] - t * dx, z - a[1] - t * dz);
+};
+const ringDist = (p, ring) => Math.min(...ring.map((a, i) => segDist(p, [a, ring[(i + 1) % ring.length]])));
+
+TASKS.push(
+  {
+    name: 'scan-culvert-box',
+    prompt: 'In the site scan there is a culvert mouth in the ditch south of the road, about 80 m east of the west edge (an unclassified pipe, class 1). Put a clip box tightly around the culvert so I only see it.',
+    setup: SCAN,
+    check: (doc) => {
+      const b = clipsOf(doc).find((c) => c.kind === 'box' && c.keep !== 'outside');
+      const lo = b && b.center.map((c, k) => c - b.size[k] / 2);
+      const hi = b && b.center.map((c, k) => c + b.size[k] / 2);
+      const level = b && (b.rotation || [0, 0, 0]).every((r) => Math.abs(r) < 1);
+      const holds = !!b && level && [0, 1, 2].every((k) => lo[k] <= CULVERT.min[k] + 0.02 && hi[k] >= CULVERT.max[k] - 0.02);
+      const truth = vol(CULVERT.max.map((x, k) => x - CULVERT.min[k]));
+      return checks([['an inside box', !!b], ['it holds the culvert', holds], ['at most 20 % extra volume', !!b && vol(b.size) <= 1.2 * truth]]);
+    },
+    solution: [['add_clip', { kind: 'box', name: 'Culvert', center: CULVERT.min.map((x, k) => (x + CULVERT.max[k]) / 2), size: CULVERT.max.map((x, k) => (x - CULVERT.min[k]) * 1.05) }]],
+  },
+  {
+    name: 'scan-hide-vegetation',
+    prompt: 'The site scan is not classified yet. Hide the trees and bushes in it, keep everything else.',
+    setup: [(ctx) => addScanCloud(ctx.doc, { points: 60000, classified: false })],
+    check: (doc) => {
+      const pc = ents(doc).find((e) => e.pointcloud)?.pointcloud || {};
+      const hide = pc.filter?.hide || [];
+      return checks([['classified (classify_cloud)', !!pc.classify || !!pc.edits], ['trees hidden (5)', hide.includes(5)], ['bushes hidden (3, 4)', hide.includes(3) && hide.includes(4)], ['ground, road and buildings kept', ![2, 6, 11].some((c) => hide.includes(c))]]);
+    },
+    solution: [['describe_cloud', {}], ['classify_cloud', { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'] }], ['set_cloud_filter', { classes: { hide: [3, 4, 5] } }]],
+  },
+  {
+    name: 'scan-slice-level',
+    prompt: 'Make a level slice of the site scan that cuts through the walls of both buildings, so I can draft them, and look at the slice square-on from above.',
+    setup: SCAN,
+    check: (doc) => {
+      const s = clipsOf(doc).find((c) => c.kind === 'slab' && Math.abs(c.normal?.[1]) > 0.999);
+      const y = s?.point[1];
+      // the site slopes: one level cuts both buildings' walls only above the higher base and under the lower eaves
+      const cuts = y !== undefined && SITE.buildings.every((b) => y > b.base - O[2] + 0.3 && y < b.base - O[2] + 4.7);
+      const looks = !!s && (doc.settings.layout?.panes || []).some((p) => p.slice === s.name);
+      return checks([['a level slab', !!s], ['through the walls of both buildings', cuts], ['thin (≤ 0.5 m)', !!s && s.thickness <= 0.5], ['seen square-on', looks]]);
+    },
+    solution: [['describe_cloud', {}], ['add_slice', { at: 'elevation', z: 105, name: 'Plan cut' }], ['view_clip', { name: 'Plan cut' }]],
+  },
+  {
+    name: 'scan-corners',
+    prompt: 'Find the corners of the two buildings on the site scan and mark them as survey points.',
+    setup: [DENSE],
+    check: (doc) => {
+      const pts = ents(doc).filter((e) => e.point?.code === 'CORNER').map((e) => [e.point.e, e.point.n]);
+      const truth = SITE.buildings.flatMap((b) => b.footprint);
+      const found = truth.filter(([e, n]) => pts.some((p) => Math.hypot(p[0] - e, p[1] - n) <= 0.05));
+      return checks([['corner points', pts.length > 0], ['all 8 corners within 5 cm', found.length === 8], ['no extra corners', pts.length === 8]]);
+    },
+    solution: [['describe_cloud', {}], ['detect_corners', { min_points: 300 }]],
+  },
+  {
+    name: 'scan-footprints',
+    skip: 'extract_footprint (#301) is not on main yet',
+    prompt: 'Find the building footprints on this site scan and draft them on a Footprints layer.',
+    setup: SCAN,
+    check: (doc) => {
+      const rings = onLayer(doc, /footprint/i).map((e) => curveWorld(doc, e).map(([x, , z]) => [x, z]));
+      const truth = SITE.buildings.map((b) => b.footprint.map(local));
+      // Hausdorff in plan, both ways, between each true footprint and the nearest drafted ring
+      const haus = truth.map((t) => Math.min(...rings.map((r) => Math.max(...t.map((p) => ringDist(p, r)), ...r.map((p) => ringDist(p, t))))));
+      return checks([['two footprints', rings.length === 2], ['within 0.3 m of the truth', haus.every((h) => h <= 0.3)]]);
+    },
+    solution: [['extract_footprint', { classes: [6], layer: 'Footprints' }]],
+  },
+  {
+    name: 'scan-kerbs',
+    prompt: 'Extract the kerb lines along Main road from the site scan, on a Kerbs layer.',
+    // kerbs and corners need the density of a real scan (1 M points: about 125 / m²)
+    setup: [DENSE, ['create_alignment', { name: 'Main road', points: SITE.road.centreline.map(local) }]],
+    check: (doc) => {
+      const lines = onLayer(doc, /kerb/i).flatMap((e) => curveWorld(doc, e).map(([x, , z]) => [x, z]));
+      const kerbs = SITE.kerbs.map((k) => k.line.map(local));
+      const near = lines.filter((p) => kerbs.some((k) => segDist(p, k) <= 0.05));
+      const span = (k) => {
+        const xs = lines.filter((p) => segDist(p, k) <= 0.05).map((p) => p[0]);
+        return xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
+      };
+      const covered = kerbs.every((k) => span(k) >= 80);
+      return checks([['kerb lines drawn', lines.length > 0], ['within 5 cm of the kerbs', !!lines.length && near.length === lines.length], ['both kerbs, 80 m or more each', covered]]);
+    },
+    solution: [['describe_cloud', {}], ['detect_edges', { kind: 'kerb', alignment: 'Main road', layer: 'Kerbs' }]],
   },
 );
