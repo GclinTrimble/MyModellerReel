@@ -70,7 +70,7 @@ export async function runTask(task, spec, { routing = true } = {}) {
   let sel = [];
   const ctx = { store, get doc() { return store.doc; }, selection: { get: () => sel, set: (x) => (sel = x) } };
   const reg = createRegistry(ctx);
-  for (const [name, args] of task.setup || []) await reg.run(name, args);
+  for (const step of task.setup || []) await (typeof step === 'function' ? step(ctx, reg) : reg.run(...step)); // a function: data no command makes (a scan)
   sel = [];
   const p = provider(spec, task);
   const protocol = protocolOf(p.provider);
@@ -104,9 +104,10 @@ async function main() {
   const only = opt('task');
   const routing = opt('routing')[0] !== 'off';
   const tasks = TASKS.filter((t) => !only.length || only.includes(t.name));
+  for (const t of tasks.filter((x) => x.skip)) console.log(`skip ${t.name.padEnd(18)} ${t.skip}`);
   const rows = [];
   for (const m of models)
-    for (const t of tasks) {
+    for (const t of tasks.filter((x) => !x.skip)) {
       const r = await runTask(t, m, { routing });
       rows.push(r);
       console.log(`${m.padEnd(28)} ${t.name.padEnd(18)} ${(r.score * 100).toFixed(0).padStart(4)} %  ${String(r.calls).padStart(3)} calls ${String(r.errors).padStart(2)} errors ${r.seconds.toFixed(1).padStart(6)} s (model ${(r.model_ms / 1000).toFixed(1)} s, ${r.steps} steps${r.tokens_per_s ? `, ${r.tokens_per_s} tok/s` : ''})${r.failed.length ? `  ✗ ${r.failed.join('; ')}` : ''}`);

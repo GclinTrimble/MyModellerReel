@@ -125,6 +125,29 @@ areas, and stage work with markers and build_sequence for a 4D sequence.`,
       { title: 'Pad and cut / fill', code: "await api.create_pad({ outline: 'Pad outline', elevation: 12.5, surface: 'Existing ground', cut_slope: 2, fill_slope: 2, merge: true, name: 'Building pad' });\nawait api.cut_fill({ existing: 'Existing ground', design: 'Design surface', bulking: 1.25, shrinkage: 0.9 });" },
     ],
   },
+  scans: {
+    label: 'Point clouds and scans',
+    description: 'Work in a site scan: describe, classify, clip and slice, detect and extract footprints, walls and kerbs, check by eye, propose',
+    prompt: `Domain: working in a point cloud (a laser or drone scan of a site, road corridor or building). Never ask for raw
+points: commands answer with counts, statistics and ids. Start with describe_cloud (bounds in project E/N/Z, density,
+classes, the ground, levels = flat floors and roofs, walls = dominant bearings). Classes are ASPRS LAS 1.4: 2 ground,
+3/4/5 low/medium/high vegetation, 6 building, 7 and 18 noise, 11 road surface. If the scan is unclassified run
+classify_cloud and read its counts; hide vegetation and noise with set_cloud_filter. Isolate what you work on: add_clip
+box around a feature (fit_clip, align_clip to two points of a wall or kerb), add_slice at a level (above: 'ground' for a
+plan cut 1.2 m up) or across an alignment at a station, slice_series for every floor or every 20 m. Extract with
+extract_footprint (buildings), trace_slice (wall lines from a level slice), extract_edges / detect_edges kind kerb
+along an alignment (kerb top and bottom, edges of seal, as_breaklines for the surface), each on its own layer
+(Footprints, Walls, Kerbs). Then check by eye: view_clip on the slice in pane 2, set_cloud_style { depth: 'xray' },
+select the new linework, screenshot, compare lines and points, and say what is off. Results you make are proposals
+(propose: true, or propose { action: 'start' } first): the person accepts them. Deleting points, overwriting or
+unlocking classes: ask_user first. Typical tolerances: walls ±2 cm, kerbs ±3 cm in plan and ±1 cm in height, footprints
+square to ±5°.`,
+    toolset: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'add_clip', 'fit_clip', 'align_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'detect_edges', 'extract_footprint', 'trace_slice', 'extract_edges', 'screenshot', 'propose'],
+    examples: [
+      { title: 'Look at a scan', code: "const d = await api.describe_cloud({});\nreturn { points: d.points, classes: d.classes, levels: d.levels, walls: d.walls };" },
+      { title: 'A box around the culvert, seen from the side', code: "await api.add_clip({ kind: 'box', name: 'Culvert', center: [80, 0, -33.8], size: [3, 3, 4] });\nawait api.add_slice({ at: 'line', points: [[78, 0, -33.8], [82, 0, -33.8]], thickness: 4, name: 'Culvert side' });\nawait api.view_clip({ name: 'Culvert side', pane: 2 });" },
+    ],
+  },
   furniture: {
     label: 'Furniture and interiors',
     description: 'Tables, chairs, shelves, kitchens, room layouts',
@@ -179,6 +202,44 @@ Play it back (playback) and check a few times with screenshots. Do not render un
     arguments: [],
     text: `Run review_model on the current MyModellerReel model. Explain the issues it finds in plain words, fix the ones that
 are clearly mistakes (use place_on, align, set_params, move), leave design choices alone, then run review_model again.`,
+  },
+  scan_to_plan: {
+    description: 'Scan to plan: slice a scanned building or site, draft footprints and wall lines on layers, check them against the points, propose',
+    arguments: [{ name: 'level', description: 'height of the plan cut above the ground (default 1.2 m)' }, { name: 'cloud', description: 'the point cloud (default the first)' }],
+    text: `Draft a plan from the scan {{cloud|(the first point cloud)}} in MyModellerReel.
+1. describe_cloud: note the classes, the ground, the levels and the wall bearings. If there is no building class (6), run
+   classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings'], propose: true } and accept it only if the counts look right.
+2. Hide vegetation and noise: set_cloud_filter { classes: { hide: [3, 4, 5, 7, 18] } }.
+3. Footprints: extract_footprint { classes: [6], layer: 'Footprints', propose: true }.
+4. Walls: add_slice { at: 'elevation', z: {{level|1.2}}, above: 'ground', name: 'Plan cut' } (slice_series for several floors),
+   then trace_slice { name: 'Plan cut', layer: 'Walls', propose: true }.
+5. Check: view_clip { name: 'Plan cut', pane: 2 }, set_cloud_style { depth: 'xray' }, select the new lines, screenshot,
+   and compare lines and points; fix what is off.
+6. Leave it as a proposal and summarise: how many footprints and walls, their sizes, what looked doubtful.`,
+  },
+  scan_to_kerbs: {
+    description: 'Kerb lines from a road scan along an alignment: edges, breaklines, a surface that follows them, the quality report explained',
+    arguments: [{ name: 'alignment', description: 'the road alignment or centreline (default Main road)' }, { name: 'cloud', description: 'the point cloud (default the first)' }],
+    text: `Extract the kerb lines along {{alignment|Main road}} from the scan {{cloud|(the first point cloud)}}.
+1. describe_cloud; make sure the road (11) and ground (2) classes exist (classify_cloud { propose: true } otherwise).
+2. Look at a few cross-sections: slice_series { at: 'station', alignment: '{{alignment|Main road}}', from: 0, to: (its length), step: 20,
+   thickness: 0.5 } and view_clip in pane 2: the kerb is a 100–200 mm step at the road edge.
+3. extract_edges { kind: 'kerb', alignment: '{{alignment|Main road}}', layer: 'Kerbs', as_breaklines: true, propose: true }
+   (detect_edges first if you only want to look).
+4. Check: a level slab over the road, set_cloud_style { depth: 'xray' }, select the kerb lines, screenshot; step_slice
+   through the sections to see the lines sit on the kerb top and bottom.
+5. Explain the quality report: length found, gaps, RMS to the points, where it is doubtful. Leave it as a proposal.`,
+  },
+  classify_and_clean: {
+    description: 'Classify a scan (noise, ground, vegetation, buildings, road), review the counts, hide vegetation and noise',
+    arguments: [{ name: 'cloud', description: 'the point cloud (default the first)' }],
+    text: `Classify and clean the scan {{cloud|(the first point cloud)}}.
+1. describe_cloud and list_cloud_classes: what is classified already?
+2. classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'], only_unclassified: true, propose: true }.
+   Never overwrite existing or locked classes, and never delete points, without asking me (ask_user).
+3. Review the counts per class against describe_cloud (ground usually 40–80 % of a site scan); say what looks wrong.
+4. Hide vegetation and noise: set_cloud_filter { classes: { hide: [3, 4, 5, 7, 18] } }, colour by class
+   (set_cloud_style { color_by: 'classification' }), screenshot, and summarise what is shown.`,
   },
 };
 for (const [name, s] of Object.entries(SKILLS))

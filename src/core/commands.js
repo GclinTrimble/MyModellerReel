@@ -26,6 +26,7 @@ import * as PC from './pointcloud.js';
 import * as CS from './cloudstyle.js';
 import * as CL from './classify.js';
 import * as CSel from './cloudselect.js';
+import { describeCloud } from './cloudstats.js';
 import * as RS from './raster.js';
 import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
@@ -190,6 +191,26 @@ export const GUIDE = `MyModellerReel conventions:
   select_points (screen polygon through everything or front_only, within a clip, by class / intensity / elevation /
   returns, grow_from a point over its plane), then set_point_class (class, lock, delete). Name user classes 64–255 with
   define_point_class. export_point_cloud writes LAS 1.4 or PLY with the edited classes (LAZ / COPC: not yet).
+- Working in a scan (#302). Never ask for raw points: every cloud command answers with counts, statistics and ids,
+  lists capped at 50 (slice_points returns points only when you give max; keep it under 300). The workflow:
+  1. describe_cloud first (points, bounds in model and project E/N/Z, CRS, attributes, density, classes, the ground,
+     levels = height peaks for floors and roofs, walls = dominant bearings); within: a clip describes just that part.
+  2. Classes: list_cloud_classes; if the scan is unclassified, classify_cloud (#298: steps noise, ground, vegetation,
+     buildings, road; review the counts it reports). Show / hide with set_cloud_filter (vegetation 3, 4, 5; noise 7, 18),
+     colour with set_cloud_style. Fix classes by hand: select_points then set_point_class (#299).
+  3. Isolate: add_clip box from a selection or around a feature (fit_clip, align_clip to a wall or kerb), add_slice /
+     slice_series for levels and stations (above: 'ground' for a plan cut 1.2 m up).
+  4. Detect and extract (#300, #301): detect_planes / detect_corners / detect_edges (kind kerb, step, wall_top along an
+     alignment), extract_footprint (buildings, classes [6]), trace_slice (wall lines from a slice), extract_edges
+     (kerbs, edges of seal, as_breaklines for the surface). Put results on layers (Footprints, Kerbs, Walls).
+  5. Check by eye before you answer: view_clip on the slice (pane 2), set_cloud_style { depth: 'xray' } so walls and
+     kerbs glow, select the new linework, screenshot, and compare lines and points; fix or say what is off.
+  6. Propose, do not overwrite: classification and extraction you start take propose: true (or wrap them in
+     propose { action: 'start' }); the person accepts or rejects. Deleting points, overwrite: true on classes or
+     changing locked classes only after ask_user says yes.
+  Coordinates: commands take model metres (x east, y up, z south of the base point); describe_cloud and pick_cloud_point
+  also give project E/N/Z. Long conversions return a job: point_cloud_job { wait: 30 } at most, then carry on.
+  Formats in and out are open: LAS / LAZ 1.4 (ASPRS), COPC, Potree 2.0 octrees, PLY; export_point_cloud (#299) writes them.
 - Standards, always: prefer open formats and OGC standards (ogc.org/standards) for anything exchanged: GeoJSON / OGC API
   Features encodings, CityGML / CityJSON, LandXML, IFC, EPSG codes for coordinate systems (urn:ogc:def:crs:EPSG::n),
   CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.
@@ -4478,12 +4499,13 @@ function registerCore(reg, ctx) {
     return { id: e.id, name: e.name, points: keep.length, in_file: pc.count, format: pc.format, colors: pv.colors, base: pv.base };
   }, true);
 
-  def('file', 'point_cloud_job', 'Progress of a point cloud octree conversion: by job id or the cloud entity. Returns status (running, done, error, cancelled), stage (counting, sorting, building), progress %, points.', obj({ id: str('job id (from import_point_cloud) or the point cloud') }, ['id']), async (a) => {
+  def('file', 'point_cloud_job', 'Progress of a point cloud octree conversion: by job id or the cloud entity. Returns status (running, done, error, cancelled), stage (counting, sorting, building), progress %, points. wait: seconds to wait for it to finish (at most 60) before answering, so a turn never hangs on a long conversion.', obj({ id: str('job id (from import_point_cloud) or the point cloud'), wait: num('seconds to wait for the end (default 0, at most 60)') }, ['id']), async (a) => {
     if (!ctx.io?.cloudJob) throw new Error('Point cloud octrees need the desktop app.');
     const e = /^cloud-\d+$/.test(a.id) ? null : cloudOf(a.id);
     const id = e ? (e.pointcloud.classify?.status === 'running' ? e.pointcloud.classify.job : e.pointcloud.octree?.job) : a.id;
     if (!id) return { id: e.id, name: e.name, octree: e.pointcloud.octree?.status || 'none', points: e.pointcloud.octree?.points ?? e.pointcloud.of };
-    const j = await ctx.io.cloudJob(id);
+    let j = await ctx.io.cloudJob(id);
+    for (const end = Date.now() + Math.min(60, Math.max(0, a.wait || 0)) * 1000; j.status === 'running' && Date.now() < end; j = await ctx.io.cloudJob(id)) await new Promise((r) => setTimeout(r, 500));
     return { job: j.id, task: j.task, status: j.status, stage: j.stage, progress: Math.round((j.fraction || 0) * 100), points: j.points ?? j.of ?? null, done: j.done, error: j.error, ...(e ? { id: e.id, name: e.name } : {}) };
   });
 
@@ -4602,6 +4624,22 @@ function registerCore(reg, ctx) {
       classes.sort((x, y) => x.code - y.code);
     }
     return { id: e.id, classified: !!d.classification, classes, points: full ? Object.values(full).reduce((s, n) => s + n, 0) : d.count, ...(full ? { preview_points: d.count } : {}), shown: classes.reduce((s, c) => s + c.shown, 0) };
+  });
+
+  def('view', 'describe_cloud', 'Start here with a scan (#302): one compact summary of a point cloud from its preview (a uniform sample; no full read): points (whole cloud and preview), bounds in model and project (east, north, elevation) coordinates, CRS, attributes, density (points / m² of ground covered), classes with names and counts, the ground (low, median, high of the lowest points per 2 m), levels (height histogram peaks: flat ground, floors, roofs), walls (dominant wall bearings, degrees east of north), and whether an octree, classes, edits or a filter exist. within: only the points a clip volume keeps; classes: only those classes (bounds of the culvert: within a rough box, classes [1]).', obj({ id: str('the point cloud (default the first one)'), within: str('a clip volume (box, slab or plane): describe only what it keeps'), classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes' } }), (a) => {
+    const e = cloudOf(a.id);
+    const pc = e.pointcloud;
+    const c = a.within ? CV.normalize(clipOf(a.within)) : null;
+    const oc = pc.octree;
+    const full = oc?.status === 'ready' ? oc.points : pc.of || pc.count;
+    const d = cloudData(e);
+    const cls = a.classes?.length ? new Set(a.classes) : null;
+    if (cls && !d.classification) throw new Error(`${e.name} has no classes: classify it first.`);
+    const keep = c || cls ? (x, y, z, i) => (!cls || cls.has(d.classification[i])) && (!c || CV.inside(c, [x, y, z])) : null;
+    const r = describeCloud(d, { matrix: D.worldMatrix(ctx.doc, e).elements, full, base: S.geo(ctx.doc).base || [0, 0, 0], keep });
+    const A = pc.attributes || {};
+    const attributes = oc?.attributes || ['position', ...(pc.colors ? ['rgb'] : []), ...['intensity', 'classification', 'returns', 'time', 'source'].filter((k) => A[k])];
+    return { id: e.id, name: e.name, format: pc.format, ...(c ? { within: c.name } : {}), crs: S.crsLabel(S.geo(ctx.doc).crs) || null, attributes, octree: oc ? { status: oc.status, kind: oc.kind, spacing: oc.spacing } : null, classified: !!r.classes?.some((x) => x.code > 1), edits: !!(pc.edits?.length || pc.edited), filter: Object.keys(CS.filterOf(e)).length > 0, ...r };
   });
 
   def('terrain', 'classify_ground', 'A terrain surface from a point cloud: its ground class (2) when it has one (classify_cloud), else the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated. Uses the points the cloud shows (set_cloud_filter); classes and returns narrow it further.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes (e.g. [2] when the scan is already classified)' }, returns: str('', CS.RETURNS), name: common.name }, ['id']), (a) => {
@@ -5571,7 +5609,14 @@ function registerCore(reg, ctx) {
     }
     return { ...c0, planes: CV.planesOf(c).map((p) => ({ face: p.face, point: D.round3(p.point), normal: p.normal })), entities, points };
   };
-  const clipList = () => ({ combine: ctx.doc.settings.clip_combine || 'any', clips: clips().map(clipInfo) });
+  // bounded for AIs (#302): slices of a series that are off are summed up per series, at most 20 clips listed in full
+  const clipList = () => {
+    const all = clips();
+    const quiet = (c) => c.slice?.series && c.enabled === false;
+    const full = all.filter((c) => !quiet(c));
+    const series = [...new Set(all.filter((c) => c.slice?.series).map((c) => c.slice.series))].map((name) => ({ name, slices: all.filter((c) => c.slice?.series === name).length, showing: all.find((c) => c.slice?.series === name && c.enabled !== false)?.name || null }));
+    return { combine: ctx.doc.settings.clip_combine || 'any', clips: full.slice(0, 20).map(clipInfo), ...(full.length > 20 ? { more: full.slice(20, 70).map((c) => c.name) } : {}), ...(series.length ? { series } : {}) };
+  };
   def('view', 'add_clip', 'A clip volume that hides part of the model in the view (meshes, lines, survey points, drawings, point clouds): a box (keep what is inside, or outside; any orientation), a slab (keep what lies between two parallel planes: a plan or a strip of a scan) or a plane (cut away its normal side). from fits a box to the selection, to what is visible, or to the whole model, with margin. Several clips combine: planes, slabs and outside boxes always cut; inside boxes show what is in any of them (or all: set_clip combine).', obj({ kind: str('box | slab | plane', CV.KINDS), name: str('default Box 1, Slab 1, Plane 1…'), ...CLIP_FIELDS, from: str('box: fit to the selection, what is visible, or the model', ['selection', 'visible', 'model']), margin: num('m added on every side when fitting (default 0.5)') }, ['kind']), (a) => {
     const list = clips();
     if (list.filter((c) => c.kind === a.kind && c.enabled !== false).length >= CV.LIMITS[a.kind]) throw new Error(`At most ${CV.LIMITS[a.kind]} ${a.kind}s cut at once: delete_clip or set_clip enabled:false one first.`);
@@ -5768,7 +5813,7 @@ function registerCore(reg, ctx) {
     syncSection();
     const slices = [];
     for (const [i, c] of made.entries()) slices.push({ name: c.name, [key]: values[i], count: (await slicePoints(c, 0)).count });
-    return { series, slices, active: made[0].name, stats: await sliceStats(made[0]) };
+    return { series, slices: slices.slice(0, 50), ...(slices.length > 50 ? { more: slices.length - 50 } : {}), active: made[0].name, stats: await sliceStats(made[0]) };
   }, true);
   const seriesOf = (name) => {
     const all = clips().filter((c) => c.slice?.series);
@@ -5802,11 +5847,11 @@ function registerCore(reg, ctx) {
     if (a.pane !== undefined && !(Number.isInteger(a.pane) && a.pane >= 1 && a.pane <= 4)) throw new Error('pane is 1 to 4.');
     return { clip: c.name, pane: a.pane || 1, ...(await lookAtSlice(c, a.pane || 1)) };
   }, true);
-  def('view', 'slice_points', 'The scan points of a slab in its 2D frame (u right, v up, m from its middle), thinned to max, with the statistics: the input for drawing over a slice. store: keep them as a point set on the slab\'s middle plane (snap to it, draw over it) and return only the statistics.', obj({ name: str('the slab'), max: num('points returned (default 500) or kept with store (default 50000)'), store: bool('keep them as a point set'), as: str('store: the point set name (default "<slab> points")') }, ['name']), async (a) => {
+  def('view', 'slice_points', 'The scan points of a slab in its 2D frame (u right, v up, m from its middle), thinned to max, with the statistics: the input for drawing over a slice. store: keep them as a point set on the slab\'s middle plane (snap to it, draw over it) and return only the statistics.', obj({ name: str('the slab'), max: num('points returned (default 0: the statistics only; keep it under 300 in a reply) or kept with store (default 50000)'), store: bool('keep them as a point set'), as: str('store: the point set name (default "<slab> points")') }, ['name']), async (a) => {
     const c = clipOf(a.name);
     const st = await sliceStats(c);
     if (!a.store) {
-      return { clip: c.name, frame: SL.frame(c), stats: st, points: SL.project2d(c, (await slicePoints(c, a.max ?? 500)).points) };
+      return { clip: c.name, frame: SL.frame(c), stats: st, ...(a.max ? { points: SL.project2d(c, (await slicePoints(c, a.max)).points) } : {}) };
     }
     const flat = SL.flatten(c, (await slicePoints(c, a.max ?? 50000)).points);
     if (!flat.length) throw new Error(`No scan points inside ${c.name}.`);
