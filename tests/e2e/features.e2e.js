@@ -1693,6 +1693,11 @@ test('point cloud octree (#293, #294): the synthetic scan converts in the worker
   // the budget is an app setting, clamped to 0.5–20 M
   assert.equal((await ok('set_cloud_budget', { points: 100 })).points, 500000);
   await ok('set_cloud_budget', { points: 3000000 });
+  // seen from 9 km (a whole site scan zoomed out): the depth range follows the camera, nodes still draw
+  const cam = (await ok('get_scene')).camera;
+  await w.evaluate((t) => window.mmr.app.viewport.setCamera({ position: [t[0], t[1] + 9000, t[2] + 1], target: t }), cam.target);
+  await w.evaluate(() => window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()));
+  assert.ok((await ok('performance_report')).cloud_nodes >= 1, 'nodes draw from 9 km');
   const e = (await ok('get_scene')).entities.find((x) => x.name === 'Corridor scan');
   assert.ok(e, 'the cloud is in the scene');
 });

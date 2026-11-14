@@ -490,7 +490,8 @@ export class Viewport {
 
   /** Parallel projection (#68): an orthographic camera that frames what the perspective one did. */
   syncProjection() {
-    const want = (this.paneNow ? this.paneNow.cfg.projection : this.store.doc.settings.projection) === 'parallel';
+    this.fitDepth();
+    const want =(this.paneNow ? this.paneNow.cfg.projection : this.store.doc.settings.projection) === 'parallel';
     if (want === this.camera.isOrthographicCamera) return;
     const from = this.camera;
     const to = want ? this.ortho : this.persp;
@@ -500,8 +501,8 @@ export class Viewport {
     this.controls.object = to;
     if (want) {
       this.ortho.zoom = 1;
-      this.ortho.near = -5000;
-      this.ortho.far = 5000;
+      this.ortho.near = -this.persp.far;
+      this.ortho.far = this.persp.far;
       this.fitOrtho();
     } else to.updateProjectionMatrix();
     this.controls.update();
@@ -845,6 +846,17 @@ export class Viewport {
     const list = ids ? ids.map((id) => this.objs.get(id)).filter(Boolean) : this.modelRoot.children;
     for (const o of list) box.expandByObject(o);
     return box;
+  }
+  /** Depth range that reaches the scene from this pane's camera: a 5 km far plane hid whole site scans zoomed out. */
+  fitDepth() {
+    const far = Math.max(5000, 4 * this.camera.position.distanceTo(this.controls.target));
+    if (far === this.persp.far) return;
+    this.persp.far = far;
+    this.persp.near = Math.max(0.05, far / 1e5);
+    this.persp.updateProjectionMatrix();
+    this.ortho.near = -far;
+    this.ortho.far = far;
+    this.ortho.updateProjectionMatrix();
   }
   zoomExtents(ids = null, dir = null) {
     const box = this.modelBox(ids);
