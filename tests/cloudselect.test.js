@@ -98,3 +98,17 @@ test('an edit: the delta, the counts, locks and deletes', async () => {
   const d = S.editOf(sel, { deleted: true });
   assert.ok([...d.delta.get('r0').cls].every((c) => c === 7) && [...d.delta.get('r0').flags].every((f) => f === (S.LOCK | S.DELETED)));
 });
+
+test('class deltas are saved with the document, and two big deltas of one length never share an asset', async () => {
+  const Assets = await import('../src/core/assets.js');
+  const a = new Uint8Array(400000).fill(2);
+  const b = a.slice();
+  b[123457] = 6; // a difference the sampled hash would not see
+  const ia = Assets.put(S.encodeDelta({ r: { dense: a } }));
+  const ib = Assets.put(S.encodeDelta({ r: { dense: b } }));
+  assert.notEqual(ia, ib);
+  const { newDoc } = await import('../src/core/document.js');
+  const doc = { ...newDoc(), entities: [{ pointcloud: { asset: null, edits: [ia, ib] } }] };
+  assert.ok(Assets.usedIds(doc).has(ia) && Assets.usedIds(doc).has(ib));
+  assert.ok(Assets.pack(doc)[ib], 'packed on save');
+});
