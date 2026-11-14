@@ -121,7 +121,7 @@ void main() {
     vAlpha = f;
   }
   vColor = pow(max(c, 0.0), vec3(2.2)); // ramps, classes and rgb are sRGB; the output step encodes again
-  if (selected > 0.5) vColor = mix(vColor, vec3(1.0, 0.55, 0.0), 0.85);
+  if (selected > 0.5) vColor = vec3(0.0, 0.85, 1.0); // cyan: apart from every class colour
   if (uDepth == 1) {
     // x-ray: each point adds (night) or takes away (light sky) a little light; dense walls and kerbs build up
     float l = dot(c, vec3(0.299, 0.587, 0.114));
@@ -136,6 +136,7 @@ void main() {
   else if (uSizeMode == 2) px = max(uSize * uPixelRatio, uNodeSpacing * 1.6 * scale);
   px = clamp(px, uMinPx * uPixelRatio, uMaxPx * uPixelRatio);
   if (vGhost > 0.5) px = max(uPixelRatio, px * 0.6);
+  if (selected > 0.5) px *= 1.35;
   gl_PointSize = px;
 }`;
 

@@ -942,4 +942,4 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .point-select-bar { position: absolute; top: calc(var(--my-space-2) + 52px); left: 50%; transform: translateX(-50%); z-index: 4; display: flex; gap: var(--my-space-1); align-items: center; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); }
 .point-select-bar [aria-pressed='true'] { background: var(--my-surface-2); outline: 2px solid var(--my-warning); }
 .point-select-outline { position: absolute; z-index: 3; pointer-events: none; overflow: visible; }
-.point-select-outline polyline { fill: none; stroke: var(--my-warning); stroke-width: 1.5; stroke-dasharray: 5 3; }
+.point-select-outline polyline { fill: none; stroke: var(--my-info); stroke-width: 2.5; stroke-dasharray: 7 4; }
