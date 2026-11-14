@@ -206,6 +206,7 @@ export function lazChunks(h, readRange, fileSize) {
   const first = new DataView(readRange(h.offset, 8).slice().buffer);
   let tableAt = Number(first.getBigInt64(0, true));
   if (tableAt === -1) tableAt = Number(new DataView(readRange(fileSize - 8, 8).slice().buffer).getBigInt64(0, true));
+  if (!(tableAt > h.offset && tableAt + 8 <= fileSize)) throw new Error('This LAZ file is incomplete: its chunk table is missing (a copy or download cut short?).');
   const head = new DataView(readRange(tableAt, 8).slice().buffer);
   const n = head.getUint32(4, true);
   const variable = chunkSize === 0xffffffff;
