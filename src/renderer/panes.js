@@ -97,6 +97,7 @@ class Pane {
     if (this.i === 1) this.mgr.updateGlyph();
     if (is2D(this.cfg)) return this.mgr.draw2d(this);
     vp.syncProjection();
+    vp.clipFor(this.i + 1); // clip volumes may cut only some panes (#290)
     const keep = { env: scene.environment, bg: scene.background };
     scene.environment = null; // a PMREM map lives in the main renderer's context
     if (keep.bg?.isRenderTargetTexture) scene.background = vp.skyBackground;

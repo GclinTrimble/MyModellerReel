@@ -27,6 +27,8 @@ import * as Assets from '../core/assets.js';
 import { referencePaths } from '../core/usd.js';
 import { newDoc as freshDoc } from '../core/document.js';
 import { PickFirst } from './pickfirst.js';
+import { ClipGizmo } from './clipgizmo.js';
+import { migrate as migrateClips } from '../core/clip.js';
 import { GroundMap, MapLayers, pickLocation } from './maps.js';
 
 const native = window.native;
@@ -57,6 +59,7 @@ try {
 } catch {
   /* a broken autosave is not worth a crash */
 }
+if (restored?.doc?.settings) migrateClips(restored.doc); // section planes → clip volumes (#290)
 const store = (app.store = new Store(restored?.doc?.format === 'mymodellerreel' ? restored.doc : newDoc()));
 app.file = restored?.file || null;
 
@@ -349,6 +352,8 @@ store.on((doc) => {
   app.viewport.showProposal(store.proposalDiff());
   app.panes?.sync(); // undo, open or a command changed the layout (#160)
   app.tools?.tool?.syncGrips?.();
+  app.clipGizmo?.sync(); // clip volumes and their handles (#291)
+  app.ui.refreshClips?.();
   app.tools?.tool?.afterRebuild?.(); // a preview in progress (placing a component) holds the new objects
   app.ui.refresh();
   app.timeline.render();
@@ -442,6 +447,8 @@ window.addEventListener('keydown', (ev) => {
     return app.reg.run(mine, {}).catch((e) => app.ui.toast(e.message, 'danger'));
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'm' && !ev.repeat) return ev.preventDefault(), app.ai.listen(); // hold to talk (#98)
+  if (ev.shiftKey && !ctrl && k.toLowerCase() === 'x') return ev.preventDefault(), app.tools.set('clipbox'); // Clip Box (#291)
+  if (!/^[0-9.,;\-]$/.test(k) && app.clipGizmo?.key(ev)) return ev.preventDefault(); // the selected clip's keys (#291)
   if (app.timeline.active && (app.timeline.selKeys.size || app.timeline.clipboard) && app.timeline.handleKey(ev)) return; // keyframes first
   const A_ = app.ui.actions;
   const combos = {
@@ -455,7 +462,7 @@ window.addEventListener('keydown', (ev) => {
   if (app.pickFirst.typeKey(ev)) return ev.preventDefault(); // picking first (#234): numbers go to the cursor box
   // Typing numbers while a tool works goes to the Measurements box, like in the classic modellers.
   const vcbChar = /^[0-9.,;\-*/'"]$/.test(k) || (vcb.value && /^[a-z]$/i.test(k)) || (k === 'x' && app.tools.id === 'move');
-  if (!ctrl && app.tools.id !== 'select' && vcbChar && !app.tools.key(ev)) {
+  if (!ctrl && (app.tools.id !== 'select' || app.clipGizmo?.clip()) && vcbChar && !app.tools.key(ev)) {
     ev.preventDefault();
     vcb.value += k;
     vcb.focus();
@@ -499,6 +506,8 @@ app.learning = new Learning(app);
 }
 app.ui.init();
 app.tools = new Tools(app);
+app.clipGizmo = new ClipGizmo(app);
+app.selectClip = (name) => app.clipGizmo.select(name);
 app.panes = new Panes(app);
 app.panes.sync();
 app.viewport.rebuild();

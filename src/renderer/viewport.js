@@ -10,6 +10,8 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import * as SEC from '../core/section.js';
+import * as CV from '../core/clip.js';
+import * as CS from './clipshader.js';
 import { Presentation, applyMaps, styleMaterial, sketchEdges, lightObject, seamless, defaultSky } from './presentation.js';
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
@@ -451,6 +453,9 @@ export class Viewport {
     if (s.two_point && this.camera.isPerspectiveCamera) this.levelCamera();
     const show = !this.rendering;
     this.modelRoot.traverse((o) => o.userData.lightMarker && (o.visible = show));
+    this.clipFor(1);
+    const outline = this.scene.getObjectByName('Clip volumes'); // the clips' edges and handles: not in renders
+    if (outline) outline.visible = show;
     this.look.draw(this.store.doc);
   }
 
@@ -498,7 +503,7 @@ export class Viewport {
   rebuild() {
     const doc = this.store.doc;
     const s = doc.settings;
-    this.clipping = s.section ? [new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...s.section.normal).negate(), new THREE.Vector3(...s.section.point))] : [];
+    this.clipping = []; // clip volumes are drawn by the shader (clipshader.js, #290); renderer.clippingPlanes is SectionTool's preview
     for (const o of this.modelRoot.children) disposeTree(o, false); // geometry is cached, see below
     this.modelRoot.clear();
     this.geoCache ||= { map: new WeakMap(), live: new Set() };
@@ -510,7 +515,8 @@ export class Viewport {
     this.geoCache.live = this.geoCache.used;
     if (root.children.length) this.modelRoot.add(...root.children);
     this.objs = objs;
-    if (s.section && s.section_fill !== false) this.modelRoot.add(sectionCaps(doc, s.section));
+    if (s.section_fill !== false) for (const c of CV.slots(doc).box.concat(CV.slots(doc).slab, CV.slots(doc).plane)) this.modelRoot.add(clipCaps(doc, c));
+    CS.patchTree(this.modelRoot, doc);
     this.grid.visible = this.axes.visible = s.grid;
     // the drawing grid follows the drawing axes (#32): turned, moved, cells of the grid step
     const ax = s.axes;
@@ -606,34 +612,40 @@ export class Viewport {
     }
     const cam = pose?.camera;
     if (moveCamera && cam) this.setCamera({ position: cam.position, target: cam.target, fov: cam.fov });
-    this.animateSection(pose?.section);
+    this.dirty = true; // the clips follow the pose in clipFor()
     this.updateSun(pose?.sun || doc.settings.sun);
     this.dirty = true;
   }
 
-  /** A section plane on the timeline (#81): move the clipping plane without rebuilding (caps wait for the stop). */
-  animateSection(sec) {
-    const fixed = this.store.doc.settings.section;
-    const want = sec?.point ? { normal: sec.normal || fixed?.normal || [0, 1, 0], point: sec.point } : fixed;
-    if (!want && !this.clipping.length) return;
-    if (!want) {
-      this.clipping.length = 0;
-      this.modelRoot.traverse((o) => o.material && (o.material.needsUpdate = true));
-      return;
+  /**
+   * The clip volumes for one pane (1–4), before it is drawn (#290): the shader's uniforms, and the section fill of
+   * each clip shown only where that clip cuts and while the timeline does not move it (the fill is built at rest).
+   */
+  clipFor(pane = 1) {
+    const doc = this.store.doc;
+    const sl = CS.updateClipUniforms(doc, pane, this.posed());
+    const at = new Map(CV.clipsOf(doc).map((c) => [c.name, c]));
+    for (const o of this.modelRoot.children) {
+      if (!o.userData.caps) continue;
+      const c = at.get(o.userData.clipName);
+      const posed = sl[c?.kind]?.find((x) => x.name === c.name);
+      o.visible = !!posed && CV.inPane(c, pane) && JSON.stringify(CV.normalize(c)) === JSON.stringify(posed);
     }
-    const n = new THREE.Vector3(...want.normal).negate();
-    const p = new THREE.Vector3(...want.point);
-    if (!this.clipping.length) {
-      this.clipping.push(new THREE.Plane());
-      this.modelRoot.traverse((o) => {
-        if (!o.material) return;
-        o.material.clippingPlanes = this.clipping;
-        o.material.needsUpdate = true;
-      });
-    }
-    this.clipping[0].setFromNormalAndCoplanarPoint(n, p);
-    // the caps show the plane where it was built: hide them while it moves
-    for (const o of this.modelRoot.children) if (o.userData.caps) o.visible = !sec?.point;
+    return sl;
+  }
+  /** The animation pose with a clip handle's drag on top (clipgizmo.js previews through clipPreview). */
+  posed() {
+    return this.clipPreview ? { ...this.pose, ...this.clipPreview } : this.pose;
+  }
+  /** The pane being drawn or worked in, 1–4. */
+  paneNumber() {
+    return this.paneNow ? this.paneNow.i + 1 : 1;
+  }
+  /** Is this world point shown in the current pane for this entity (not cut away by a clip volume)? */
+  unclipped(p, entityId) {
+    const doc = this.store.doc;
+    if (!CV.clipsOf(doc).length) return true;
+    return CV.visible(doc, p.toArray ? p.toArray() : p, { pane: this.paneNumber(), entity: entityId && D.getEntity(doc, entityId), clips: CS.posedClips(doc, this.posed()) });
   }
 
   /** The on-canvas handles (#67) on the one selected entity, when the gizmo is on. */
@@ -835,7 +847,7 @@ export class Viewport {
     this.raycaster.setFromCamera(this.ndc(ev), this.camera);
     const meshes = [];
     this.modelRoot.traverseVisible((o) => o.isMesh && !o.userData.underlay && !o.userData.isCurve && !o.userData.cap && o.material.visible !== false && meshes.push(o));
-    const hits = this.raycaster.intersectObjects(meshes, false).filter((h) => !this.clipping?.some((p) => p.distanceToPoint(h.point) < 0));
+    const hits = this.raycaster.intersectObjects(meshes, false).filter((h) => this.unclipped(h.point, h.object.userData.entityId)); // what a clip volume cuts away is not picked
     const h = hits[0];
     if (!h) return null;
     const normal = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
@@ -847,7 +859,7 @@ export class Viewport {
     const cloud = this.modelRoot.children.find((o) => o.isPoints && !o.userData.pointcloud);
     if (!cloud) return null;
     this.raycaster.params.Points.threshold = 0.01 * this.camera.position.distanceTo(this.controls.target);
-    const h = this.raycaster.intersectObject(cloud, false)[0];
+    const h = this.raycaster.intersectObject(cloud, false).find((x) => this.unclipped(x.point, cloud.userData.pointIds[x.index]));
     return h ? { entityId: cloud.userData.pointIds[h.index], faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: cloud, survey: true } : null;
   }
 
@@ -878,7 +890,7 @@ export class Viewport {
     this.modelRoot.traverseVisible((o) => o.userData.isCurve && lines.push(o));
     if (!lines.length) return null;
     this.raycaster.params.Line.threshold = 0.012 * this.camera.position.distanceTo(this.controls.target);
-    const h = this.raycaster.intersectObjects(lines, false)[0];
+    const h = this.raycaster.intersectObjects(lines, false).find((x) => this.unclipped(x.point, x.object.userData.entityId));
     return h ? { entityId: h.object.userData.entityId, faceIndex: -1, point: h.point.clone(), normal: new THREE.Vector3(0, 1, 0), object: h.object, curve: true } : null;
   }
 
@@ -1071,16 +1083,24 @@ export class Viewport {
   }
 }
 
-/** Filled caps where the section plane cuts solids (#54), in a darker tone of each solid's colour, outlined. */
-function sectionCaps(doc, plane) {
+/** The section fill of a clip volume (#290): every face that cuts a solid (clip.js capLoops), named for clipFor(). */
+function clipCaps(doc, clip) {
   const grp = new THREE.Group();
-  grp.userData.caps = true;
-  let cut;
+  Object.assign(grp.userData, { caps: true, clipName: clip.name });
+  let faces = [];
   try {
-    cut = SEC.sectionCut(doc, plane);
+    faces = CV.capLoops(doc, clip);
   } catch {
     return grp;
   }
+  for (const f of faces) if (f.cuts.length) grp.add(sectionCaps(f, clip.name));
+  return grp;
+}
+
+/** Filled caps where a plane cuts solids (#54), in a darker tone of each solid's colour, outlined. */
+function sectionCaps(cut, clipName) {
+  const grp = new THREE.Group();
+  grp.userData.clipName = clipName;
   const { n, u, v } = cut.frame;
   const at = (x, y) => new THREE.Vector3(...G.add(G.add(cut.point, G.scl(u, x)), G.scl(v, y))).addScaledVector(new THREE.Vector3(...n), -0.0005);
   for (const c of cut.cuts) {
@@ -1095,6 +1115,7 @@ function sectionCaps(doc, plane) {
     const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(c.loops.flatMap((l) => l.flatMap((p, i) => [new THREE.Vector3(...p), new THREE.Vector3(...l[(i + 1) % l.length])]))), new THREE.LineBasicMaterial({ color: 0x111111 }));
     m.raycast = lines.raycast = () => {};
     m.userData.cap = lines.userData.cap = true;
+    m.userData.clipName = lines.userData.clipName = clipName; // not cut by its own clip (clipshader patchTree)
     grp.add(m, lines);
   }
   return grp;

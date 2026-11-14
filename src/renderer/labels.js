@@ -39,7 +39,8 @@ export function drawLabels(app) {
   // a label follows the timeline, or a survey replay would name points that have not been measured yet (#283)
   const shown = (e) => ((vp.pose?.[e.id]?.visible ?? e.visible) !== false);
   let n = 0;
-  const label = (p, text, color) => {
+  const label = (p, text, color, id) => {
+    if (!vp.unclipped(p, id)) return; // cut away by a clip volume (#290)
     v.set(p[0], p[1], p[2]).project(vp.camera);
     if (v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) return;
     const x = ((v.x + 1) / 2) * r.width + 6;
@@ -65,7 +66,7 @@ export function drawLabels(app) {
       if (e.type !== 'point' || !shown(e) || tagOn.get(e.tag) === false) continue;
       const pt = e.point;
       const text = mode === 'code' ? pt.code : mode === 'attrs' ? [pt.code, ...Object.entries(pt.attrs || {}).map(([k, x]) => `${k}: ${x === true ? 'yes' : x === false ? 'no' : String(x).split(/[\\/]/).pop().slice(0, 40)}`)].filter(Boolean).join('\n') : mode === 'name_z' ? `${e.name}  ${pt.z.toFixed(3)}` : mode === 'all' ? `${e.name} ${pt.code} ${pt.z.toFixed(2)}` : e.name;
-      if (text) label(e.position, text, '#1e3a4c');
+      if (text) label(e.position, text, '#1e3a4c', e.id);
     }
   // major contours: their elevation at the middle of the line (#121)
   const groups = new Map(doc.entities.filter((e) => e.contours).map((g) => [g.id, g]));
@@ -73,12 +74,12 @@ export function drawLabels(app) {
     if (n > MAX || !e.curve || !e.meta?.major || !groups.has(e.parent) || !e.visible || tagOn.get(e.tag) === false || !groups.get(e.parent).visible) continue;
     const pts = e.curve.points;
     const p = pts[Math.floor(pts.length / 2)];
-    label([p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]], e.meta.elevation.toFixed(1), '#6b4e2e');
+    label([p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]], e.meta.elevation.toFixed(1), '#6b4e2e', e.id);
   }
   // dimension and label texts (#50, #51): always drawn, on a white plate
   for (const e of doc.entities) {
     const a = e.annotation;
-    if (!a?.text_now || !a.at || !e.visible || tagOn.get(e.tag) === false) continue;
+    if (!a?.text_now || !a.at || !e.visible || tagOn.get(e.tag) === false || !vp.unclipped(a.at, e.id)) continue;
     v.set(...a.at).project(vp.camera);
     if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
     const x = ((v.x + 1) / 2) * r.width;
@@ -111,7 +112,7 @@ export function drawLabels(app) {
       if (i) s += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
       if (s + 1e-6 >= next) {
         const st = start + next;
-        label(pts[i].toArray(), `${Math.floor(st / 1000)}+${String(Math.round(st % 1000)).padStart(3, '0')}`, '#c8553d');
+        label(pts[i].toArray(), `${Math.floor(st / 1000)}+${String(Math.round(st % 1000)).padStart(3, '0')}`, '#c8553d', e.id);
         next += step;
       }
     }

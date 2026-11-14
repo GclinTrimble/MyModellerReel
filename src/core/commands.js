@@ -48,6 +48,7 @@ import * as PJ from './project.js';
 import * as F from './formats.js';
 import * as Units from './units.js';
 import * as Clip from './clipboard.js';
+import * as CV from './clip.js';
 import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
@@ -150,6 +151,10 @@ export const GUIDE = `MyModellerReel conventions:
   (least squares, residuals) put them in place in local project coordinates. extract_linework turns PDF vectors into
   curves on layers (filter by PDF layer, colour, width, window); list_drawing_text reads spot heights. Drafting on
   curves: offset_curve, trim, extend, fillet, chamfer, join_curves, connect_curves (two lines end to end, gap bridged), break_curve (split a line at a point), simplify_curve, divide_curve.
+- Clip volumes: add_clip (a box around the selection with from: 'selection', a slab for a plan or a strip of a scan,
+  a plane), set_clip (move, size, rotate, keep inside / outside, push one face, panes, ids), align_clip (to two
+  points of a wall or kerb, a face, the view, level), fit_clip, list_clips, delete_clip, clear_clips. Inside boxes
+  combine by set_style clip_combine (any / all); planes and slabs always cut. Section planes are clips of kind plane.
 - the person: ask_user (a question with choice buttons, waits), show_form (a command's form filled in for them to adjust and Run), pick_in_view (they click a point or an object), show_panel; rate_ai_turn / list_ai_feedback (their verdicts on your answers, kept as training data).
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
 - Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
@@ -3635,7 +3640,8 @@ function registerCore(reg, ctx) {
   });
 
   const sectionPlane = (a) => {
-    const s = a.normal ? { normal: a.normal, point: a.point || [0, 0, 0] } : ctx.doc.settings.section;
+    const first = CV.clipsOf(ctx.doc).find((c) => c.kind === 'plane' && c.enabled !== false);
+    const s = a.normal ? { normal: a.normal, point: a.point || [0, 0, 0] } : ctx.doc.settings.section || (first && { normal: first.normal, point: first.point });
     if (!s) throw new Error('No section plane: give normal and point, or turn on a section first (section).');
     return s;
   };
@@ -3875,7 +3881,7 @@ function registerCore(reg, ctx) {
     return { clip: clip.name, on: ts, keys: n, ends: start + (groups.length - 1) * (a.stagger || 0) + clip.duration / (a.speed || 1) };
   }, true);
 
-  def('animate', 'list_clips', 'Saved animation clips.', obj({}), () => (ctx.doc.animation.clips || []).map((c) => ({ name: c.name, duration: c.duration, roles: c.roles, properties: [...new Set(c.tracks.map((t) => t.property))] })));
+  def('animate', 'list_animation_clips', 'Saved animation clips (save_clip, apply_clip).', obj({}), () => (ctx.doc.animation.clips || []).map((c) => ({ name: c.name, duration: c.duration, roles: c.roles, properties: [...new Set(c.tracks.map((t) => t.property))] })));
 
   def('animate', 'simulate_physics', 'Rigid-body physics baked to keyframes: the shapes fall, bounce, tumble and settle on the ground and on the colliders (default: every other visible shape). push [x, y, z] m/s throws them (a collapse). Keys from start.', obj({ ids, colliders: { type: 'array', items: { type: 'string' }, description: 'shapes that do not move (default: all other visible shapes)' }, start: T('default 0'), duration: num('s (default 4)'), gravity: num('m/s² (default 9.81)'), bounce: num('0–1 (default 0.15)'), friction: num('0–1 (default 0.6)'), push: v3('starting speed, m/s') }), (a) => {
     const doc = ctx.doc;
@@ -4983,37 +4989,175 @@ function registerCore(reg, ctx) {
     return ctx.view.detachPane(a.pane, a.detached !== false);
   });
   def('view', 'get_layout', 'The view panes: how many, how they sit, and for each its view, projection, style, camera and whether it is in its own window.', obj({}), () => ctx.view?.layoutInfo?.() ?? LY.normalize(ctx.doc.settings.layout));
-  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels (attrs: the code and its attributes, one per line)', ['name', 'name_z', 'code', 'attrs', 'all', 'none']), symbols: str('feature code symbols: points only, 2d (plan symbols), 3d (models) or both', ['points', '2d', '3d', 'both']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane cuts solids (default on)'), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
+  def('view', 'set_style', 'Display style: edges, x-ray, wireframe, shadows, grid, sun position, survey point labels.', obj({ point_labels: str('survey point labels (attrs: the code and its attributes, one per line)', ['name', 'name_z', 'code', 'attrs', 'all', 'none']), symbols: str('feature code symbols: points only, 2d (plan symbols), 3d (models) or both', ['points', '2d', '3d', 'both']), edges: bool(''), xray: bool(''), wireframe: bool(''), render_style: str('shaded (default) | hidden_line (white, black edges) | monochrome | sketchy (hand-drawn edges)', LK.STYLES), color_by: str('material (default) | layer: every shape in its layer colour', ['material', 'layer']), snap_underlays: bool('snap to the line ends and middles of PDF drawings without extracting them'), section_fill: bool('fill where the section plane and clip volumes cut solids (default on)'), clip_combine: str('clip boxes that keep their inside: show what is in any of them (default) or all (their overlap)', ['any', 'all']), show_clipped: str('what clip volumes cut away: hidden (default) or ghost (faint, not picked)', ['hidden', 'ghost']), shadows: bool(''), grid: bool(''), sun: obj({ azimuth: num('degrees from north (−z), clockwise'), elevation: num('degrees above horizon') }) }), (a) => {
     const s = ctx.doc.settings;
-    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by', 'snap_underlays']) if (a[k] !== undefined) s[k] = a[k];
+    for (const k of ['edges', 'xray', 'wireframe', 'shadows', 'grid', 'point_labels', 'section_fill', 'render_style', 'color_by', 'snap_underlays', 'clip_combine', 'show_clipped']) if (a[k] !== undefined) s[k] = a[k];
     if (a.sun) s.sun = { ...s.sun, ...a.sun };
     if (a.symbols !== undefined && a.symbols !== (s.symbols || 'both')) (s.symbols = a.symbols), processCodes();
     return s;
   }, true);
-  // section planes (#187): several kept by name, one cutting at a time (settings.section is the active one)
-  const planes = () => (ctx.doc.settings.section_planes ||= []);
-  const activate = (name) => {
+  // clip volumes (#290, #291): planes, slabs and boxes on doc.clips (the maths in clip.js). Section planes (#187) are
+  // its planes: the section commands keep working with one plane cutting at a time, settings.section mirrors that one.
+  const clips = () => CV.migrate(ctx.doc);
+  const clipOf = (name) => {
+    const c = clips().find((x) => x.name === name);
+    if (!c) throw new Error(`No clip "${name}". Clips: ${clips().map((x) => x.name).join(', ') || 'none (add_clip adds one)'}.`);
+    return c;
+  };
+  const syncSection = () => {
     const s = ctx.doc.settings;
-    const p = name && planes().find((x) => x.name === name);
-    s.section_active = p ? p.name : null;
-    s.section = p ? { normal: p.normal, point: p.point } : null;
+    const p = clips().find((c) => c.kind === 'plane' && c.name === s.section_active);
+    if (!p) s.section_active = null;
+    s.section = p && p.enabled !== false ? { normal: p.normal, point: p.point } : null;
+  };
+  const entBox = (e) => {
+    if (!e.pointcloud) return D.worldBox(ctx.doc, e);
+    const p = pcPositions(e);
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < p.length; i++) (min[i % 3] = Math.min(min[i % 3], p[i])), (max[i % 3] = Math.max(max[i % 3], p[i]));
+    const m = D.worldMatrix(ctx.doc, e);
+    return D.unionBox([min, max].map((c) => new Vector3(...c).applyMatrix4(m).toArray()).map((c) => ({ min: c, max: c })));
+  };
+  const shown = (e) => e.visible !== false && ctx.doc.tags.find((t) => t.name === e.tag)?.visible !== false && (e.mesh || e.curve || e.type === 'point' || e.line || e.underlay || e.pointcloud);
+  const centre = (b) => b.min.map((v, k) => (v + b.max[k]) / 2);
+  /** The bounds a clip fits: the selection, what is visible through the clips, the whole model, or ids. */
+  const fitBounds = (from, refs) => {
+    const doc = ctx.doc;
+    let ents;
+    if (Array.isArray(refs) && refs.length) ents = refs.flatMap((r) => D.resolve(doc, r));
+    else if (from === 'model' || from === 'visible') ents = doc.entities.filter((e) => !e.parent && shown(e));
+    else ents = targets(ctx, {});
+    let boxes = ents.map(entBox);
+    if (from === 'visible') boxes = boxes.filter((b) => CV.visible(doc, centre(b)));
+    if (!boxes.length) throw new Error('Nothing to fit the clip to.');
+    return D.unionBox(boxes);
+  };
+  const CLIP_FIELDS = {
+    center: v3('box: its centre, world [x, y, z]'),
+    size: v3('box: [x, y, z] m along its own axes'),
+    rotation: v3('box: Euler degrees [x, y, z], any orientation'),
+    keep: str('box: show what is inside (default) or outside it', ['inside', 'outside']),
+    point: v3('plane / slab: a point on it (a slab: its middle)'),
+    normal: v3('plane: the side cut away; slab: square to its faces'),
+    thickness: num('slab: m between its two faces (default 1)'),
+    ids: { type: 'array', items: { type: 'string' }, description: 'cut only these entities (ids or names; default everything)' },
+    layers: { type: 'array', items: { type: 'string' }, description: 'cut only the entities on these layers' },
+    panes: { type: 'array', items: { type: 'number' }, description: 'cut only in these view panes, 1–4 (default every pane)' },
+  };
+  const clipInfo = (c0) => {
+    const c = CV.normalize(c0);
+    const doc = ctx.doc;
+    const t = CV.tester(c);
+    const keep = (p) => (c.kind === 'box' ? t(...p) === (c.keep !== 'outside') : t(...p));
+    let entities = 0;
+    let points = 0;
+    for (const e of doc.entities) {
+      if (e.parent || !shown(e) || !CV.inScope(doc, c, e)) continue;
+      if (e.pointcloud) {
+        const p = pcPositions(e);
+        const m = D.worldMatrix(doc, e);
+        const v = new Vector3();
+        for (let i = 0; i < p.length; i += 3) if (keep(v.set(p[i], p[i + 1], p[i + 2]).applyMatrix4(m).toArray())) points++;
+      } else if (keep(centre(D.worldBox(doc, e)))) e.type === 'point' ? points++ : entities++;
+    }
+    return { ...c0, planes: CV.planesOf(c).map((p) => ({ face: p.face, point: D.round3(p.point), normal: p.normal })), entities, points };
+  };
+  const clipList = () => ({ combine: ctx.doc.settings.clip_combine || 'any', clips: clips().map(clipInfo) });
+  def('view', 'add_clip', 'A clip volume that hides part of the model in the view (meshes, lines, survey points, drawings, point clouds): a box (keep what is inside, or outside; any orientation), a slab (keep what lies between two parallel planes: a plan or a strip of a scan) or a plane (cut away its normal side). from fits a box to the selection, to what is visible, or to the whole model, with margin. Several clips combine: planes, slabs and outside boxes always cut; inside boxes show what is in any of them (or all: set_clip combine).', obj({ kind: str('box | slab | plane', CV.KINDS), name: str('default Box 1, Slab 1, Plane 1…'), ...CLIP_FIELDS, from: str('box: fit to the selection, what is visible, or the model', ['selection', 'visible', 'model']), margin: num('m added on every side when fitting (default 0.5)') }, ['kind']), (a) => {
+    const list = clips();
+    if (list.filter((c) => c.kind === a.kind && c.enabled !== false).length >= CV.LIMITS[a.kind]) throw new Error(`At most ${CV.LIMITS[a.kind]} ${a.kind}s cut at once: delete_clip or set_clip enabled:false one first.`);
+    const base = a.kind[0].toUpperCase() + a.kind.slice(1);
+    const fit = a.from ? CV.fitBox(fitBounds(a.from), a.margin ?? 0.5) : null;
+    if (fit && a.kind !== 'box') (a.point ||= fit.center), (a.thickness ??= fit.size[1]);
+    const c = CV.normalize({ ...a, ...(a.kind === 'box' ? fit : {}), name: a.name || D.uniqueName({ entities: list }, `${base} 1`) });
+    if (list.some((x) => x.name === c.name)) throw new Error(`A clip is already called "${c.name}".`);
+    list.push(c);
+    return { clip: c, ...clipList() };
+  }, true);
+  def('view', 'set_clip', 'Change a clip volume: any field (centre, size, rotation, keep, point, normal, thickness, ids, layers, panes), turn it on / off, flip it (a plane or slab turns over, a box keeps the other side), offset a plane or slab along its normal, grow a box by m on every side, push / pull one box face (face +x … −z by push m, symmetric moves the opposite one too), rename it. combine: how inside boxes combine, any (default: inside at least one) or all (their overlap).', obj({ name: str('the clip'), ...CLIP_FIELDS, enabled: bool('on / off'), flip: bool('the other side'), offset: num('plane / slab: m along the normal'), grow: num('box: m on every side (negative shrinks)'), face: str('box: the face to push / pull', ['+x', '-x', '+y', '-y', '+z', '-z']), push: num('m along that face\'s outward normal'), symmetric: bool('push: the opposite face moves too'), rename: str('new name'), combine: str('inside boxes: any (union) or all (overlap)', ['any', 'all']) }, ['name']), (a) => {
+    const c = clipOf(a.name);
+    const s = ctx.doc.settings;
+    for (const k of Object.keys(CLIP_FIELDS)) if (a[k] !== undefined) c[k] = a[k];
+    if (a.enabled !== undefined) c.enabled = a.enabled;
+    if (a.flip) c.kind === 'box' ? (c.keep = c.keep === 'outside' ? 'inside' : 'outside') : (c.normal = c.normal.map((x) => -x || 0));
+    if (a.offset) c.point = c.point.map((x, k) => Math.round((x + CV.normalize(c).normal[k] * a.offset) * 1e4) / 1e4);
+    if (a.grow) c.size = CV.normalize(c).size.map((x) => Math.max(1e-3, Math.round((x + 2 * a.grow) * 1e4) / 1e4));
+    if (a.face && a.push !== undefined) Object.assign(c, CV.pushFace(c, a.face, a.push, { symmetric: a.symmetric }));
+    if (a.rename) {
+      if (clips().some((x) => x !== c && x.name === a.rename)) throw new Error(`A clip is already called "${a.rename}".`);
+      if (s.section_active === c.name) s.section_active = a.rename;
+      c.name = a.rename;
+    }
+    if (a.combine) s.clip_combine = a.combine;
+    Object.assign(c, CV.normalize(c));
+    syncSection();
+    return { clip: c, ...clipList() };
+  }, true);
+  def('view', 'list_clips', 'The clip volumes: each one\'s fields, its bounding planes, and how many entities and points it keeps visible on its own; and how inside boxes combine.', obj({}), () => clipList());
+  def('view', 'delete_clip', 'Remove a clip volume (a section plane too).', obj({ name: str('the clip') }, ['name']), (a) => {
+    const c = clipOf(a.name);
+    ctx.doc.clips = clips().filter((x) => x !== c);
+    syncSection();
+    return clipList();
+  }, true);
+  def('view', 'clear_clips', 'Remove every clip volume and section plane: the whole model shows again.', obj({}), () => {
+    ctx.doc.clips = [];
+    syncSection();
+    return clipList();
+  }, true);
+  def('view', 'align_clip', 'Turn a clip volume: to points (two points, a wall line or a kerb: the box X axis follows them, Y stays up; a plane or slab turns square to the line), face (a mesh face: id and face index, or a normal; the nearest box axis lines up with it), view (faces the camera of a pane) or level (tilt removed, heading kept).', obj({ name: str('the clip'), to: str('what to align to', ['points', 'face', 'view', 'level']), points: { type: 'array', description: 'two points: [x, y, z] or survey point names' }, id: str('face: the entity'), face: num('face: its face index'), normal: v3('face: or a normal'), pane: PANE }, ['name', 'to']), (a) => {
+    const c = clipOf(a.name);
+    const doc = ctx.doc;
+    const opts = {};
+    if (a.points) opts.points = a.points.map((p) => (Array.isArray(p) ? p : D.worldMatrix(doc, pointsByRefs([p])[0]).elements.slice(12, 15)));
+    if (a.to === 'face') {
+      if (a.normal) opts.normal = a.normal;
+      else if (a.id !== undefined && a.face !== undefined) {
+        const [e] = D.resolve(doc, a.id);
+        if (!e.mesh) throw new Error(`${e.name} has no faces.`);
+        opts.normal = G.faceNormal(D.worldMesh(doc, e), pickFace(doc, e, a.face));
+      }
+    }
+    if (a.to === 'view') {
+      const cam = inPane(a.pane, () => ctx.view?.getCamera()) ?? doc.camera;
+      opts.dir = G.sub(cam.target, cam.position);
+    }
+    Object.assign(c, CV.normalize({ ...c, ...CV.align(c, a.to, opts) }));
+    syncSection();
+    return { clip: c, ...clipList() };
+  }, true);
+  def('view', 'fit_clip', 'Fit a clip volume to entities (ids), to what is visible, or to the whole model, with margin m on every side: a box takes their bounds (in world axes); a slab is centred on them.', obj({ name: str('the clip'), ids: { type: 'array', items: { type: 'string' }, description: 'entities (default: the selection)' }, from: str('instead of ids', ['selection', 'visible', 'model']), margin: num('m (default 0.5)') }, ['name']), (a) => {
+    const c = clipOf(a.name);
+    const fit = CV.fitBox(fitBounds(a.from || 'selection', a.ids), a.margin ?? 0.5);
+    if (c.kind === 'box') Object.assign(c, fit, { rotation: [0, 0, 0] });
+    else c.point = fit.center;
+    syncSection();
+    return { clip: c, ...clipList() };
+  }, true);
+  // the section planes of #187, kept as wrappers: plane clips, one cutting at a time
+  const planes = () => clips().filter((c) => c.kind === 'plane');
+  const activate = (name) => {
+    for (const p of planes()) p.enabled = p.name === name;
+    ctx.doc.settings.section_active = name || null;
+    syncSection();
   };
   const planeOf = (name) => {
     const p = planes().find((x) => x.name === name);
     if (!p) throw new Error(`No section plane "${name}". Section planes: ${planes().map((x) => x.name).join(', ') || 'none (section adds one)'}.`);
     return p;
   };
-  const sectionList = () => ({ active: ctx.doc.settings.section_active || null, planes: planes().map((p) => ({ ...p, active: p.name === ctx.doc.settings.section_active })) });
-  def('view', 'section', 'Cut the model with a section plane to see inside: the plane is kept by name (list_section_planes) and becomes the one that cuts. Disable with enabled:false (the plane stays in the list).', obj({ enabled: bool('default true'), normal: v3('the side that is cut away'), point: v3('a point on the plane'), name: str('name it (default Section 1, 2…)') }), (a) => {
+  const sectionList = () => ({ active: ctx.doc.settings.section_active || null, planes: planes().map((p) => ({ name: p.name, normal: p.normal, point: p.point, active: p.name === ctx.doc.settings.section_active })) });
+  def('view', 'section', 'Cut the model with a section plane to see inside: the plane is kept by name (a clip of kind plane: list_section_planes, list_clips) and becomes the one that cuts. Disable with enabled:false (the plane stays in the list).', obj({ enabled: bool('default true'), normal: v3('the side that is cut away'), point: v3('a point on the plane'), name: str('name it (default Section 1, 2…)') }), (a) => {
     if (a.enabled === false) {
       activate(null);
       return { section: null, ...sectionList() };
     }
-    const name = a.name || D.uniqueName({ entities: planes() }, 'Section');
-    const plane = { name, normal: a.normal || [0, -1, 0], point: a.point || [0, 1.2, 0] };
-    const i = planes().findIndex((x) => x.name === name);
-    if (i >= 0) planes()[i] = plane;
-    else planes().push(plane);
+    const name = a.name || D.uniqueName({ entities: clips() }, 'Section');
+    const plane = CV.fromSection({ name, normal: a.normal || [0, -1, 0], point: a.point || [0, 1.2, 0] });
+    const i = clips().findIndex((x) => x.name === name);
+    if (i >= 0) clips()[i] = plane;
+    else clips().push(plane);
     activate(name);
     return { section: ctx.doc.settings.section, ...sectionList() };
   }, true);
@@ -5031,8 +5175,8 @@ function registerCore(reg, ctx) {
   }, true);
   def('view', 'delete_section_plane', 'Remove a section plane (and its cut, if it was cutting).', obj({ name: str('section plane') }, ['name']), (a) => {
     const p = planeOf(a.name);
-    ctx.doc.settings.section_planes = planes().filter((x) => x !== p);
-    if (ctx.doc.settings.section_active === p.name) activate(null);
+    ctx.doc.clips = clips().filter((x) => x !== p);
+    syncSection();
     return sectionList();
   }, true);
   def('view', 'add_scene', 'Save the current camera as a named scene (a shot you can return to or animate between).', obj({ name: str('scene name') }), (a) => {
@@ -5070,13 +5214,14 @@ function registerCore(reg, ctx) {
     return t;
   };
   const baseValue = (target, property) => {
+    if (String(target).startsWith('clip:')) return CV.normalize(clipOf(target.slice(5)))[property];
     if (target === 'camera') return (ctx.view?.getCamera() ?? ctx.doc.camera)[property];
     const [e] = D.resolve(ctx.doc, target);
     if (property === 'opacity' || property === 'color') return e.material[property];
     return e[property];
   };
-  const targetId = (t) => (t === 'camera' ? 'camera' : D.resolve(ctx.doc, t)[0].id);
-  const PROPS = ['position', 'rotation', 'scale', 'opacity', 'visible', 'color', 'target', 'fov'];
+  const targetId = (t) => (t === 'camera' ? 'camera' : String(t).startsWith('clip:') ? (clipOf(t.slice(5)), t) : D.resolve(ctx.doc, t)[0].id); // clip:<name> (#290)
+  const PROPS = ['position', 'rotation', 'scale', 'opacity', 'visible', 'color', 'target', 'fov', 'center', 'size', 'point', 'normal', 'thickness'];
 
   def('animate', 'add_keyframe', 'Record a keyframe at a time. Without values it captures the current pose (position, rotation, scale), or for the camera its position and target.', obj({ target: str('entity id/name, or "camera"'), time: T('default: playhead'), values: obj({}, []), ease: str('ease into this key', Object.keys(A.EASES)) }, ['target']), (a) => {
     const tid = targetId(a.target);

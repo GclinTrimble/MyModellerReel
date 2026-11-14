@@ -384,7 +384,7 @@ export class Timeline {
     if (!tracks.length && !this.special.length) {
       body.append(h('div.tl-empty', {}, 'No animation yet. Select something, move the playhead, change it and press K (or turn on Auto-key). Or ask the AI: "animate the door opening over 2 seconds", "make a build sequence", "add a turntable".'));
     }
-    const label = (target) => (target === 'camera' ? 'Camera' : target === 'section' ? 'Section plane' : this.app.entity(target)?.name || target);
+    const label = (target) => (target === 'camera' ? 'Camera' : target === 'section' ? 'Section plane' : target.startsWith('clip:') ? `Clip ${target.slice(5)}` : this.app.entity(target)?.name || target);
     for (const tr of tracks) {
       const sel = this.app.selection.includes(tr.target);
       names.append(h(`div${sel ? '.sel' : ''}`, { onclick: () => tr.target !== 'camera' && this.app.select([tr.target]) }, icon(tr.target === 'camera' ? 'video-camera' : 'cube'), label(tr.target), h('span.prop', {}, `· ${tr.property}`)));

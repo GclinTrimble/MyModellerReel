@@ -1377,3 +1377,124 @@ test('terrain and buildings from services (stubbed): terrain streams, Save as su
   const b = await ok('get_entity', { id: 'Depot' });
   assert.ok(Math.abs(b.min[1] - 21) < 0.01 && Math.abs(b.max[1] - 30) < 0.01, `the depot from 21 to 30 m: ${b.min[1]} ${b.max[1]}`);
 });
+
+test('clip volumes (#290, #291): the shader cuts, the Clip Box tool, face handles with the mouse, a typed distance, panes, animation', async () => {
+  await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  await ok('set_style', { grid: false });
+  await ok('create_box', { width: 10, depth: 30, height: 2, name: 'Embankment', color: '#9a9a9a' });
+  await ok('create_cylinder', { radius: 0.6, height: 12, position: [0, 0.8, -6], rotation: [90, 0, 0], name: 'Culvert', color: '#c8553d' });
+  await ok('set_camera', { position: [18, 16, 24], target: [0, 1, 0] });
+  await ok('select', { ids: ['Culvert'] });
+  await ok('add_clip', { kind: 'box', from: 'selection', margin: 1 });
+  // every model material is patched and the main pane's mask has the box's bit; what the box hides is not picked
+  const st = await w.evaluate(() => {
+    const vp = window.mmr.app.viewport;
+    vp.render();
+    let patched = 0;
+    let all = 0;
+    vp.modelRoot.traverse((o) => o.material && (all++, o.material.userData.mmrClip && patched++));
+    return { patched, all, far: vp.unclipped([4, 1.5, 12], null), near: vp.unclipped([0, 0.8, 0], null) };
+  });
+  assert.equal(st.patched, st.all, 'every material honours the clips');
+  assert.equal(st.far, false);
+  assert.equal(st.near, true);
+  await ok('clear_clips');
+  // the Clip Box tool: three clicks, one clip, one undo step
+  const toScreen = (p) => w.evaluate((q) => { const s = window.mmr.app.viewport.toScreen(new window.mmr.THREE.Vector3(...q)); return [s.x, s.y]; }, p);
+  await w.evaluate(() => window.mmr.app.tools.set('clipbox'));
+  const undo0 = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  const [a, b, c] = [await toScreen([-7, 0, 9]), await toScreen([7, 0, -5]), await toScreen([7, 4, -5])];
+  await w.mouse.move(...a);
+  await w.mouse.click(...a);
+  await w.mouse.move(b[0] - 10, b[1]);
+  await w.mouse.move(...b);
+  await w.mouse.click(...b);
+  await w.mouse.move(c[0], c[1] + 10);
+  await w.mouse.move(...c);
+  await w.mouse.click(...c);
+  await w.waitForTimeout(300);
+  let l = await ok('list_clips');
+  assert.equal(l.clips.length, 1);
+  assert.equal((await w.evaluate(() => window.mmr.app.store.undoStack.length)) - undo0, 1, 'one undo step');
+  assert.equal(await w.evaluate(() => window.mmr.app.clipSelected), 'Box 1', 'the new box is selected, its handles on');
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  await ok('set_clip', { name: 'Box 1', center: [0, 2, 0], size: [8, 4, 8], rotation: [0, 0, 0] });
+  const face = (name, list) => list.clips[0].planes.find((p) => p.face === name).point;
+  const handle = (faces) => w.evaluate((f) => { const g = window.mmr.app.clipGizmo; const h = g.handles.find((x) => x.faces.join() === f); const s = window.mmr.app.viewport.toScreen(h.p); return [s.x, s.y]; }, faces);
+  // drag the top face down: only it moves
+  let [x, y] = await handle('+y');
+  await w.mouse.move(x, y);
+  await w.mouse.down();
+  for (let i = 1; i <= 5; i++) await w.mouse.move(x, y + i * 8);
+  await w.mouse.up();
+  await w.waitForTimeout(300);
+  const before = await ok('list_clips');
+  assert.ok(face('+y', before)[1] < 4, `the top face came down: ${face('+y', before)[1]}`);
+  assert.equal(face('-y', before)[1], 0, 'the bottom stays');
+  // a typed distance while dragging: exactly 2.5 m down
+  await ok('set_clip', { name: 'Box 1', center: [0, 2, 0], size: [8, 4, 8] });
+  [x, y] = await handle('+y');
+  await w.mouse.move(x, y);
+  await w.mouse.down();
+  for (let i = 1; i <= 3; i++) await w.mouse.move(x, y + i * 8);
+  await w.keyboard.type('2.5');
+  await w.keyboard.press('Enter');
+  await w.mouse.up();
+  await w.waitForTimeout(300);
+  l = await ok('list_clips');
+  assert.equal(face('+y', l)[1], 1.5, 'top 4 → 1.5');
+  assert.equal(face('-y', l)[1], 0);
+  await ok('undo');
+  assert.equal(face('+y', await ok('list_clips'))[1], 4, 'undo restores the box');
+  await ok('redo');
+  assert.equal(face('+y', await ok('list_clips'))[1], 1.5, 'redo re-applies it');
+  // Ctrl: both sides move
+  await ok('set_clip', { name: 'Box 1', center: [0, 2, 0], size: [8, 4, 8] });
+  [x, y] = await handle('+x');
+  const [x2] = await toScreen([8, 2, 0]);
+  await w.keyboard.down('Control');
+  await w.mouse.move(x, y);
+  await w.mouse.down();
+  for (let i = 1; i <= 4; i++) await w.mouse.move(x + ((x2 - x) * i) / 4, y);
+  await w.mouse.up();
+  await w.keyboard.up('Control');
+  await w.waitForTimeout(300);
+  l = await ok('list_clips');
+  assert.ok(Math.abs(face('+x', l)[0] + face('-x', l)[0]) < 1e-6 && face('+x', l)[0] > 4.5, `symmetric: ${face('+x', l)[0]} / ${face('-x', l)[0]}`);
+  // a click anywhere on a face (not its handle) picks that face; a typed value then moves it (+ outward)
+  await ok('set_clip', { name: 'Box 1', center: [0, 2, 0], size: [8, 4, 8] });
+  const onTop = await toScreen([2, 4, 2]);
+  await w.mouse.move(...onTop);
+  await w.mouse.click(...onTop);
+  assert.equal(await w.evaluate(() => window.mmr.app.clipGizmo.face), '+y');
+  await w.keyboard.type('1');
+  await w.keyboard.press('Enter');
+  await w.waitForTimeout(300);
+  l = await ok('list_clips');
+  assert.equal(face('+y', l)[1], 5, 'the picked face out 1 m');
+  assert.equal(face('-y', l)[1], 0);
+  // pane 2 (top, parallel) of a four-pane layout: a clip that cuts pane 2 only, and a handle dragged there
+  await ok('set_layout', { count: 4 });
+  await ok('zoom_extents', { pane: 'all' });
+  await ok('add_clip', { kind: 'slab', point: [0, 1, 0], normal: [0, 1, 0], thickness: 0.5, panes: [2] });
+  const seen = await w.evaluate(() => { const vp = window.mmr.app.viewport; const p = vp.extra.find((e) => e.i === 1); return [vp.unclipped([0, 2, 0], null), vp.withPane(p, () => vp.unclipped([0, 2, 0], null))]; });
+  assert.deepEqual(seen, [true, false], 'the slab cuts pane 2 only');
+  await ok('set_clip', { name: 'Box 1', center: [0, 2, 0], size: [8, 4, 8] });
+  const p2 = await w.evaluate(() => { const vp = window.mmr.app.viewport; const p = vp.extra.find((e) => e.i === 1); return vp.withPane(p, () => { const h = window.mmr.app.clipGizmo.handles.find((e) => e.faces.join() === '+x'); const s = vp.toScreen(h.p); return [s.x, s.y]; }); });
+  await w.mouse.move(...p2);
+  await w.mouse.down();
+  for (let i = 1; i <= 4; i++) await w.mouse.move(p2[0] + i * 6, p2[1]);
+  await w.mouse.up();
+  await w.waitForTimeout(300);
+  l = await ok('list_clips');
+  assert.ok(face('+x', l)[0] > 4.01 && face('-x', l)[0] === -4, `pane 2 drag: +x ${face('+x', l)[0]}, -x ${face('-x', l)[0]}`);
+  await ok('set_layout', { count: 1 });
+  // animation: two keys on clip:Box 1 size move the shader's box
+  await ok('animate', { target: 'clip:Box 1', property: 'size', from: [2, 2, 2], to: [10, 4, 10], start: 0, end: 2 });
+  await ok('playback', { action: 'seek', time: 2 });
+  const half = await w.evaluate(() => { const vp = window.mmr.app.viewport; vp.clipFor(1); return vp.posed()?.['clip:Box 1']?.size; });
+  assert.deepEqual(half, [10, 4, 10]);
+  await w.evaluate(() => window.mmr.app.selectClip(null));
+  await ok('clear_clips');
+});
