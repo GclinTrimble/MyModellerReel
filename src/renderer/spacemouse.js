@@ -2,6 +2,7 @@
 // frame, runs the buttons. The decoding and the axis maths are in core/spacemouse.js.
 import * as THREE from 'three';
 import * as SM from '../core/spacemouse.js';
+import * as CV from '../core/clip.js';
 import { floorAt } from './scale.js';
 
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -244,44 +245,49 @@ export class SpaceMouse {
 
   // ---------------------------------------------------------------- clip box (#291): held, the puck moves the box
 
-  /** The box the puck moves: the selected clip if the clip tools say so, else the last box that is on. */
+  /** The box the puck moves: the clip selected in the view (clipgizmo.js sets activeClip), else the last box that is on. */
   clipBox() {
-    const clips = this.app.store.doc.clips || [];
-    return clips.find((c) => c.name === this.app.activeClip && c.kind === 'box') || clips.findLast((c) => c.kind === 'box' && c.enabled !== false);
+    const clips = CV.clipsOf(this.app.store.doc);
+    const c = clips.find((x) => x.name === this.app.activeClip && x.kind === 'box') || clips.findLast((x) => x.kind === 'box' && x.enabled !== false);
+    return c && CV.normalize(c);
   }
 
   setClip(on) {
-    if (on && !this.app.reg.commands.has('set_clip')) return this.app.ui.toast('Moving a clip box with the SpaceMouse needs clip volumes (set_clip).');
     if (on && !this.clip) {
       const c = this.clipBox();
-      if (!c) return this.app.ui.toast('Add a clip box first (add_clip).');
-      this.clip = { name: c.name, before: { center: [...c.center], rotation: [...(c.rotation || [0, 0, 0])] }, c };
+      if (!c) return this.app.ui.toast('Select a clip box first (Clip Box tool or add_clip).');
+      this.clip = { name: c.name, c, pose: { center: [...c.center], size: [...c.size], rotation: [...c.rotation] } };
       return;
     }
     if (!on && this.clip) {
-      const { name, before, c } = this.clip;
-      const after = { center: c.center.map((v) => Math.round(v * 1e4) / 1e4), rotation: (c.rotation || [0, 0, 0]).map((v) => Math.round(v * 1e3) / 1e3) };
-      Object.assign(c, before); // the preview moved it by hand; one set_clip commits it (one undo step)
+      const { name, pose } = this.clip;
       this.clip = false;
-      this.app.reg.run('set_clip', { name, ...after }).catch((e) => this.app.ui.toast(e.message, 'danger'));
+      this.app.viewport.clipPreview = null;
+      const r4 = (v) => Math.round(v * 1e4) / 1e4;
+      // one set_clip for the whole hold: one undo step
+      this.app.reg.run('set_clip', { name, center: pose.center.map(r4), size: pose.size.map(r4), rotation: pose.rotation.map(r4) }).catch((e) => (this.app.ui.toast(e.message, 'danger'), this.app.clipGizmo?.sync()));
     }
   }
 
+  /** Translations move the box in the view's directions, turns spin it about its centre; with a face hovered (or
+   * picked with Tab), push / pull on the cap moves that face instead. Previewed like the clip handles' drags. */
   moveClip(m, dt) {
-    const { viewport: vp } = this.app;
-    const c = this.clip.c;
+    const { viewport: vp, clipGizmo: g } = this.app;
+    const { pose, name } = this.clip;
     const cam = vp.mainCam();
-    const centre = V(...c.center);
-    // the box moves with the hand (in the view's directions) and turns about its centre
+    const centre = V(...pose.center);
     const { move, turn } = SM.step(m, dt, cam.position.distanceTo(centre), 'fly');
+    const face = g?.name === name ? (g.hover?.faces?.length === 1 ? g.hover.faces[0] : g.face) : null;
     const q = cam.quaternion;
-    centre.add(V(move[0], move[1], move[2]).applyQuaternion(q));
+    centre.add(V(move[0], move[1], face ? 0 : move[2]).applyQuaternion(q));
     const spin = new THREE.Quaternion().setFromEuler(new THREE.Euler(turn[0], turn[1], turn[2], 'XYZ'));
     const world = q.clone().multiply(spin).multiply(q.clone().invert()); // the turn in the view's axes
-    const r = (c.rotation || [0, 0, 0]).map(THREE.MathUtils.degToRad);
+    const r = pose.rotation.map(THREE.MathUtils.degToRad);
     const e = new THREE.Euler().setFromQuaternion(world.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(r[0], r[1], r[2], 'XYZ'))), 'XYZ');
-    c.center = centre.toArray();
-    c.rotation = [e.x, e.y, e.z].map(THREE.MathUtils.radToDeg);
-    vp.rebuild();
+    Object.assign(pose, { center: centre.toArray(), rotation: [e.x, e.y, e.z].map(THREE.MathUtils.radToDeg) });
+    if (face && move[2]) Object.assign(pose, CV.pushFace({ ...this.clip.c, ...pose }, face, move[2])); // towards you: the face comes out
+    vp.clipPreview = { [`clip:${name}`]: { ...pose } };
+    g?.sync({ ...pose });
+    vp.dirty = true;
   }
 }

@@ -68,4 +68,4 @@ await api.map_spacemouse_button({ button: 'Fit', action: 'none' });
   *Application controlled* (or clear it), so a press is not counted twice. Leave the axes as they are: 3DxWare does
   not take them from the app.
 - Without a SpaceMouse nothing changes and nothing is logged.
-- A clip box needs clip volumes (`add_clip`); without them `sm:clip` says so.
+- `sm:clip` moves the clip box selected in the view (the Clip Box tool or [add_clip](do:add_clip)); with a face picked (hover a face handle, or Tab), push / pull on the cap moves that face.

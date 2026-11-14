@@ -1623,6 +1623,27 @@ test('SpaceMouse (#303): injected reports move the camera of the pane under the 
   const saved = JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8')).spacemouse;
   assert.deepEqual(saved.buttons['1'], { command: 'set_view', args: { preset: 'top' } }, 'kept in settings.json');
   assert.equal(saved.mode, 'fly');
+  // clip box hold: button 2 mapped to sm:clip (bit 13); the puck moves the selected box, a hovered face is pushed, release = one undo step
+  await ok('add_clip', { kind: 'box', name: 'Scan box', center: [0, 2, 0], size: [10, 4, 10] });
+  await w.evaluate(() => window.mmr.app.selectClip('Scan box'));
+  await ok('map_spacemouse_button', { button: '2', action: 'sm:clip' });
+  await ok('set_camera', { position: [0, 20, 40], target: [0, 0, 0] });
+  const clip = () => w.evaluate(() => structuredClone(window.mmr.doc.clips.find((c) => c.name === 'Scan box')));
+  const undo0 = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  await feed(3, [0, 32, 0, 0]);
+  await push([300, 0, 0, 0, 0, 0]);
+  assert.deepEqual((await clip()).center, [0, 2, 0], 'previewed while held, the document unchanged');
+  await w.evaluate(() => Object.assign(window.mmr.app.clipGizmo, { hover: null, face: '+y' })); // no handle under the mouse: the Tab-picked face
+  await push([0, 300, 0, 0, 0, 0]); // pulled towards you: the picked face comes out
+  await feed(3, [0, 0, 0, 0]);
+  await w.waitForFunction(() => window.mmr.doc.clips.find((c) => c.name === 'Scan box').center[0] > 0.5);
+  const moved = await clip();
+  assert.ok(moved.size[1] > 4.2, `the top face came up: ${moved.size}`);
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length), undo0 + 1, 'one undo step');
+  await ok('undo');
+  assert.deepEqual((await clip()).center, [0, 2, 0]);
+  await w.evaluate(() => ((window.mmr.app.clipGizmo.face = null), window.mmr.app.selectClip(null)));
+  await ok('clear_clips');
   // four panes: the pane under the cursor moves, the others stay; 2D mode pans
   await ok('set_layout', { count: 4 });
   await ok('zoom_extents', { pane: 'all' });
