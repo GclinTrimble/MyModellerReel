@@ -1696,3 +1696,82 @@ test('point cloud octree (#293, #294): the synthetic scan converts in the worker
   const e = (await ok('get_scene')).entities.find((x) => x.name === 'Corridor scan');
   assert.ok(e, 'the cloud is in the scene');
 });
+
+test('slices (#292): a plan slice of a scan, square-on in pane 2, snapping to its points, a series stepped with PageDown, a scene, a sweep', async () => {
+  await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  await ok('import_point_cloud', { path: path.resolve('docs/how-to/samples/slice-site.ply') });
+  await ok('create_alignment', { name: 'Main road', points: [[-60, 25], [60, 15]] });
+  const s = await ok('add_slice', { at: 'elevation', z: 1.2, above: 'ground', thickness: 0.2 });
+  assert.ok(s.stats.count > 1000 && s.stats.width > 60, `the two wall rings: ${s.stats.count} points, ${s.stats.width} m`);
+  assert.ok(s.stats.histogram.counts.length === 10);
+  const v = await ok('view_clip', { name: 'Slice 1', pane: 2 });
+  const L = await w.evaluate(() => window.mmr.doc.settings.layout);
+  assert.equal(L.count, 2);
+  assert.equal(L.panes[1].projection, 'parallel');
+  assert.notEqual(L.panes[0].projection, 'parallel', 'pane 1 stays 3D');
+  assert.ok(v.camera.position[1] - v.camera.target[1] > 20, 'looking down');
+  // drawing a line in pane 2 snaps to the slice's points: both ends land on scan points inside the slab
+  const [bot, top] = [s.clip.point[1] - 0.1, s.clip.point[1] + 0.1];
+  const pick = await w.evaluate(() => {
+    const vp = window.mmr.app.viewport;
+    const p = vp.extra.find((e) => e.i === 1);
+    return vp.withPane(p, () => {
+      vp.vertexCache = null;
+      const cloud = vp.snapPoints().filter((x) => x.kind === 'Point cloud');
+      const ends = [cloud.reduce((a, b) => (b.p.x < a.p.x ? b : a)), cloud.reduce((a, b) => (b.p.x > a.p.x ? b : a))];
+      return { ys: cloud.map((x) => x.p.y), screen: ends.map((e) => { const q = vp.toScreen(e.p); return [q.x + 2, q.y + 1]; }) };
+    });
+  });
+  assert.ok(pick.ys.length > 500 && pick.ys.every((y) => y >= bot - 1e-6 && y <= top + 1e-6), `${pick.ys.length} snap points, all in the slab`);
+  await w.evaluate(() => window.mmr.app.tools.set('line'));
+  for (const q of pick.screen) {
+    await w.mouse.move(q[0] - 6, q[1]);
+    await w.mouse.move(...q);
+    await w.mouse.click(...q);
+  }
+  await w.keyboard.press('Enter');
+  await w.waitForTimeout(300);
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  const line = await w.evaluate(() => { const e = window.mmr.doc.entities.find((x) => x.name.startsWith('Line')); return e && e.curve.points.map((p) => [p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]]); });
+  assert.ok(line?.length === 2, 'a line was drawn');
+  for (const p of line) assert.ok(p[1] >= bot - 1e-3 && p[1] <= top + 1e-3, `a line end on a slice point: ${p}`);
+  assert.ok(Math.abs(line[0][0] - line[1][0]) > 40, 'from one building to the other');
+  // a scene keeps the slice and the camera
+  await ok('add_scene', { name: 'Level 1 slice', pane: 2 });
+  await ok('clear_clips');
+  await ok('set_camera', { pane: 2, position: [50, 50, 50], target: [0, 0, 0] });
+  await ok('go_to_scene', { name: 'Level 1 slice', pane: 2 });
+  assert.deepEqual((await ok('list_clips')).clips.map((c) => c.name), ['Slice 1']);
+  const cam = await w.evaluate(() => { const vp = window.mmr.app.viewport; return vp.withPane(vp.extra[0], () => vp.getCamera()); });
+  assert.deepEqual(cam.target, v.camera.target);
+  // cross-sections every 20 m: PageDown steps, pane 2 follows
+  await ok('clear_clips');
+  const series = await ok('slice_series', { at: 'station', alignment: 'Main road', from: 0, to: 120, step: 20, thickness: 0.5 });
+  assert.equal(series.slices.length, 7);
+  await ok('view_clip', { name: 'Station 0', pane: 2 });
+  const t0 = await w.evaluate(() => { const vp = window.mmr.app.viewport; return vp.withPane(vp.extra[0], () => vp.getCamera().target); });
+  await w.mouse.click(5, 300); // focus the page, off the canvases
+  await w.keyboard.press('PageDown');
+  await w.waitForTimeout(300);
+  const on = (await ok('list_clips')).clips.filter((c) => c.enabled !== false).map((c) => c.name);
+  assert.deepEqual(on, ['Station 20']);
+  const t1 = await w.evaluate(() => { const vp = window.mmr.app.viewport; return vp.withPane(vp.extra[0], () => vp.getCamera().target); });
+  assert.ok(Math.hypot(t1[0] - t0[0], t1[2] - t0[2]) > 19, `the camera moved along the road: ${t0} → ${t1}`);
+  await w.keyboard.press('PageUp');
+  await w.waitForTimeout(300);
+  assert.deepEqual((await ok('list_clips')).clips.filter((c) => c.enabled !== false).map((c) => c.name), ['Station 0']);
+  // a level slab swept up through the buildings, rendered
+  await ok('set_layout', { count: 1 });
+  await ok('clear_clips');
+  await ok('add_slice', { at: 'elevation', z: 0.5, above: 'ground', thickness: 0.5, name: 'Sweep' });
+  const sw = await ok('animate_section', { clip: 'Sweep', from: 0, to: 6, start: 0, end: 1 });
+  assert.ok(sw.to[1] - sw.from[1] > 5.9);
+  await ok('set_timeline', { duration: 1, fps: 6 });
+  const gif = await ok('render_video', { path: path.join(home, 'out', 'sweep.gif'), width: 160, height: 90, fps: 6 });
+  assert.equal(gif.frames, 6);
+  await ok('playback', { action: 'seek', time: 1 });
+  const y = await w.evaluate(() => { const vp = window.mmr.app.viewport; vp.clipFor(1); return vp.posed()?.['clip:Sweep']?.point?.[1]; });
+  assert.ok(Math.abs(y - sw.to[1]) < 1e-3, `the slab is at the top at the end: ${y}`);
+  await ok('clear_clips');
+});

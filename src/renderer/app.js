@@ -454,6 +454,7 @@ window.addEventListener('keydown', (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'm' && !ev.repeat) return ev.preventDefault(), app.ai.listen(); // hold to talk (#98)
   if (ev.shiftKey && !ctrl && k.toLowerCase() === 'x') return ev.preventDefault(), app.tools.set('clipbox'); // Clip Box (#291)
   if (!/^[0-9.,;\-]$/.test(k) && app.clipGizmo?.key(ev)) return ev.preventDefault(); // the selected clip's keys (#291)
+  if ((k === 'PageDown' || k === 'PageUp') && !ctrl && app.store.doc.clips?.some((c) => c.slice?.series)) return ev.preventDefault(), app.reg.run('step_slice', { by: k === 'PageDown' ? 1 : -1 }).then((r) => app.ui.toast(`${r.name}: ${r.stats.count.toLocaleString()} points`)).catch((e) => app.ui.toast(e.message, 'danger')); // slice series (#292)
   if (app.timeline.active && (app.timeline.selKeys.size || app.timeline.clipboard) && app.timeline.handleKey(ev)) return; // keyframes first
   const A_ = app.ui.actions;
   const combos = {

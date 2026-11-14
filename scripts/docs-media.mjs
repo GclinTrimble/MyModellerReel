@@ -1646,6 +1646,53 @@ const PAGES = {
     await run('render_video', { path: path.join(dir, 'clip-volumes.mp4'), width: 960, height: 540, fps: 24, from: 0, to: 3.5 });
     await clean();
   },
+  async 'slice-a-scan'() {
+    // the synthetic site of scripts/slice-scan.mjs: two buildings and a road, "Main road" along its centre
+    await fresh();
+    await run('import_point_cloud', { path: `${SAMPLES}/slice-site.ply` });
+    await run('create_alignment', { name: 'Main road', points: [[-60, 25], [60, 15]], station_interval: 20 });
+    const iso = () => camera([62, 48, 78], [0, 2, 0]);
+    await iso();
+    await none();
+    await shot('A scan of a site: two buildings and a road');
+    await run('add_slice', { at: 'elevation', z: 1.2, above: 'ground', thickness: 0.2 });
+    await camera([10, 38, 52], [0, 2, -10]);
+    await shot('add_slice at 1.2 m above the ground, 0.2 m thick: the wall ring of each building');
+    await run('view_clip', { name: 'Slice 1', pane: 2 });
+    await shot('view_clip in pane 2: square from above, north up, fitted to the slice; pane 1 stays 3D');
+    await run('slice_points', { name: 'Slice 1', store: true });
+    await js("window.mmr.app.ui.sectionPlanesDialog(); return 1;");
+    await shot('View › Clipping: add a slice or a series, look at one square-on');
+    await clean();
+    await run('delete_clip', { name: 'Slice 1' });
+    await run('delete', { ids: ['Slice 1 points'] });
+    await run('slice_series', { at: 'station', alignment: 'Main road', from: 0, to: 120, step: 20, thickness: 0.6 });
+    const v = await run('view_clip', { name: 'Station 0', pane: 2 });
+    await run('set_layout', { split: [0.4, 0.5] });
+    // zoom pane 2 onto the right half of the road, to the ditch (about 12 m across): stepping keeps that framing
+    const c0 = (await run('list_clips')).clips.find((c) => c.name === 'Station 0');
+    const u = [c0.normal[2], 0, -c0.normal[0]]; // the slab's right
+    const look = v.camera.position.map((x, k) => x - v.camera.target[k]);
+    const len = Math.hypot(...look);
+    const at = c0.point.map((x, k) => x + u[k] * 4.5 + (k === 1 ? 0.2 : 0));
+    await run('set_camera', { pane: 2, target: at, position: look.map((x, k) => at[k] + (x / len) * 14) });
+    await run('step_slice', { index: 3 });
+    const p60 = (await run('list_clips')).clips.find((c) => c.name === 'Station 60').point;
+    await camera([p60[0] - 16, p60[1] + 9, p60[2] + 14], p60);
+    await shot('slice_series every 20 m along Main road: a cross-section at station 60: lanes, shoulder, batter and ditch');
+    await run('step_slice', { by: 1 });
+    await shot('PageDown: station 80, the camera follows along the road');
+    await run('add_scene', { name: 'Station 80 section', pane: 2 });
+    // a level slab sweeping up through the buildings, in a video
+    await run('set_layout', { count: 1 });
+    await run('clear_clips');
+    await run('add_slice', { at: 'elevation', z: 0.4, above: 'ground', thickness: 0.6, name: 'Sweep' });
+    await run('animate_section', { clip: 'Sweep', from: 0, to: 6.5, start: 0, end: 4, ease: 'linear' });
+    await iso();
+    await clean();
+    await run('render_video', { path: path.join(dir, 'slice-a-scan.mp4'), width: 960, height: 540, fps: 24, from: 0, to: 4 });
+    await clean();
+  },
   async 'web-map-layers'() {
     await fresh();
     await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });

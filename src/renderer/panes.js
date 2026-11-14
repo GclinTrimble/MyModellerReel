@@ -392,6 +392,7 @@ export class Panes {
       { ondblclick: (e) => !e.target.closest('button') && run('set_layout', { max: L.max === p.i ? 0 : n }), title: `View ${n}: ${name}. Double-click to maximise or restore` },
       h('span.pane-num', { 'aria-label': `View ${n}: ${name}` }, String(n)),
       ...(cfg.view === 'section' ? [btn('caret-left', 'Previous section', () => this.step(n, -1)), btn('caret-right', 'Next section', () => this.step(n, 1))] : []),
+      ...(cfg.slice && this.app.store.doc.clips?.some((c) => c.name === cfg.slice && c.slice?.series) ? [btn('caret-left', 'Previous slice (PageUp)', () => run('step_slice', { by: -1 })), btn('caret-right', 'Next slice (PageDown)', () => run('step_slice', { by: 1 }))] : []), // a slice series (#292)
       ...(flat ? [btn('corners-out', 'Fit the drawing', () => ((p.view2d = {}), (this.vp.dirty = true)))] : []),
       h('span.sep'),
     );

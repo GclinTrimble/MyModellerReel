@@ -980,7 +980,13 @@ export class Viewport {
         const w = e.curve.points.map((p) => new THREE.Vector3(...p).applyMatrix4(o.matrixWorld));
         w.forEach((p, k) => (pts.push({ p, kind: 'Endpoint' }), k && e.curve.kind === 'polyline' && pts.push({ p: p.clone().lerp(w[k - 1], 0.5), kind: 'Midpoint' })));
       }
-      if (e?.pointcloud && o.visible) pts.push(...cloudSnaps(o));
+      if (e?.pointcloud && o.visible) {
+        // a slice (#292) or any clip cutting: snap to the points it shows, densely; else a sample of the whole cloud
+        // shortcut: the cache is shared by the panes, it follows the pane that asked first
+        const doc = this.store.doc;
+        const t = CV.clipsOf(doc).some((c) => c.enabled !== false) && CV.visibleTest(doc, { pane: this.paneNumber(), entity: e, clips: CS.posedClips(doc, this.posed()) });
+        pts.push(...(t ? cloudSnaps(o, 20000, (v) => t(v.x, v.y, v.z)) : cloudSnaps(o)));
+      }
       if (e?.underlay && o.visible && this.store.doc.settings.snap_underlays && e.underlay.kind === 'pdf') {
         const s = underlaySnaps(this.store.doc, e, () => (this.vertexCache = null));
         if (s) pts.push(...s);

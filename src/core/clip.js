@@ -99,24 +99,22 @@ export function inScope(doc, c, entity) {
 /** Does the clip cut this pane (1-based)? */
 export const inPane = (c, pane = 1) => !c.panes?.length || c.panes.includes(pane);
 
-/** Is p shown in this pane for this entity, with every clip combined? */
-export function visible(doc, p, { pane = 1, entity = null, clips = clipsOf(doc) } = {}) {
-  let inner = false;
-  let any = false;
-  let all = true;
+/** visible() as a fast (x, y, z) test, the clips read once: for many points (snapping to a slice of a scan, #292). */
+export function visibleTest(doc, { pane = 1, entity = null, clips = clipsOf(doc) } = {}) {
+  const cut = [];
+  const inner = [];
   for (const c0 of clips) {
     if (c0.enabled === false || !inPane(c0, pane) || !inScope(doc, c0, entity)) continue;
     const c = normalize(c0);
-    if (c.kind === 'box' && c.keep === 'inside') {
-      const k = inBox(c, p);
-      inner = true;
-      any ||= k;
-      all &&= k;
-    } else if (!inside(c, p)) return false;
+    const t = tester(c);
+    if (c.kind === 'box' && c.keep === 'inside') inner.push(t);
+    else cut.push(c.kind === 'box' ? (x, y, z) => !t(x, y, z) : t);
   }
-  if (!inner) return true;
-  return doc.settings?.clip_combine === 'all' ? all : any;
+  const all = doc.settings?.clip_combine === 'all';
+  return (x, y, z) => cut.every((t) => t(x, y, z)) && (!inner.length || (all ? inner.every((t) => t(x, y, z)) : inner.some((t) => t(x, y, z))));
 }
+/** Is p shown in this pane for this entity, with every clip combined? */
+export const visible = (doc, p, opts) => visibleTest(doc, opts)(p[0], p[1], p[2]);
 
 /** A section plane ({ name, normal, point }) as a clip of kind plane. */
 export const fromSection = (s, enabled = true) => normalize({ name: s.name || 'Section 1', kind: 'plane', point: s.point || [0, 0, 0], normal: s.normal || [0, -1, 0], enabled });

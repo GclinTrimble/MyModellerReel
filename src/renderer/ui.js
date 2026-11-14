@@ -1264,6 +1264,9 @@ export class UI {
           { style: { gap: '6px', flexWrap: 'wrap', marginBottom: '8px' } },
           ...['box', 'slab', 'plane'].map((k) => h('button.btn.sm', { onclick: () => this.commandDialog('add_clip', { kind: k, ...(k === 'box' && app.viewport.selection?.length ? { from: 'selection' } : {}) }, { form: true }).then(render) }, icon(KIND[k]), ` Add ${k}`)),
           h('button.btn.sm', { title: 'Draw a clip box in the view (Shift+X)', onclick: () => (this.closeModal(), app.tools.set('clipbox')) }, icon('selection-plus'), ' Draw box'),
+          // slices (#292): a slab placed by elevation, line, station or face; a series stepped with PageUp / PageDown
+          h('button.btn.sm', { title: 'A slab at an elevation, along a line, across an alignment or through a face', onclick: () => this.commandDialog('add_slice', { at: 'elevation', z: 1.2, above: 'ground', thickness: 0.2 }, { form: true }).then(render) }, icon('stack-simple'), ' Add slice'),
+          h('button.btn.sm', { title: 'Slices every step: levels or stations (PageUp / PageDown step)', onclick: () => this.commandDialog('slice_series', { at: 'elevation', from: 0, to: 12, step: 3 }, { form: true }).then(render) }, icon('stack'), ' Slice series'),
         ),
         r.clips.length
           ? h(
@@ -1272,7 +1275,7 @@ export class UI {
               h(
                 'table',
                 {},
-                h('thead', {}, h('tr', {}, ...['Clip', 'Shows', 'On', '', '', '', ''].map((c) => h('th', {}, c)))),
+                h('thead', {}, h('tr', {}, ...['Clip', 'Shows', 'On', '', '', '', '', ''].map((c) => h('th', {}, c)))),
                 h(
                   'tbody',
                   {},
@@ -1286,6 +1289,7 @@ export class UI {
                       h('td', {}, c.kind === 'box' ? btn(c.keep === 'outside' ? 'selection-inverse' : 'selection', c.keep === 'outside' ? 'Shows what is outside: click to show the inside' : 'Shows what is inside: click to show the outside', () => go({ name: c.name, keep: c.keep === 'outside' ? 'inside' : 'outside' })) : btn('arrows-left-right', 'Flip: cut away the other side', () => go({ name: c.name, flip: true }))),
                       h('td', {}, btn('pencil-simple', 'Centre, size, rotation…', () => edit(c))),
                       h('td', {}, btn('crosshair', 'Select in the view (handles)', () => app.selectClip?.(c.name))),
+                      h('td', {}, c.kind === 'box' ? '' : btn('frame-corners', 'Look at it square-on in pane 2 (pane 1 stays 3D)', () => app.reg.run('view_clip', { name: c.name, pane: 2 }).then(() => this.closeModal()).catch(fail))),
                       h('td', {}, btn('trash', 'Delete this clip', () => app.reg.run('delete_clip', { name: c.name }).then(render).catch(fail))),
                     ),
                   ),
