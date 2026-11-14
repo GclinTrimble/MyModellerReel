@@ -32,7 +32,7 @@ test('clips: a door opening saved once, played on other doors where they are', a
   const b = byName(ctx, 'Door B').id;
   nearArr(A.evaluate(ctx.doc, 5)[b].rotation, [0, 90, 0]);
   nearArr(A.evaluate(ctx.doc, 6)[b].rotation, [0, -10, 0], 1e-6);
-  assert.deepEqual((await reg.run('list_clips', {}))[0].properties, ['rotation']);
+  assert.deepEqual((await reg.run('list_animation_clips', {}))[0].properties, ['rotation']);
   await assert.rejects(reg.run('apply_clip', { name: 'window slides', ids: ['Door B'] }), /No clip/);
 });
 

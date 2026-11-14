@@ -1482,6 +1482,60 @@ const PAGES = {
     await run('render_video', { path: path.join(dir, 'replay-a-survey.mp4'), width: 960, height: 540, fps: 24 });
     await clean();
   },
+  async 'clip-volumes'() {
+    await fresh();
+    await roadScene(ROAD);
+    // a culvert across the road, under the fill, at the middle of the alignment
+    const at = await js("const e = api.doc.entities.find((x) => x.name === 'Main road'); const p = e.curve.points[Math.floor(e.curve.points.length / 2)]; return [p[0] + e.position[0], p[1] + e.position[1], p[2] + e.position[2]];");
+    await run('create_cylinder', { radius: 0.9, height: 36, position: [at[0], at[1] - 2.5, at[2] - 18], rotation: [90, 0, 0], name: 'Culvert', color: '#c8553d' });
+    await camera([at[0] + 45, at[1] + 30, at[2] + 55], at);
+    await none();
+    await shot('A road on fill over the ground, a culvert through the fill');
+    await run('select', { ids: ['Culvert'] });
+    await run('add_clip', { kind: 'box', from: 'selection', margin: 2 });
+    await none();
+    await camera([at[0] + 22, at[1] + 12, at[2] + 30], [at[0], at[1] - 2, at[2]]);
+    await shot('add_clip from the selection: only what is inside the box shows, every cut face filled');
+    await run('set_clip', { name: 'Box 1', keep: 'outside' });
+    await camera([at[0] + 45, at[1] + 30, at[2] + 55], at);
+    await shot('keep: outside: everything but the box');
+    await run('set_clip', { name: 'Box 1', keep: 'inside', rotation: [0, 30, 0] });
+    await run('add_clip', { kind: 'box', center: [at[0] + 6, at[1] - 1, at[2]], size: [8, 8, 8] });
+    await camera([at[0] + 30, at[1] + 22, at[2] + 36], [at[0] + 2, at[1] - 2, at[2]]);
+    await shot('Two boxes, one turned 30°: inside either of them shows (clip_combine: any)');
+    await run('set_style', { clip_combine: 'all' });
+    await shot('clip_combine: all: only where they overlap');
+    await run('set_style', { clip_combine: 'any' });
+    await run('delete_clip', { name: 'Box 2' });
+    await run('set_clip', { name: 'Box 1', rotation: [0, 0, 0] });
+    // handles (#291): select the box, push / pull a face
+    await js("window.mmr.app.selectClip('Box 1'); return 1;");
+    await camera([at[0] + 22, at[1] + 12, at[2] + 30], [at[0], at[1] - 2, at[2]]);
+    await shot('Select a clip: a handle on each face, edge and corner; W, E, R move, turn and scale it');
+    await run('set_clip', { name: 'Box 1', face: '+y', push: -2.5 });
+    await shot('Top face pushed down 2.5 m: the opposite face stays');
+    await js("window.mmr.app.selectClip(null); return 1;");
+    // a plan slab in pane 2 only
+    await run('set_layout', { count: 2, arrangement: 'columns' });
+    await run('add_clip', { kind: 'slab', point: at, normal: [0, 1, 0], thickness: 1, panes: [2] });
+    await run('set_clip', { name: 'Box 1', enabled: false });
+    await run('set_pane', { pane: 2, view: 'top' });
+    await run('zoom_extents', { pane: 2 });
+    await camera([at[0] + 70, at[1] + 50, at[2] + 90], at);
+    await shot('A slab in pane 2 only: a plan cut at road level, the full model in pane 1');
+    await run('set_layout', { count: 1 });
+    await run('delete_clip', { name: 'Slab 1' });
+    await run('set_clip', { name: 'Box 1', enabled: true, face: '+y', push: 2.5 });
+    await js('window.mmr.app.ui.sectionPlanesDialog(); return 1;');
+    await shot('View › Clipping: every clip, on or off, inside or outside, its fields, delete');
+    await clean();
+    // a box that grows along the road, in a video
+    const b = (await run('list_clips', {})).clips[0];
+    await run('animate', { target: 'clip:Box 1', property: 'size', from: b.size, to: [b.size[0] * 6, b.size[1] * 1.6, b.size[2]], start: 0, end: 3 });
+    await camera([at[0] + 45, at[1] + 30, at[2] + 55], at);
+    await run('render_video', { path: path.join(dir, 'clip-volumes.mp4'), width: 960, height: 540, fps: 24, from: 0, to: 3.5 });
+    await clean();
+  },
   async 'web-map-layers'() {
     await fresh();
     await run('set_coordinate_system', { epsg: 32631, name: 'WGS 84 / UTM zone 31N' });

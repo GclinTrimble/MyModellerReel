@@ -67,6 +67,10 @@ export const EXAMPLES = {
   apply_material: { ids: ['House'], material: 'Red brick' },
   suggest_coordinate_systems: { latitude: 48.85, longitude: 2.35 },
   set_section_plane: { name: 'Section', flip: true },
+  add_clip: { kind: 'box', from: 'selection', margin: 1 },
+  set_clip: { name: 'Box 1', face: '+y', push: -2.5 },
+  align_clip: { name: 'Box 1', to: 'points', points: ['W1', 'W2'] },
+  fit_clip: { name: 'Box 1', ids: ['Culvert'] },
   use_ai_model: { provider: 'ollama', model: 'mistral' },
   corridor_surface: { corridor: 'Road' },
   corridor_volumes: { corridor: 'Road', bulking: 1.25, shrinkage: 0.9 },
@@ -165,7 +169,7 @@ const SYNONYMS = {
   plan: ['export_drawing', 'section'],
   dashed: ['line_type', 'properties'],
   render: ['render_image', 'ai_render', 'effects', 'environment'],
-  clip: ['save_clip', 'apply_clip'],
+  clip: ['add_clip', 'set_clip', 'list_clips', 'save_clip', 'apply_clip'], // clip volumes (#290) and animation clips
   fillet: ['fillet_edges'],
   round: ['fillet_edges'],
   chamfer: ['chamfer_edges'],
@@ -234,6 +238,13 @@ const SYNONYMS = {
   snapping: ['set_snaps'],
   plane: ['section', 'set_section_plane', 'list_section_planes'],
   planes: ['list_section_planes', 'set_section_plane', 'delete_section_plane'],
+  // clip volumes (#290, #291)
+  clips: ['list_clips', 'clear_clips', 'delete_clip'],
+  box: ['create_box', 'add_clip', 'fit_clip'], // a box to build stays first
+  limit: ['add_clip', 'fit_clip'],
+  crop: ['add_clip', 'fit_clip', 'set_clip'],
+  isolate: ['add_clip', 'fit_clip'],
+  slab: ['add_clip', 'set_clip'],
   ollama: ['detect_local_models', 'use_ai_model'],
   model: ['download_ai_model', 'list_ai_models', 'detect_local_models', 'use_ai_model'],
   local: ['download_ai_model', 'list_ai_models', 'detect_local_models', 'use_ai_model'],

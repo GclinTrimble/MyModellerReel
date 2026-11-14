@@ -472,7 +472,7 @@ export class UI {
       shadows: { label: 'Shadows', icon: 'sun', ...style('shadows') },
       grid: { label: 'Grid and axes', icon: 'grid-four', ...style('grid') },
       unsection: { label: 'Remove section cut', icon: 'knife', run: run('section', { enabled: false }) },
-      sectionPlanes: { label: 'Section planes…', icon: 'knife', run: () => this.sectionPlanesDialog() },
+      sectionPlanes: { label: 'Clipping…', icon: 'knife', run: () => this.sectionPlanesDialog() },
       theme: { label: 'Dark theme', icon: 'moon', checked: () => document.documentElement.classList.contains('dark'), run: () => app.toggleTheme() },
       timeline: { label: 'Timeline', icon: 'film-strip', key: 'Ctrl+T', checked: () => app.timeline.active, run: () => app.timeline.toggle() },
       play: { label: 'Play / pause', icon: 'play', key: 'Shift+Space', run: () => (app.timeline.playing ? app.timeline.pause() : app.timeline.play()) },
@@ -1234,47 +1234,76 @@ export class UI {
     return ['Next click snaps only to', ...['endpoint', 'midpoint', 'face', 'axis', 'grid'].map((k) => ({ label: SNAP_LABELS[k], icon: 'crosshair', checked: () => T.only === k, run: () => ((T.only = k), T.status(`Next click: ${SNAP_LABELS[k].toLowerCase()} only.`)) }))];
   }
 
-  /** Section planes (#187): every plane in the model, which one cuts, and flip / move / delete for each. */
+  /**
+   * Clipping (#290, #187): every clip volume (boxes, slabs, section planes), on / off, keep inside / outside or flip,
+   * its fields in a form, delete; how inside boxes combine. The clip selected in the view (#291) is highlighted.
+   */
   async sectionPlanesDialog() {
     const app = this.app;
     const body = h('div', {});
+    const fail = (e) => this.toast(e.message, 'danger');
     const render = async () => {
-      const r = await app.reg.run('list_section_planes', {});
-      const go = (args) => app.reg.run('set_section_plane', args).then(render).catch((e) => this.toast(e.message, 'danger'));
+      const r = await app.reg.run('list_clips', {});
+      const go = (args) => app.reg.run('set_clip', args).then(render).catch(fail);
       const btn = (ic, label, onclick, pressed) => h('button.icon-btn.sm', { title: label, 'aria-label': label, onclick, 'aria-pressed': pressed === undefined ? undefined : String(!!pressed) }, icon(ic));
+      const edit = (c) => {
+        const keys = c.kind === 'box' ? ['center', 'size', 'rotation', 'keep'] : ['point', 'normal', ...(c.kind === 'slab' ? ['thickness'] : [])];
+        this.commandDialog('set_clip', { name: c.name, ...Object.fromEntries(keys.map((k) => [k, c[k]])) }, { form: true }).then(render);
+      };
+      const KIND = { box: 'cube', slab: 'stack', plane: 'knife' };
       body.replaceChildren(
-        r.planes.length
+        h(
+          'div.row',
+          { style: { gap: '6px', flexWrap: 'wrap', marginBottom: '8px' } },
+          ...['box', 'slab', 'plane'].map((k) => h('button.btn.sm', { onclick: () => this.commandDialog('add_clip', { kind: k, ...(k === 'box' && app.viewport.selection?.length ? { from: 'selection' } : {}) }, { form: true }).then(render) }, icon(KIND[k]), ` Add ${k}`)),
+          h('button.btn.sm', { title: 'Draw a clip box in the view (Shift+X)', onclick: () => (this.closeModal(), app.tools.set('clipbox')) }, icon('selection-plus'), ' Draw box'),
+        ),
+        r.clips.length
           ? h(
               'div.qty',
               {},
               h(
                 'table',
                 {},
-                h('thead', {}, h('tr', {}, ...['Plane', 'Cuts', '', '', '', ''].map((c) => h('th', {}, c)))),
+                h('thead', {}, h('tr', {}, ...['Clip', 'Shows', 'On', '', '', '', ''].map((c) => h('th', {}, c)))),
                 h(
                   'tbody',
                   {},
-                  r.planes.map((p) =>
+                  r.clips.map((c) =>
                     h(
                       'tr',
-                      {},
-                      h('td', {}, p.name),
-                      h('td', {}, btn(p.active ? 'eye' : 'eye-slash', p.active ? 'Cutting: click to stop' : 'Cut with this plane', () => go({ name: p.name, active: !p.active }), p.active)),
-                      h('td', {}, btn('arrows-left-right', 'Flip: cut away the other side', () => go({ name: p.name, flip: true }))),
-                      h('td', {}, btn('minus', 'Move back 0.5 m', () => go({ name: p.name, offset: -0.5 }))),
-                      h('td', {}, btn('plus', 'Move forward 0.5 m', () => go({ name: p.name, offset: 0.5 }))),
-                      h('td', {}, btn('trash', 'Delete this plane', () => app.reg.run('delete_section_plane', { name: p.name }).then(render))),
+                      { class: app.clipSelected === c.name ? 'selected' : '', style: app.clipSelected === c.name ? { background: 'var(--accent-soft, rgba(200,85,61,0.12))' } : {} },
+                      h('td', {}, icon(KIND[c.kind]), ` ${c.name}`),
+                      h('td.small', {}, `${c.entities} shapes${c.points ? `, ${c.points} points` : ''}${c.panes ? ` · pane ${c.panes.join(', ')}` : ''}`),
+                      h('td', {}, btn(c.enabled !== false ? 'eye' : 'eye-slash', c.enabled !== false ? 'Cutting: click to turn off' : 'Turn on', () => go({ name: c.name, enabled: c.enabled === false }), c.enabled !== false)),
+                      h('td', {}, c.kind === 'box' ? btn(c.keep === 'outside' ? 'selection-inverse' : 'selection', c.keep === 'outside' ? 'Shows what is outside: click to show the inside' : 'Shows what is inside: click to show the outside', () => go({ name: c.name, keep: c.keep === 'outside' ? 'inside' : 'outside' })) : btn('arrows-left-right', 'Flip: cut away the other side', () => go({ name: c.name, flip: true }))),
+                      h('td', {}, btn('pencil-simple', 'Centre, size, rotation…', () => edit(c))),
+                      h('td', {}, btn('crosshair', 'Select in the view (handles)', () => app.selectClip?.(c.name))),
+                      h('td', {}, btn('trash', 'Delete this clip', () => app.reg.run('delete_clip', { name: c.name }).then(render).catch(fail))),
                     ),
                   ),
                 ),
               ),
             )
-          : h('p.small', {}, 'No section planes yet. Use the Section Plane tool (X) on a face, or the section command.'),
-        h('p.small.muted', {}, 'One plane cuts at a time; the others wait in the list. Section fill (View) closes the cut solids.'),
+          : h('p.small', {}, 'No clip volumes yet. Add a box around what you want to see, a slab for a plan or a strip of a scan, or use the Section Plane tool (X) on a face.'),
+        h(
+          'label.row.small',
+          { style: { gap: '6px', marginTop: '8px' } },
+          h('input', { type: 'checkbox', checked: r.combine === 'all', onchange: (e) => app.reg.run('set_style', { clip_combine: e.target.checked ? 'all' : 'any' }).then(render) }),
+          'Boxes that keep their inside show only where they overlap (otherwise: inside any of them)',
+        ),
+        h(
+          'label.row.small',
+          { style: { gap: '6px' } },
+          h('input', { type: 'checkbox', checked: app.store.doc.settings.show_clipped === 'ghost', onchange: (e) => app.reg.run('set_style', { show_clipped: e.target.checked ? 'ghost' : 'hidden' }).then(render) }),
+          'Ghost what is cut away (faint, not picked)',
+        ),
+        h('p.small.muted', {}, 'Planes, slabs and outside boxes always cut. Section fill (View) closes the cut solids on every face.'),
       );
     };
+    this.refreshClips = () => body.isConnected && render();
     await render();
-    this.modal('Section planes', body);
+    this.modal('Clipping', body);
   }
 
   /** Pick a coordinate system from a place or words (#189): suggestions with their EPSG codes, one click to use. */

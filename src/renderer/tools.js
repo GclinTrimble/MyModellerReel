@@ -11,6 +11,7 @@ import { fillet as fillet2d } from '../core/drafting.js';
 import { formatLength } from '../core/units.js';
 import { parseLength } from '../core/fields.js';
 import * as MD from '../core/modeling.js';
+import * as CV from '../core/clip.js';
 import * as SW from '../core/sitework.js';
 import { floorAt, blocked } from './scale.js';
 import * as TK from '../core/takeoff.js';
@@ -47,7 +48,7 @@ export const SNAPS = { endpoint: true, midpoint: true, face: true, axis: true, g
 export const SNAP_LABELS = { endpoint: 'Endpoints', midpoint: 'Midpoints', face: 'On faces', axis: 'Along the axes', grid: 'Grid', drawing: 'On drawings', cloud: 'Point cloud points', survey: 'Survey points', tie: 'Tie lines to survey points' };
 
 /** The side toolbar (#175): a tool, '-' a divider, or variants sharing one button (a flyout). */
-export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], ['paint', 'matbrush'], 'eraser', 'section'];
+export const TOOLBAR = ['select', '-', ['line', 'curve'], ['rectangle', 'rect3'], ['circle', 'polygon'], ['arc', 'arc3', 'arcc'], 'point', '-', 'pushpull', 'move', 'rotate', 'scale', ['trim', 'extend', 'split', 'join'], 'sculpt', '-', ['tape', 'dimension', 'label', 'text'], ['paint', 'matbrush'], 'eraser', ['section', 'clipbox']];
 
 export const TOOLS = [
   { id: 'select', label: 'Select', key: 'Space', icon: 'cursor', group: 'select' },
@@ -82,6 +83,7 @@ export const TOOLS = [
   { id: 'matbrush', label: 'Material brush (paint surface materials for takeoff)', key: '', icon: 'paint-brush', group: 'construct' },
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
   { id: 'section', label: 'Section Plane', key: 'X', icon: 'knife', group: 'construct' },
+  { id: 'clipbox', label: 'Clip Box (Shift+X): draw a box, see only what is inside', key: '', icon: 'selection-plus', group: 'construct' },
   { id: 'orbit', label: 'Orbit (middle mouse)', key: 'O', icon: 'globe-simple', group: 'camera' },
   { id: 'walk', label: 'Walk (arrows or WASD, drag to look)', key: '', icon: 'person-simple-walk', group: 'camera' },
   { id: 'zoomwin', label: 'Zoom window (drag a box)', key: 'Z', icon: 'magnifying-glass-plus', group: 'camera' },
@@ -124,7 +126,9 @@ export class Tools {
   /** The tools work on a pane's canvas (#162): each event runs with that pane's camera. */
   bind(c, pane) {
     // the gizmo's handles (#67) win over the tool under them
-    const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging;
+    const elsewhere = () => this.touches.size > 1 || !!this.vp.gizmo?.tc.axis || !!this.vp.gizmo?.dragging || !!this.app.clipGizmo?.tc.axis || !!this.app.clipGizmo?.tc.dragging;
+    const clip = () => this.app.clipGizmo; // clip volume handles (#291) win over the tool too
+    c.addEventListener('pointerenter', () => this.vp.withPane(pane, () => clip()?.usePane(pane)));
     const inPane = (fn) => this.guard(() => this.vp.withPane(pane, fn));
     // touchpads have no middle button: Alt + drag orbits and Alt + Shift + drag pans, with any tool. This capture
     // listener runs before OrbitControls' own, so the left button is mapped for this one drag. ROTATE either way:
@@ -135,13 +139,13 @@ export class Tools {
       if (e.pointerType === 'touch') this.touches.add(e.pointerId);
       // an Alt click that does not move (paint sample, tape guide) still reaches the tool, on release
       if (altNav(e) && this.leftNav == null) return void (this.altDrag = { e, moved: false });
-      if (e.button === 0 && !elsewhere()) inPane(() => this.tool.down?.(e));
+      if (e.button === 0 && !elsewhere()) inPane(() => clip()?.down(e, this.id) || this.tool.down?.(e));
       if (e.button === 0 && this.only) (this.only = null), this.status(this.tool.hint); // a one-shot snap is used up
     });
     c.addEventListener('pointermove', (e) => {
       const a = this.altDrag;
       if (a) return void (a.moved ||= Math.hypot(e.clientX - a.e.clientX, e.clientY - a.e.clientY) > 4);
-      if (!elsewhere()) inPane(() => this.tool.move?.(e));
+      if (!elsewhere()) inPane(() => clip()?.move(e) || this.tool.move?.(e));
     });
     c.addEventListener('pointerup', (e) => {
       const multi = elsewhere();
@@ -152,7 +156,7 @@ export class Tools {
         if (!a.moved) inPane(() => (this.tool.down?.(a.e), this.tool.up?.(e)));
         return;
       }
-      if (e.button === 0 && !multi) inPane(() => this.tool.up?.(e));
+      if (e.button === 0 && !multi) inPane(() => clip()?.up(e) || this.tool.up?.(e));
     });
     c.addEventListener('pointercancel', (e) => this.touches.delete(e.pointerId));
     c.addEventListener('dblclick', (e) => inPane(() => this.tool.dbl?.(e)));
@@ -266,6 +270,7 @@ export class Tools {
   }
 
   vcb(text) {
+    if (this.id !== 'clipbox' && this.app.clipGizmo?.vcb(text.trim())) return; // a typed distance for a clip face (#291)
     if (this.tool.vcb) this.guard(() => this.tool.vcb(text.trim()));
   }
 
@@ -825,6 +830,93 @@ class Rect3Tool {
     const [a, b, c] = this.pts.map((p) => D.round3(p.toArray()));
     this.cancel();
     await this.t.run('create_rectangle', { points: [a, b, c] });
+  }
+}
+
+/**
+ * Clip Box (#291): click (or drag) two corners of a rectangle on a face, the ground or the cloud, move up for the
+ * height, click: one add_clip, one undo step. Enter fits a box to the selection; "12, 8, 3" types its size.
+ */
+class ClipBoxTool {
+  hint = 'Click a corner on a face, the ground or the cloud, then the opposite corner, then move up for the height. Enter: fit a box to the selection. Type 12, 8, 3 for a size.';
+  vcbLabel = 'Size';
+  constructor(t) {
+    this.t = t;
+  }
+  busy() {
+    return !!this.p0;
+  }
+  cancel() {
+    this.p0 = this.p1 = this.drag = null;
+    this.t.clear();
+  }
+  /** The frame of the first click: on a face its normal is up, else world up. */
+  frame(inf) {
+    const n = inf.hit?.normal && Math.abs(inf.hit.normal.y) < 0.999 ? inf.hit.normal.clone() : V(0, 1, 0);
+    const b = basis(n);
+    return { n, u: b.u, z: b.u.clone().cross(n).normalize() };
+  }
+  box(h, p1 = this.p1) {
+    const { n, u, z } = this.f;
+    const d = p1.clone().sub(this.p0);
+    const sx = d.dot(u);
+    const sz = d.dot(z);
+    const center = this.p0.clone().addScaledVector(u, sx / 2).addScaledVector(z, sz / 2).addScaledVector(n, h / 2);
+    const rotation = CV.eulerOf(new THREE.Matrix4().makeBasis(u, n, z));
+    return { center: D.round3(center.toArray()), size: D.round3([Math.abs(sx), Math.abs(h), Math.abs(sz)].map((x) => Math.max(0.01, x))), rotation };
+  }
+  draw(h = 0, p1 = this.p1) {
+    this.t.vp.overlay.clear();
+    const c = CV.normalize({ kind: 'box', ...this.box(h, p1) });
+    const ax = CV.axes(c).map((a) => V(...a));
+    const at = (i, j, k) => V(...c.center).addScaledVector(ax[0], (i * c.size[0]) / 2).addScaledVector(ax[1], (j * c.size[1]) / 2).addScaledVector(ax[2], (k * c.size[2]) / 2);
+    for (const j of h ? [-1, 1] : [-1]) this.t.lines([at(-1, j, -1), at(1, j, -1), at(1, j, 1), at(-1, j, 1)], ACCENT, true);
+    if (h) for (const [i, k] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) this.t.lines([at(i, -1, k), at(i, 1, k)], ACCENT);
+    this.t.status(`Clip box ${c.size.map((x) => fmt(x)).join(' × ')}`, 'Size');
+  }
+  move(ev) {
+    if (!this.p0) return this.t.infer(ev);
+    if (!this.p1) {
+      const inf = this.t.infer(ev, { plane: new THREE.Plane().setFromNormalAndCoplanarPoint(this.f.n, this.p0) });
+      this.preview1 = inf.point.clone().addScaledVector(this.f.n, -inf.point.clone().sub(this.p0).dot(this.f.n));
+      if (this.drag) this.drag.moved ||= Math.hypot(ev.clientX - this.drag.x, ev.clientY - this.drag.y) > 5;
+      return this.draw(0, this.preview1);
+    }
+    this.h = closestOnLine(this.t.vp.ray(ev), this.p1, this.f.n).sub(this.p1).dot(this.f.n);
+    this.draw(this.h);
+  }
+  async down(ev) {
+    if (!this.p0) {
+      const inf = this.t.infer(ev);
+      this.p0 = inf.point.clone();
+      this.f = this.frame(inf);
+      this.drag = { x: ev.clientX, y: ev.clientY, moved: false };
+      return;
+    }
+    if (!this.p1) return void (this.p1 = this.preview1 || this.p0.clone());
+    return this.commit(this.h || 1);
+  }
+  up() {
+    // click-drag the rectangle: releasing after a drag sets the second corner
+    if (this.drag?.moved && !this.p1 && this.preview1) this.p1 = this.preview1;
+    this.drag = null;
+  }
+  async commit(h, size) {
+    const args = size ? { center: D.round3(this.p0.clone().addScaledVector(this.f.u, size[0] / 2).addScaledVector(this.f.z, size[2] / 2).addScaledVector(this.f.n, size[1] / 2).toArray()), size, rotation: CV.eulerOf(new THREE.Matrix4().makeBasis(this.f.u, this.f.n, this.f.z)) } : this.box(h);
+    this.cancel();
+    const r = await this.t.run('add_clip', { kind: 'box', ...args });
+    this.t.app.selectClip?.(r.clip.name);
+  }
+  async finish() {
+    if (this.p0) return this.commit(this.h || 1);
+    if (!this.t.app.selection.length) return this.t.status('Select what to clip to first, or draw a box.');
+    const r = await this.t.run('add_clip', { kind: 'box', from: 'selection' });
+    this.t.app.selectClip?.(r.clip.name);
+  }
+  vcb(text) {
+    const v = text.split(/[,;]\s*/).map(parseLength);
+    if (v.length === 3 && v.every((x) => x > 0) && this.p0) return this.commit(0, v);
+    if (v.length === 1 && v[0] > 0 && this.p1) return this.commit(v[0]);
   }
 }
 
@@ -2471,6 +2563,7 @@ const IMPL = {
   matbrush: MaterialBrushTool,
   eraser: EraserTool,
   section: SectionTool,
+  clipbox: ClipBoxTool,
   orbit: CameraTool,
   walk: WalkTool,
   pan: CameraTool,
