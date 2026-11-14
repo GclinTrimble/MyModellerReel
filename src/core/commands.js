@@ -4539,6 +4539,7 @@ function registerCore(reg, ctx) {
     return e;
   };
   const cloudData = (e) => {
+    if (!e.pointcloud.asset) return { count: 0, position: new Float32Array(0) }; // an octree whose preview never came
     const d = CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset));
     // the class edits (#299) on the preview's points
     if (e.pointcloud.edits?.length) d.classification = CSel.effective(d.classification, d.count, deltasOf(e), 'preview').classes;
