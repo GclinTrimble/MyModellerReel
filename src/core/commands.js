@@ -192,7 +192,7 @@ export const GUIDE = `MyModellerReel conventions:
   returns, grow_from a point over its plane), then set_point_class (class, lock, delete). Name user classes 64–255 with
   define_point_class. export_point_cloud writes LAS 1.4 or PLY with the edited classes (LAZ / COPC: not yet).
 - Working in a scan (#302). Never ask for raw points: every cloud command answers with counts, statistics and ids,
-  lists capped at 50 (slice_points returns points only when you give max; keep it under 300). The workflow:
+  lists capped at 50 (slice_points returns points only when you give max, 150 at most). The workflow:
   1. describe_cloud first (points, bounds in model and project E/N/Z, CRS, attributes, density, classes, the ground,
      levels = height peaks for floors and roofs, walls = dominant bearings); within: a clip describes just that part.
   2. Classes: list_cloud_classes; if the scan is unclassified, classify_cloud (#298: steps noise, ground, vegetation,
@@ -4556,6 +4556,7 @@ function registerCore(reg, ctx) {
 
   // point cloud display (#295–#297): style, filters, classes; the renderer reads pointcloud.style / .filter
   const cloudOf = (id) => {
+    if (!id && !ctx.doc.entities.some((x) => x.pointcloud)) throw new Error('No point cloud in the model: import_point_cloud first.');
     const [e] = D.resolve(ctx.doc, id || ctx.doc.entities.find((x) => x.pointcloud)?.id);
     if (!e?.pointcloud) throw new Error(`${e?.name || 'That'} is not a point cloud.`);
     return e;
@@ -5847,11 +5848,16 @@ function registerCore(reg, ctx) {
     if (a.pane !== undefined && !(Number.isInteger(a.pane) && a.pane >= 1 && a.pane <= 4)) throw new Error('pane is 1 to 4.');
     return { clip: c.name, pane: a.pane || 1, ...(await lookAtSlice(c, a.pane || 1)) };
   }, true);
-  def('view', 'slice_points', 'The scan points of a slab in its 2D frame (u right, v up, m from its middle), thinned to max, with the statistics: the input for drawing over a slice. store: keep them as a point set on the slab\'s middle plane (snap to it, draw over it) and return only the statistics.', obj({ name: str('the slab'), max: num('points returned (default 0: the statistics only; keep it under 300 in a reply) or kept with store (default 50000)'), store: bool('keep them as a point set'), as: str('store: the point set name (default "<slab> points")') }, ['name']), async (a) => {
+  /** At most n of [x, y, z, …] points, evenly spread (several clouds each return up to n). */
+  const everyKth = (p, n) => {
+    const k = Math.ceil(p.length / 3 / n);
+    return k <= 1 ? p : p.filter((_, i) => Math.floor(i / 3) % k === 0);
+  };
+  def('view', 'slice_points', 'The scan points of a slab in its 2D frame (u right, v up, m from its middle), thinned to max, with the statistics: the input for drawing over a slice. store: keep them as a point set on the slab\'s middle plane (snap to it, draw over it) and return only the statistics.', obj({ name: str('the slab'), max: num('points returned (default 0: the statistics only; at most 150, so a reply stays under 8 KB: store keeps more) or kept with store (default 50000)'), store: bool('keep them as a point set'), as: str('store: the point set name (default "<slab> points")') }, ['name']), async (a) => {
     const c = clipOf(a.name);
     const st = await sliceStats(c);
     if (!a.store) {
-      return { clip: c.name, frame: SL.frame(c), stats: st, ...(a.max ? { points: SL.project2d(c, (await slicePoints(c, a.max)).points) } : {}) };
+      return { clip: c.name, frame: SL.frame(c), stats: st, ...(a.max ? { points: SL.project2d(c, everyKth((await slicePoints(c, Math.min(150, a.max))).points, Math.min(150, a.max))) } : {}) };
     }
     const flat = SL.flatten(c, (await slicePoints(c, a.max ?? 50000)).points);
     if (!flat.length) throw new Error(`No scan points inside ${c.name}.`);

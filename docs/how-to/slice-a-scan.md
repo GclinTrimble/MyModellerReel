@@ -45,7 +45,7 @@ A series runs at elevations (floor levels: `from: 0, to: 12, step: 3`) or statio
 ```js
 await api.add_slice({ at: 'elevation', z: 1.2, above: 'ground', thickness: 0.2 });       // → { clip, stats }
 await api.view_clip({ name: 'Slice 1', pane: 2 });                                        // square-on, pane 1 stays 3D
-await api.slice_points({ name: 'Slice 1', max: 300 });                                    // [[u, v], …] in the slab's frame
+await api.slice_points({ name: 'Slice 1', max: 150 });                                    // [[u, v], …] in the slab's frame
 await api.slice_points({ name: 'Slice 1', store: true });                                 // a point set to snap to
 await api.add_slice({ at: 'station', alignment: 'Main road', station: 120, thickness: 0.5 });
 await api.slice_series({ at: 'station', alignment: 'Main road', from: 0, to: 120, step: 20 });

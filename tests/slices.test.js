@@ -129,7 +129,10 @@ test('a scan of two buildings and a road: the wall rings at 1.2 m above ground, 
   const r = await reg.run('add_slice', { at: 'elevation', z: 1.2, above: 'ground', thickness: 0.2 });
   near(r.clip.point[1], ground(0, 0) + 1.2, 0.15);
   assert.ok(r.stats.count > 1000, `${r.stats.count} wall points`);
-  const { points, frame } = await reg.run('slice_points', { name: 'Slice 1', max: 1e6 });
+  assert.equal((await reg.run('slice_points', { name: 'Slice 1', max: 1e6 })).points.length, 150, 'a reply holds 150 points at most');
+  const slab = ctx.doc.clips.find((c) => c.name === 'Slice 1');
+  const frame = SL.frame(slab);
+  const points = SL.project2d(slab, SL.pointsInClip(ctx.doc.entities[0], slab).points);
   assert.equal(points.length, r.stats.count);
   const onWall = (b, [x, y]) => {
     const [dx, dy] = [Math.abs(x - b.cx) - b.w / 2, Math.abs(y - b.cy) - b.d / 2];

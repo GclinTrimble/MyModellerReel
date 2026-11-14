@@ -108,7 +108,7 @@ export const EXAMPLES = {
   add_slice: { at: 'station', alignment: 'Main road', station: 120, thickness: 0.5 },
   slice_series: { at: 'station', alignment: 'Main road', from: 0, to: 200, step: 20 },
   view_clip: { name: 'Slice 1', pane: 2 },
-  slice_points: { name: 'Slice 1', max: 300 },
+  slice_points: { name: 'Slice 1', max: 150 },
   detect_planes: { within: 'Box 1', min_area: 2, regularise: true },
   detect_corners: { within: 'Box 1', min_angle: 30 },
   detect_edges: { kind: 'kerb', alignment: 'Main road', spacing: 1 },
