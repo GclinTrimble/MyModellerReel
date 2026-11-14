@@ -132,7 +132,9 @@ areas, and stage work with markers and build_sequence for a 4D sequence.`,
 points: commands answer with counts, statistics and ids. Start with describe_cloud (bounds in project E/N/Z, density,
 classes, the ground, levels = flat floors and roofs, walls = dominant bearings). Classes are ASPRS LAS 1.4: 2 ground,
 3/4/5 low/medium/high vegetation, 6 building, 7 and 18 noise, 11 road surface. If the scan is unclassified run
-classify_cloud and read its counts; hide vegetation and noise with set_cloud_filter. Isolate what you work on: add_clip
+classify_cloud (inside propose { action: 'start' }) and read its before / after counts; fix classes by hand with
+select_points then set_point_class (define_point_class names user classes 64–255, e.g. 64 Kerb); hide vegetation and
+noise with set_cloud_filter; export_point_cloud writes LAS 1.4 with the edited classes. Isolate what you work on: add_clip
 box around a feature (fit_clip, align_clip to two points of a wall or kerb), add_slice at a level (above: 'ground' for a
 plan cut 1.2 m up) or across an alignment at a station, slice_series for every floor or every 20 m. Extract with
 detect_planes (walls, roofs, ground: faces to align a clip to), detect_corners (CORNER survey points at wall corners),
@@ -144,7 +146,7 @@ select the new linework, screenshot, compare lines and points, and say what is o
 (propose: true, or propose { action: 'start' } first): the person accepts them. Deleting points, overwriting or
 unlocking classes: ask_user first. Typical tolerances: walls ±2 cm, kerbs ±3 cm in plan and ±1 cm in height, footprints
 square to ±5°.`,
-    toolset: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'detect_planes', 'detect_corners', 'add_clip', 'fit_clip', 'align_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'detect_edges', 'extract_footprint', 'trace_slice', 'extract_edges', 'screenshot', 'propose'],
+    toolset: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'select_points', 'set_point_class', 'define_point_class', 'export_point_cloud', 'detect_planes', 'detect_corners', 'add_clip', 'fit_clip', 'align_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'detect_edges', 'extract_footprint', 'trace_slice', 'extract_edges', 'screenshot', 'propose'],
     examples: [
       { title: 'Look at a scan', code: "const d = await api.describe_cloud({});\nreturn { points: d.points, classes: d.classes, levels: d.levels, walls: d.walls };" },
       { title: 'A box around the culvert, seen from the side', code: "await api.add_clip({ kind: 'box', name: 'Culvert', center: [80, 0, -33.8], size: [3, 3, 4] });\nawait api.add_slice({ at: 'line', points: [[78, 0, -33.8], [82, 0, -33.8]], thickness: 4, name: 'Culvert side' });\nawait api.view_clip({ name: 'Culvert side', pane: 2 });" },
@@ -210,7 +212,8 @@ are clearly mistakes (use place_on, align, set_params, move), leave design choic
     arguments: [{ name: 'level', description: 'height of the plan cut above the ground (default 1.2 m)' }, { name: 'cloud', description: 'the point cloud (default the first)' }],
     text: `Draft a plan from the scan {{cloud|(the first point cloud)}} in MyModellerReel.
 1. describe_cloud: note the classes, the ground, the levels and the wall bearings. If there is no building class (6), run
-   classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings'], propose: true } and accept it only if the counts look right.
+   propose { action: 'start' } then classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings'] }, and accept
+   (propose { action: 'accept' }) only if the counts look right.
 2. Hide vegetation and noise: set_cloud_filter { classes: { hide: [3, 4, 5, 7, 18] } }.
 3. Footprints: detect_corners { classes: [6], layer: 'Corners', propose: true } gives the corner points to check;
    extract_footprint { classes: [6], layer: 'Footprints', propose: true } draws the outlines.
@@ -224,7 +227,7 @@ are clearly mistakes (use place_on, align, set_params, move), leave design choic
     description: 'Kerb lines from a road scan along an alignment: edges, breaklines, a surface that follows them, the quality report explained',
     arguments: [{ name: 'alignment', description: 'the road alignment or centreline (default Main road)' }, { name: 'cloud', description: 'the point cloud (default the first)' }],
     text: `Extract the kerb lines along {{alignment|Main road}} from the scan {{cloud|(the first point cloud)}}.
-1. describe_cloud; make sure the road (11) and ground (2) classes exist (classify_cloud { propose: true } otherwise).
+1. describe_cloud; make sure the road (11) and ground (2) classes exist (propose { action: 'start' } and classify_cloud { steps: ['ground', 'road'] } otherwise).
 2. Look at a few cross-sections: slice_series { at: 'station', alignment: '{{alignment|Main road}}', from: 0, to: (its length), step: 20,
    thickness: 0.5 } and view_clip in pane 2: the kerb is a 100–200 mm step at the road edge.
 3. detect_edges { kind: 'kerb', alignment: '{{alignment|Main road}}', layer: 'Kerbs', propose: true }: kerb top and bottom
@@ -238,9 +241,12 @@ are clearly mistakes (use place_on, align, set_params, move), leave design choic
     arguments: [{ name: 'cloud', description: 'the point cloud (default the first)' }],
     text: `Classify and clean the scan {{cloud|(the first point cloud)}}.
 1. describe_cloud and list_cloud_classes: what is classified already?
-2. classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'], only_unclassified: true, propose: true }.
-   Never overwrite existing or locked classes, and never delete points, without asking me (ask_user).
-3. Review the counts per class against describe_cloud (ground usually 40–80 % of a site scan); say what looks wrong.
+2. propose { action: 'start' }, then classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'],
+   only_unclassified: true }. Never overwrite existing or locked classes (overwrite: true, lock: false), and never
+   delete points (set_point_class delete), without asking me (ask_user).
+3. Review the before / after counts per class (ground usually 40–80 % of a site scan); say what looks wrong. Fix small
+   mistakes by hand: select_points (within a clip, classes, elevation, grow_from) then set_point_class { class }.
+   Leave the proposal for me to accept.
 4. Hide vegetation and noise: set_cloud_filter { classes: { hide: [3, 4, 5, 7, 18] } }, colour by class
    (set_cloud_style { color_by: 'classification' }), screenshot, and summarise what is shown.`,
   },

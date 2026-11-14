@@ -20,9 +20,8 @@ export const TOOLSETS = {
   // working in a scan (#302); the commands of #298–#301 join as they land (a name not registered is skipped)
   pointcloud: {
     categories: [],
-    names: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'detect_planes', 'detect_corners', 'detect_edges', 'add_clip', 'fit_clip', 'align_clip', 'set_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'screenshot', 'propose', 'classify_ground', 'pick_cloud_point', 'import_point_cloud', 'point_cloud_job', 'step_slice', 'list_clips'],
-    // to add as they land: classify_cloud, select_points, set_point_class, export_point_cloud (#298, #299),
-    // extract_footprint, trace_slice, extract_edges (#301)
+    names: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'select_points', 'set_point_class', 'clear_point_selection', 'point_selection', 'define_point_class', 'detect_planes', 'detect_corners', 'detect_edges', 'add_clip', 'fit_clip', 'align_clip', 'set_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'screenshot', 'propose', 'classify_ground', 'pick_cloud_point', 'import_point_cloud', 'point_cloud_job', 'export_point_cloud', 'step_slice', 'list_clips'],
+    // to add as they land: extract_footprint, trace_slice, extract_edges (#301)
     words: ['scan', 'point cloud', 'las', 'laz', 'copc', 'potree', 'lidar', 'intensity', 'x-ray', 'xray', 'classify'],
     hints: ['slice', 'limit box', 'clip', 'façade', 'facade', 'corner', 'footprint', 'kerb', 'curb', 'edge of pavement', 'wall line'], // also mean other work: a smaller nudge
   },
@@ -113,13 +112,9 @@ export const EXAMPLES = {
   detect_corners: { within: 'Box 1', min_angle: 30 },
   detect_edges: { kind: 'kerb', alignment: 'Main road', spacing: 1 },
   describe_cloud: { id: 'Site scan', within: 'Culvert box' },
-  classify_cloud: { id: 'Site scan', steps: ['noise', 'ground', 'vegetation', 'buildings'], propose: true },
-  select_points: { id: 'Site scan', within: 'Box 1', classes: [1] },
-  set_point_class: { id: 'Site scan', class: 6 },
   extract_footprint: { id: 'Site scan', classes: [6], layer: 'Footprints', propose: true },
   trace_slice: { name: 'Level 1', layer: 'Walls', propose: true },
   extract_edges: { id: 'Site scan', kind: 'kerb', alignment: 'Main road', layer: 'Kerbs', propose: true },
-  export_point_cloud: { id: 'Site scan', path: 'C:/jobs/site/ground.laz', format: 'laz', classes: [2] },
   use_ai_model: { provider: 'ollama', model: 'mistral' },
   corridor_surface: { corridor: 'Road' },
   corridor_volumes: { corridor: 'Road', bulking: 1.25, shrinkage: 0.9 },

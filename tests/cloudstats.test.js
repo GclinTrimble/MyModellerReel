@@ -71,6 +71,13 @@ test('point cloud replies stay under 8 KB with long series and many clips', asyn
     ['detect_corners', { min_points: 100 }],
     ['detect_edges', { kind: 'intersections', min_points: 100 }],
     ['detect_edges', { kind: 'kerb', alignment: 'Main road' }],
+    ['classify_cloud', { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'] }],
+    ['add_clip', { kind: 'box', name: 'Sel', center: [21, 3, -60], size: [14, 10, 12] }],
+    ['select_points', { within: 'Sel', classes: [6] }],
+    ['point_selection', {}],
+    ['define_point_class', { code: 64, name: 'Kerb', color: '#e0b400' }],
+    ['set_point_class', { class: 64 }],
+    ['list_cloud_classes', {}],
   ];
   for (const [n, a] of calls) {
     const size = JSON.stringify(await reg.run(n, a)).length;

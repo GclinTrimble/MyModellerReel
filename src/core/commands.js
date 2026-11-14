@@ -195,9 +195,11 @@ export const GUIDE = `MyModellerReel conventions:
   lists capped at 50 (slice_points returns points only when you give max, 150 at most). The workflow:
   1. describe_cloud first (points, bounds in model and project E/N/Z, CRS, attributes, density, classes, the ground,
      levels = height peaks for floors and roofs, walls = dominant bearings); within: a clip describes just that part.
-  2. Classes: list_cloud_classes; if the scan is unclassified, classify_cloud (#298: steps noise, ground, vegetation,
-     buildings, road; review the counts it reports). Show / hide with set_cloud_filter (vegetation 3, 4, 5; noise 7, 18),
-     colour with set_cloud_style. Fix classes by hand: select_points then set_point_class (#299).
+  2. Classes: list_cloud_classes; if the scan is unclassified, classify_cloud { steps, within?, only_unclassified: true }
+     (inside propose { action: 'start' }) and review the before / after counts it reports. Show / hide with
+     set_cloud_filter (vegetation 3, 4, 5; noise 7, 18), colour with set_cloud_style. Fix classes by hand: select_points
+     (within a clip, classes, intensity, elevation, a screen polygon, grow_from) then set_point_class { class }; user
+     classes 64–255 get a name with define_point_class (64 "Kerb").
   3. Isolate: add_clip box from a selection or around a feature (fit_clip, align_clip to a wall or kerb), add_slice /
      slice_series for levels and stations (above: 'ground' for a plan cut 1.2 m up).
   4. Detect (in a scope: id, within a clip, classes; layer, default Detected; propose: true): detect_planes (walls,
@@ -208,12 +210,13 @@ export const GUIDE = `MyModellerReel conventions:
      (kerbs, edges of seal, as_breaklines for the surface). Put results on layers (Footprints, Kerbs, Walls, Corners).
   5. Check by eye before you answer: view_clip on the slice (pane 2), set_cloud_style { depth: 'xray' } so walls and
      kerbs glow, select the new linework, screenshot, and compare lines and points; fix or say what is off.
-  6. Propose, do not overwrite: classification and extraction you start take propose: true (or wrap them in
-     propose { action: 'start' }); the person accepts or rejects. Deleting points, overwrite: true on classes or
-     changing locked classes only after ask_user says yes.
+  6. Propose, do not overwrite: detection and extraction you start take propose: true, classify_cloud and
+     set_point_class go inside propose { action: 'start' }; the person accepts or rejects. Deleting points
+     (set_point_class delete), overwrite: true, or unlocking classes (lock: false) only after ask_user says yes.
   Coordinates: commands take model metres (x east, y up, z south of the base point); describe_cloud and pick_cloud_point
   also give project E/N/Z. Long conversions return a job: point_cloud_job { wait: 30 } at most, then carry on.
-  Formats in and out are open: LAS / LAZ 1.4 (ASPRS), COPC, Potree 2.0 octrees, PLY; export_point_cloud (#299) writes them.
+  Formats are open: LAS / LAZ 1.4 (ASPRS), COPC, Potree 2.0 octrees and PLY come in; export_point_cloud writes LAS 1.4
+  or PLY with the edited classes (what: all, selection or a clip; LAZ / COPC not yet).
 - Standards, always: prefer open formats and OGC standards (ogc.org/standards) for anything exchanged: GeoJSON / OGC API
   Features encodings, CityGML / CityJSON, LandXML, IFC, EPSG codes for coordinate systems (urn:ogc:def:crs:EPSG::n),
   CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.

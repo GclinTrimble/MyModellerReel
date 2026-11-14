@@ -243,14 +243,14 @@ TASKS.push(
   },
   {
     name: 'scan-hide-vegetation',
-    prompt: 'Hide the trees and bushes in the site scan, keep everything else.',
-    setup: SCAN,
+    prompt: 'The site scan is not classified yet. Hide the trees and bushes in it, keep everything else.',
+    setup: [(ctx) => addScanCloud(ctx.doc, { points: 60000, classified: false })],
     check: (doc) => {
-      const f = ents(doc).find((e) => e.pointcloud)?.pointcloud.filter || {};
-      const hide = f.hide || [];
-      return checks([['trees hidden (5)', hide.includes(5)], ['shrubs hidden (3)', hide.includes(3)], ['ground, road and buildings kept', ![2, 6, 11].some((c) => hide.includes(c))]]);
+      const pc = ents(doc).find((e) => e.pointcloud)?.pointcloud || {};
+      const hide = pc.filter?.hide || [];
+      return checks([['classified (classify_cloud)', !!pc.classify || !!pc.edits], ['trees hidden (5)', hide.includes(5)], ['bushes hidden (3, 4)', hide.includes(3) && hide.includes(4)], ['ground, road and buildings kept', ![2, 6, 11].some((c) => hide.includes(c))]]);
     },
-    solution: [['set_cloud_filter', { classes: { hide: [3, 4, 5] } }]],
+    solution: [['describe_cloud', {}], ['classify_cloud', { steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'] }], ['set_cloud_filter', { classes: { hide: [3, 4, 5] } }]],
   },
   {
     name: 'scan-slice-level',

@@ -7,8 +7,10 @@ import * as CS from '../../src/core/cloudstyle.js';
 import { geo } from '../../src/core/survey.js';
 import { makeScan, SITE } from './scan.js';
 
-export function addScanCloud(doc, { points = 60000, seed = 1, name = 'Site scan' } = {}) {
+/** classified: false gives every point class 1 (unclassified), a scan straight from the field. */
+export function addScanCloud(doc, { points = 60000, seed = 1, name = 'Site scan', classified = true } = {}) {
   const s = makeScan({ points, seed });
+  if (!classified) s.classification.fill(1);
   const base = SITE.origin;
   geo(doc).base = [...base];
   const n = s.count;
