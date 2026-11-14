@@ -937,3 +937,9 @@ table.qty td.n, table.qty th.n { text-align: right; }
 /* point cloud streaming statistics (#294) */
 .cloud-stats { position: absolute; left: calc(var(--my-space-3) + 6rem); bottom: var(--my-space-2); font: var(--my-text-xs) var(--my-font-mono); color: var(--my-text-muted); pointer-events: none; }
 .toast.cloud-offer { display: flex; flex-wrap: wrap; gap: var(--my-space-2); align-items: center; }
+.cloud-legend-count { margin-left: auto; padding-left: var(--my-space-2); font-family: var(--my-font-mono); color: var(--my-text-muted); }
+/* Point Select (#299): its modes over the view, and the lasso, box or brush outline */
+.point-select-bar { position: absolute; top: calc(var(--my-space-2) + 52px); left: 50%; transform: translateX(-50%); z-index: 4; display: flex; gap: var(--my-space-1); align-items: center; padding: var(--my-space-1); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); }
+.point-select-bar [aria-pressed='true'] { background: var(--my-surface-2); outline: 2px solid var(--my-warning); }
+.point-select-outline { position: absolute; z-index: 3; pointer-events: none; overflow: visible; }
+.point-select-outline polyline { fill: none; stroke: var(--my-info); stroke-width: 2.5; stroke-dasharray: 7 4; }

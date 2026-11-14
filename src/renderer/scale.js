@@ -7,6 +7,7 @@ import * as Assets from '../core/assets.js';
 import * as PDF from '../core/pdf.js';
 import * as DW from '../core/drawings.js';
 import * as CS from '../core/cloudstyle.js';
+import * as CSel from '../core/cloudselect.js';
 import { styleCloud, shown } from './cloudmaterial.js';
 
 // picking through a bounding volume tree (#111): big imports stay quick to click on
@@ -50,9 +51,36 @@ export function cloudObject(e) {
       clouds.set(key, g); // a missing file may be imported again under the same asset id
     }
   }
+  if (g.userData.cloudData) previewClasses(g, e);
   const o = styleCloud(new THREE.Points(g), e, g.userData.cloudData);
   o.raycast = () => {};
   return o;
+}
+
+/** The preview's classes with the cloud's class edits (#299) on its 'preview' points, redone when the edits change. */
+function previewClasses(g, e) {
+  const edits = e.pointcloud.edits || [];
+  const key = edits.join();
+  if ((g.userData.editsKey || '') === key) return;
+  const d = g.userData.cloudData;
+  g.userData.baseClass ||= d.classification ? d.classification.slice() : null;
+  const deltas = CSel.deltasFor(edits, (x) => Assets.bytes(x));
+  const { classes } = CSel.effective(g.userData.baseClass, d.count, deltas, 'preview');
+  if (!g.attributes.classification) g.setAttribute('classification', new THREE.BufferAttribute(classes, 1));
+  else g.attributes.classification.array.set(classes), (g.attributes.classification.needsUpdate = true);
+  d.classification = g.attributes.classification.array;
+  g.userData.editsKey = key;
+}
+
+/** The point selection's preview points highlighted on a preview cloud object. */
+export function highlightPreview(o, s) {
+  const g = o.geometry;
+  const sel = s?.id === o.userData.cloudEntity?.id ? s.sel.nodes.get('preview') : null;
+  if (!sel && !g.attributes.selected) return;
+  const a = g.attributes.selected || g.setAttribute('selected', new THREE.BufferAttribute(new Uint8Array(g.attributes.position.count), 1)).attributes.selected;
+  a.array.fill(0);
+  if (sel) for (const i of sel.idx) a.array[i] = 1;
+  a.needsUpdate = true;
 }
 /** Snap points from a cloud: a few thousand of the points it shows (its filter and the section), or with keep (a world-point test: the clips) up to max of those kept. */
 export function cloudSnaps(o, max = 4000, keep = null) {

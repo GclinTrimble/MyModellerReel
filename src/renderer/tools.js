@@ -18,6 +18,9 @@ import * as TK from '../core/takeoff.js';
 import { h } from './ui.js';
 import { parseCode } from '../core/survey.js';
 import { previewTies } from '../core/ties.js';
+import * as CSel from '../core/cloudselect.js';
+import * as CL from '../core/classify.js';
+import * as CS from '../core/cloudstyle.js';
 
 const V = (...a) => new THREE.Vector3(...a);
 let AXES = { x: V(1, 0, 0), y: V(0, 1, 0), z: V(0, 0, 1) };
@@ -79,6 +82,7 @@ export const TOOLS = [
   { id: 'text', label: 'Text (no leader)', key: '', icon: 'text-t', group: 'construct' },
   { id: 'surfedit', label: 'Edit surface (points, breaklines, outline and holes, swap, delete)', key: '', icon: 'triangle', group: 'site' },
   { id: 'basepoint', label: 'Base point (click a point, type its coordinates)', key: '', icon: 'crosshair-simple', group: 'site' },
+  { id: 'pointselect', label: 'Point Select: lasso, box, brush or grow over a cloud, then 0–9 sets the class', key: '', icon: 'lasso', group: 'site' },
   { id: 'paint', label: 'Paint Bucket (Alt samples)', key: 'B', icon: 'paint-bucket', group: 'construct' },
   { id: 'matbrush', label: 'Material brush (paint surface materials for takeoff)', key: '', icon: 'paint-brush', group: 'construct' },
   { id: 'eraser', label: 'Eraser', key: 'E', icon: 'eraser', group: 'construct' },
@@ -2532,7 +2536,175 @@ class CurveTool {
   }
 }
 
+/**
+ * Point Select (#299): lasso, box, brush or grow over a point cloud, then a class key. Everything goes through the
+ * commands (select_points, set_point_class), so Plumb and scripts do the same. Shift adds, Ctrl takes away; F toggles
+ * front only (the brush is always front only); 0–9 set the ten most used classes, Delete deletes, K locks, I inverts,
+ * Esc clears.
+ */
+class PointSelectTool {
+  vcbLabel = 'Class';
+  constructor(t) {
+    this.t = t;
+    this.mode = t.pointMode || 'lasso';
+    this.front = !!t.pointFront;
+    this.bar();
+  }
+  get hint() {
+    const keys = Object.entries(CSel.CLASS_KEYS).map(([k, c]) => `${k} ${className(this.t.app, c)}`).join(', ');
+    return `${{ lasso: 'Drag a lasso around points', box: 'Drag a box around points', brush: 'Paint over points (front only)', grow: 'Click a point: its plane grows to the corners' }[this.mode]}${this.front && this.mode !== 'brush' ? ', front only' : ''}. Shift adds, Ctrl takes away. Keys: ${keys}; Delete deletes, K locks, I inverts, F front only, Esc clears. Or type a class code.`;
+  }
+  cloud() {
+    const doc = this.t.app.store.doc;
+    const sel = doc.entities.find((e) => e.pointcloud && this.t.app.selection.includes(e.id));
+    return sel || doc.entities.find((e) => e.pointcloud && e.visible !== false);
+  }
+  /** The mode buttons over the view. */
+  bar() {
+    const wrap = document.querySelector('.viewport-wrap');
+    if (!wrap) return;
+    this.el = document.createElement('div');
+    this.el.className = 'point-select-bar';
+    this.el.setAttribute('role', 'toolbar');
+    this.el.setAttribute('aria-label', 'Point selection');
+    const modes = [['lasso', 'Lasso', 'lasso'], ['box', 'Box', 'selection'], ['brush', 'Brush', 'paint-brush'], ['grow', 'Grow a plane', 'arrows-out-simple']];
+    for (const [m, label, ic] of modes) {
+      const b = document.createElement('button');
+      b.className = 'icon-btn sm';
+      b.title = label;
+      b.setAttribute('aria-label', label);
+      b.setAttribute('aria-pressed', String(m === this.mode));
+      b.innerHTML = `<i class="ph ph-${ic}"></i>`;
+      b.onclick = () => this.setMode(m);
+      this.el.append(b);
+    }
+    const f = document.createElement('button');
+    f.className = 'btn small';
+    f.textContent = 'Front only';
+    f.setAttribute('aria-pressed', String(this.front));
+    f.onclick = () => this.toggleFront();
+    this.el.append(f);
+    wrap.append(this.el);
+  }
+  leave() {
+    this.el?.remove();
+    this.svg?.remove();
+  }
+  setMode(m) {
+    this.mode = this.t.pointMode = m;
+    this.el?.querySelectorAll('.icon-btn').forEach((b, i) => b.setAttribute('aria-pressed', String(['lasso', 'box', 'brush', 'grow'][i] === m)));
+    this.t.status(this.hint);
+  }
+  toggleFront() {
+    this.front = this.t.pointFront = !this.front;
+    this.el?.querySelector('.btn')?.setAttribute('aria-pressed', String(this.front));
+    this.t.status(this.hint);
+  }
+  frac(ev) {
+    const r = this.t.vp.input.getBoundingClientRect();
+    return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height];
+  }
+  modeOf(ev) {
+    return ev.shiftKey ? 'add' : ev.ctrlKey || ev.metaKey ? 'remove' : 'set';
+  }
+  pane() {
+    return this.t.vp.paneNow ? { pane: this.t.vp.paneNow.i + 1 } : {};
+  }
+  /** The lasso, box or brush outline over the view (an SVG). */
+  outline(pts, closed = true) {
+    const wrap = this.t.vp.input.parentElement;
+    if (!this.svg) {
+      this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      this.svg.setAttribute('class', 'point-select-outline');
+      wrap.append(this.svg);
+    }
+    const r = this.t.vp.input.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    Object.assign(this.svg.style, { left: `${r.left - w.left}px`, top: `${r.top - w.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    this.svg.innerHTML = pts.length ? `<polyline points="${pts.map(([x, y]) => `${x * r.width},${y * r.height}`).join(' ')}${closed ? ` ${pts[0][0] * r.width},${pts[0][1] * r.height}` : ''}" />` : '';
+  }
+  circle(c, px = 24) {
+    const r = this.t.vp.input.getBoundingClientRect();
+    return Array.from({ length: 16 }, (_, k) => [c[0] + (px / r.width) * Math.cos((k * Math.PI) / 8), c[1] + (px / r.height) * Math.sin((k * Math.PI) / 8)]);
+  }
+  async select(args) {
+    const e = this.cloud();
+    if (!e) return this.t.status('No point cloud in the model: import one first.');
+    this.busy = (this.busy || Promise.resolve()).then(() => this.t.app.reg.run('select_points', { id: e.id, ...this.pane(), ...args })).then((r) => {
+      this.t.status(`${r.selected.toLocaleString()} points selected${r.classes.length ? `: ${r.classes.map((c) => `${c.points.toLocaleString()} ${c.name}`).join(', ')}` : ''}. ${this.hint}`);
+      return r;
+    });
+    return this.busy.catch((err) => this.t.app.ui.toast(err.message, 'danger'));
+  }
+  down(ev) {
+    const p = this.frac(ev);
+    this.drag = { start: p, pts: [p], mode: this.modeOf(ev), last: 0 };
+    if (this.mode === 'grow') {
+      this.drag = null;
+      return this.select({ grow_from: p, mode: this.modeOf(ev) });
+    }
+    if (this.mode === 'brush') this.paint(p, true);
+  }
+  paint(p, first = false) {
+    const now = performance.now();
+    if (!first && now - this.drag.last < 120) return;
+    this.drag.last = now;
+    this.outline(this.circle(p));
+    this.select({ polygon: this.circle(p), front_only: true, mode: first && this.drag.mode === 'set' ? 'set' : this.drag.mode === 'remove' ? 'remove' : 'add' });
+  }
+  move(ev) {
+    if (!this.drag) {
+      if (this.mode === 'brush') this.outline(this.circle(this.frac(ev)));
+      return;
+    }
+    const p = this.frac(ev);
+    if (this.mode === 'brush') return this.paint(p);
+    if (this.mode === 'box') {
+      const [a, b] = [this.drag.start, p];
+      this.drag.pts = [a, [b[0], a[1]], b, [a[0], b[1]]];
+    } else this.drag.pts.push(p);
+    this.outline(this.drag.pts);
+  }
+  async up() {
+    const d = this.drag;
+    this.drag = null;
+    if (!d || this.mode === 'brush' || this.mode === 'grow') return;
+    this.outline([]);
+    const area = Math.abs(d.pts.reduce((s, p, i) => s + p[0] * d.pts[(i + 1) % d.pts.length][1] - d.pts[(i + 1) % d.pts.length][0] * p[1], 0));
+    if (d.pts.length < 3 || area < 1e-5) return;
+    await this.select({ polygon: d.pts, front_only: this.front, mode: d.mode });
+  }
+  async apply(args) {
+    await this.busy?.catch(() => {});
+    const r = await this.t.app.reg.run('set_point_class', args).catch((err) => this.t.app.ui.toast(err.message, 'danger'));
+    if (r) this.t.status(`${r.changed.toLocaleString()} points ${r.deleted ? 'deleted' : r.class !== undefined ? `now ${r.class_name}` : r.locked ? 'locked' : 'unlocked'}. ${this.hint}`);
+  }
+  key(ev) {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+    const k = ev.key.toLowerCase();
+    if (k in CSel.CLASS_KEYS && ev.target?.tagName !== 'INPUT') return this.apply({ class: CSel.CLASS_KEYS[k] }), true;
+    if (ev.key === 'Delete') return this.apply({ delete: true }), true;
+    if (k === 'k') return this.apply({ lock: true }), true;
+    if (k === 'i') return this.select({ mode: 'invert' }), true;
+    if (k === 'f') return this.toggleFront(), true;
+    if (ev.key === 'Escape') {
+      this.drag = null;
+      this.outline([]);
+      this.t.app.reg.run('clear_point_selection', {});
+      this.t.status(this.hint);
+      return true;
+    }
+    return false;
+  }
+  vcb(text) {
+    const c = Number(text);
+    if (Number.isInteger(c) && c >= 0 && c <= 255) return this.apply({ class: c });
+  }
+}
+const className = (app, c) => app.store.doc.pointClasses?.[c]?.name || CL.USER_CLASSES[c]?.[0] || CS.className(c);
+
 const IMPL = {
+  pointselect: PointSelectTool,
   select: SelectTool,
   line: LineTool,
   rectangle: RectangleTool,

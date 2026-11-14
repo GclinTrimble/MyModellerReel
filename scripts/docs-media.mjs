@@ -1003,6 +1003,76 @@ const PAGES = {
       fs.rmSync(file, { force: true });
     }
   },
+  async 'classify-a-point-cloud'() {
+    await fresh();
+    await run('set_layout', { count: 1 });
+    // the synthetic corridor scan of the tests delivered unclassified, with a box van parked on the north verge
+    const F = await import('../tests/fixtures/scan.js');
+    const T = await import('../tests/fixtures/truck.js');
+    const file = path.join(os.tmpdir(), `corridor-unclassified-${Date.now()}.las`).replace(/\\/g, '/');
+    fs.writeFileSync(file, F.writeLas(T.withTruck(F.makeScan({ points: 1500000, seed: 2 }))));
+    const id = 'Corridor scan';
+    const settle = () => js('await window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()); return 1;');
+    try {
+      await run('import_point_cloud', { path: file, name: id, octree: true });
+      while ((await run('point_cloud_job', { id })).octree !== 'ready') await wait(300);
+      await run('set_style', { grid: false });
+      const base = await js(`return api.doc.entities.find((e) => e.name === '${id}').pointcloud.base;`);
+      const at = (e, n, up = 0) => [e - base[0], F.groundAt(e, n) - base[2] + up, -(n - base[1])];
+      const [ox, oy] = F.SITE.origin;
+      const wide = () => camera(at(ox + 105, oy - 12, 55), at(ox + 50, oy + 42));
+      await wide();
+      await none();
+      await settle();
+      await shot('A scan delivered unclassified: every point class 1');
+      await run('classify_cloud', { id, steps: ['noise', 'ground', 'vegetation', 'buildings', 'road'] });
+      await run('set_cloud_style', { id, color_by: 'classification' });
+      await wait(2500);
+      await shot('Site › Classify point cloud: it runs in the background, tile by tile, with its progress below', { moving: true });
+      while ((await js(`return api.doc.entities.find((e) => e.name === '${id}').pointcloud.classify.status;`)) === 'running') await wait(500);
+      await settle();
+      await shot('Ground, road surface, kerbs, buildings, trees and noise in their ASPRS colours; the legend counts every point');
+      // the van, tagged building: a hand fix
+      const [vx, vy] = [(T.TRUCK.min[0] + T.TRUCK.max[0]) / 2, (T.TRUCK.min[1] + T.TRUCK.max[1]) / 2];
+      await camera(at(vx + 12, vy - 13, 9), at(vx, vy, 1.4));
+      await settle();
+      await shot('A parked van, tagged building: no classifier is right everywhere');
+      await js("window.mmr.app.tools.set('pointselect'); return 1;");
+      const corners = [];
+      for (const x of [T.TRUCK.min[0], T.TRUCK.max[0]]) for (const y of [T.TRUCK.min[1], T.TRUCK.max[1]]) for (const z of [0.2, 3]) corners.push(at(x, y, z));
+      const sc = await js(`const vp = window.mmr.app.viewport; return ${JSON.stringify(corners)}.map((p) => { const v = vp.camera.position.clone().set(...p).project(vp.camera); return [(v.x + 1) / 2, (1 - v.y) / 2]; });`);
+      const [x0, x1, y0, y1] = [Math.min(...sc.map((p) => p[0])) - 0.02, Math.max(...sc.map((p) => p[0])) + 0.02, Math.min(...sc.map((p) => p[1])) - 0.02, Math.max(...sc.map((p) => p[1])) + 0.02];
+      const [mx, my] = [(x0 + x1) / 2, (y0 + y1) / 2];
+      const lasso = [[x0, my], [x0 + 0.02, y0], [mx, y0 - 0.02], [x1 - 0.01, y0], [x1 + 0.01, my], [x1, y1], [mx, y1 + 0.02], [x0 + 0.01, y1]];
+      // the lasso as the tool draws it, then the same selection through select_points
+      await js(`const t = window.mmr.app.tools.tool; t.outline(${JSON.stringify(lasso)}); return 1;`);
+      const sel = await run('select_points', { id, polygon: lasso, classes: [6] });
+      await shot(`Point Select (Site menu): a lasso around the van, only its building points: ${sel.selected.toLocaleString()} selected`);
+      await js("window.mmr.app.tools.tool.outline([]); return 1;");
+      await run('set_point_class', { class: 65 });
+      await run('clear_point_selection');
+      await shot('Press 0: the van is a vehicle (user class 65); the legend counts follow, one undo step');
+      // grow over a wall of the flat-roofed building
+      const b = F.SITE.buildings[0];
+      await camera(at(ox + 36, oy + 38, 9), at(ox + 21, oy + 56, 2));
+      await settle();
+      const g = await run('select_points', { id, grow_from: [ox + 21, oy + 55, b.base + 3], tolerance: 12, distance: 0.08 });
+      await shot(`Grow from a point on a wall: the wall's plane, stopping at the corners (${g.selected.toLocaleString()} points)`);
+      await run('clear_point_selection');
+      await js("window.mmr.app.tools.set('select'); return 1;");
+      // the terrain from class 2
+      await run('set_cloud_filter', { id, classes: { hide: [3, 4, 5, 6, 7, 18, 65] } });
+      await wide();
+      await settle();
+      await shot('Hide vegetation, buildings, vehicles and noise: the bare earth');
+      await run('classify_ground', { id, cell: 1, name: 'Ground from scan' });
+      await run('set_properties', { ids: [id], visible: false });
+      await none();
+      await shot('Ground surface from a point cloud: class 2 as it is, no search again');
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  },
   async 'scanned-drawings-and-reading'() {
     await fresh();
     await run('import_image', { path: `${SAMPLES}/scanned-plan.jpg`, scale: '1:100' });

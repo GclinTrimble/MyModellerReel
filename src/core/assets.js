@@ -10,6 +10,7 @@ export function put(bytes, { mime = 'application/octet-stream', name = '' } = {}
   let h = 2166136261 ^ b.length;
   const step = Math.max(1, Math.floor(b.length / 65536)); // shortcut: samples big files, the length guards collisions
   for (let i = 0; i < b.length; i += step) h = Math.imul(h ^ b[i], 16777619);
+  for (let i = 1; i < Math.min(64, b.length); i++) h = Math.imul(h ^ b[i], 16777619); // headers whole (class deltas carry a nonce there)
   const id = `a${(h >>> 0).toString(36)}${b.length.toString(36)}`;
   if (!store.has(id)) store.set(id, { bytes: b, mime, name });
   return id;
@@ -25,7 +26,7 @@ export const ids = () => [...store.keys()];
 
 /** For saving: the assets a document uses, as base64. */
 /** The asset ids a document uses (drawings, scans, audio, textures). */
-export const usedIds = (doc) => new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...doc.entities.filter((e) => e.pointcloud).map((e) => e.pointcloud.asset), ...(doc.animation?.audio || []).map((c) => c.asset), ...lookAssets(doc), ...doc.entities.filter((e) => e.survey).flatMap((e) => (e.survey.media || []).map((m) => m.asset).filter(Boolean))]);
+export const usedIds = (doc) => new Set([...doc.entities.filter((e) => e.underlay).map((e) => e.underlay.asset), ...doc.entities.filter((e) => e.pointcloud).flatMap((e) => [e.pointcloud.asset, ...(e.pointcloud.edits || [])]), ...(doc.animation?.audio || []).map((c) => c.asset), ...lookAssets(doc), ...doc.entities.filter((e) => e.survey).flatMap((e) => (e.survey.media || []).map((m) => m.asset).filter(Boolean))]);
 
 export function pack(doc) {
   const used = usedIds(doc);
