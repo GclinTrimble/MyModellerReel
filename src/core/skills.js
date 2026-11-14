@@ -135,14 +135,16 @@ classes, the ground, levels = flat floors and roofs, walls = dominant bearings).
 classify_cloud and read its counts; hide vegetation and noise with set_cloud_filter. Isolate what you work on: add_clip
 box around a feature (fit_clip, align_clip to two points of a wall or kerb), add_slice at a level (above: 'ground' for a
 plan cut 1.2 m up) or across an alignment at a station, slice_series for every floor or every 20 m. Extract with
-extract_footprint (buildings), trace_slice (wall lines from a level slice), extract_edges / detect_edges kind kerb
-along an alignment (kerb top and bottom, edges of seal, as_breaklines for the surface), each on its own layer
-(Footprints, Walls, Kerbs). Then check by eye: view_clip on the slice in pane 2, set_cloud_style { depth: 'xray' },
+detect_planes (walls, roofs, ground: faces to align a clip to), detect_corners (CORNER survey points at wall corners),
+detect_edges kind kerb along an alignment (kerb top and bottom lines; step for retaining walls, wall_top,
+intersections for eaves and ridges); extract_footprint (buildings), trace_slice (wall lines from a level slice),
+extract_edges (edges of seal, as_breaklines for the surface). Each on its own layer (Footprints, Walls, Kerbs,
+Corners). Then check by eye: view_clip on the slice in pane 2, set_cloud_style { depth: 'xray' },
 select the new linework, screenshot, compare lines and points, and say what is off. Results you make are proposals
 (propose: true, or propose { action: 'start' } first): the person accepts them. Deleting points, overwriting or
 unlocking classes: ask_user first. Typical tolerances: walls ±2 cm, kerbs ±3 cm in plan and ±1 cm in height, footprints
 square to ±5°.`,
-    toolset: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'add_clip', 'fit_clip', 'align_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'detect_edges', 'extract_footprint', 'trace_slice', 'extract_edges', 'screenshot', 'propose'],
+    toolset: ['describe_cloud', 'list_cloud_classes', 'set_cloud_filter', 'set_cloud_style', 'classify_cloud', 'detect_planes', 'detect_corners', 'add_clip', 'fit_clip', 'align_clip', 'add_slice', 'slice_series', 'view_clip', 'slice_points', 'detect_edges', 'extract_footprint', 'trace_slice', 'extract_edges', 'screenshot', 'propose'],
     examples: [
       { title: 'Look at a scan', code: "const d = await api.describe_cloud({});\nreturn { points: d.points, classes: d.classes, levels: d.levels, walls: d.walls };" },
       { title: 'A box around the culvert, seen from the side', code: "await api.add_clip({ kind: 'box', name: 'Culvert', center: [80, 0, -33.8], size: [3, 3, 4] });\nawait api.add_slice({ at: 'line', points: [[78, 0, -33.8], [82, 0, -33.8]], thickness: 4, name: 'Culvert side' });\nawait api.view_clip({ name: 'Culvert side', pane: 2 });" },
@@ -210,7 +212,8 @@ are clearly mistakes (use place_on, align, set_params, move), leave design choic
 1. describe_cloud: note the classes, the ground, the levels and the wall bearings. If there is no building class (6), run
    classify_cloud { steps: ['noise', 'ground', 'vegetation', 'buildings'], propose: true } and accept it only if the counts look right.
 2. Hide vegetation and noise: set_cloud_filter { classes: { hide: [3, 4, 5, 7, 18] } }.
-3. Footprints: extract_footprint { classes: [6], layer: 'Footprints', propose: true }.
+3. Footprints: detect_corners { classes: [6], layer: 'Corners', propose: true } gives the corner points to check;
+   extract_footprint { classes: [6], layer: 'Footprints', propose: true } draws the outlines.
 4. Walls: add_slice { at: 'elevation', z: {{level|1.2}}, above: 'ground', name: 'Plan cut' } (slice_series for several floors),
    then trace_slice { name: 'Plan cut', layer: 'Walls', propose: true }.
 5. Check: view_clip { name: 'Plan cut', pane: 2 }, set_cloud_style { depth: 'xray' }, select the new lines, screenshot,
@@ -224,8 +227,8 @@ are clearly mistakes (use place_on, align, set_params, move), leave design choic
 1. describe_cloud; make sure the road (11) and ground (2) classes exist (classify_cloud { propose: true } otherwise).
 2. Look at a few cross-sections: slice_series { at: 'station', alignment: '{{alignment|Main road}}', from: 0, to: (its length), step: 20,
    thickness: 0.5 } and view_clip in pane 2: the kerb is a 100–200 mm step at the road edge.
-3. extract_edges { kind: 'kerb', alignment: '{{alignment|Main road}}', layer: 'Kerbs', as_breaklines: true, propose: true }
-   (detect_edges first if you only want to look).
+3. detect_edges { kind: 'kerb', alignment: '{{alignment|Main road}}', layer: 'Kerbs', propose: true }: kerb top and bottom
+   lines with their height; extract_edges { kind: 'kerb', …, as_breaklines: true } (#301) also makes the surface follow them.
 4. Check: a level slab over the road, set_cloud_style { depth: 'xray' }, select the kerb lines, screenshot; step_slice
    through the sections to see the lines sit on the kerb top and bottom.
 5. Explain the quality report: length found, gaps, RMS to the points, where it is doubtful. Leave it as a proposal.`,

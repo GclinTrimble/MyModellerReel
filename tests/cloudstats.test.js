@@ -67,6 +67,10 @@ test('point cloud replies stay under 8 KB with long series and many clips', asyn
     ['slice_points', { name: 'Slice 1' }],
     ['fit_clip', { name: 'Box 1', from: 'model' }],
     ['delete_clip', { name: 'Box 1' }],
+    ['detect_planes', { min_points: 50, min_area: 0.2 }],
+    ['detect_corners', { min_points: 100 }],
+    ['detect_edges', { kind: 'intersections', min_points: 100 }],
+    ['detect_edges', { kind: 'kerb', alignment: 'Main road' }],
   ];
   for (const [n, a] of calls) {
     const size = JSON.stringify(await reg.run(n, a)).length;

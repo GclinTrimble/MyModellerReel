@@ -200,6 +200,7 @@ TASKS.push(
 
 // Scan tasks (#302) on the synthetic corridor scan (tests/fixtures/scan.js): model x east, y up, z south of its corner.
 const SCAN = [(ctx) => addScanCloud(ctx.doc, { points: 60000 })];
+const DENSE = (ctx) => addScanCloud(ctx.doc, { points: 1e6 });
 const O = SITE.origin;
 const local = ([e, n]) => [e - O[0], -(n - O[1])]; // E, N → model x, z
 const clipsOf = (doc) => (doc.clips || []).filter((c) => c.enabled !== false);
@@ -266,6 +267,18 @@ TASKS.push(
     solution: [['describe_cloud', {}], ['add_slice', { at: 'elevation', z: 105, name: 'Plan cut' }], ['view_clip', { name: 'Plan cut' }]],
   },
   {
+    name: 'scan-corners',
+    prompt: 'Find the corners of the two buildings on the site scan and mark them as survey points.',
+    setup: [DENSE],
+    check: (doc) => {
+      const pts = ents(doc).filter((e) => e.point?.code === 'CORNER').map((e) => [e.point.e, e.point.n]);
+      const truth = SITE.buildings.flatMap((b) => b.footprint);
+      const found = truth.filter(([e, n]) => pts.some((p) => Math.hypot(p[0] - e, p[1] - n) <= 0.05));
+      return checks([['corner points', pts.length > 0], ['all 8 corners within 5 cm', found.length === 8], ['no extra corners', pts.length === 8]]);
+    },
+    solution: [['describe_cloud', {}], ['detect_corners', { min_points: 300 }]],
+  },
+  {
     name: 'scan-footprints',
     skip: 'extract_footprint (#301) is not on main yet',
     prompt: 'Find the building footprints on this site scan and draft them on a Footprints layer.',
@@ -281,9 +294,9 @@ TASKS.push(
   },
   {
     name: 'scan-kerbs',
-    skip: 'extract_edges (#301) and detect_edges (#300) are not on main yet',
     prompt: 'Extract the kerb lines along Main road from the site scan, on a Kerbs layer.',
-    setup: [...SCAN, ['create_alignment', { name: 'Main road', points: SITE.road.centreline.map(local) }]],
+    // kerbs and corners need the density of a real scan (1 M points: about 125 / m²)
+    setup: [DENSE, ['create_alignment', { name: 'Main road', points: SITE.road.centreline.map(local) }]],
     check: (doc) => {
       const lines = onLayer(doc, /kerb/i).flatMap((e) => curveWorld(doc, e).map(([x, , z]) => [x, z]));
       const kerbs = SITE.kerbs.map((k) => k.line.map(local));
@@ -295,6 +308,6 @@ TASKS.push(
       const covered = kerbs.every((k) => span(k) >= 80);
       return checks([['kerb lines drawn', lines.length > 0], ['within 5 cm of the kerbs', !!lines.length && near.length === lines.length], ['both kerbs, 80 m or more each', covered]]);
     },
-    solution: [['extract_edges', { kind: 'kerb', alignment: 'Main road', layer: 'Kerbs' }]],
+    solution: [['describe_cloud', {}], ['detect_edges', { kind: 'kerb', alignment: 'Main road', layer: 'Kerbs' }]],
   },
 );

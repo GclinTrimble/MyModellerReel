@@ -200,9 +200,12 @@ export const GUIDE = `MyModellerReel conventions:
      colour with set_cloud_style. Fix classes by hand: select_points then set_point_class (#299).
   3. Isolate: add_clip box from a selection or around a feature (fit_clip, align_clip to a wall or kerb), add_slice /
      slice_series for levels and stations (above: 'ground' for a plan cut 1.2 m up).
-  4. Detect and extract (#300, #301): detect_planes / detect_corners / detect_edges (kind kerb, step, wall_top along an
-     alignment), extract_footprint (buildings, classes [6]), trace_slice (wall lines from a slice), extract_edges
-     (kerbs, edges of seal, as_breaklines for the surface). Put results on layers (Footprints, Kerbs, Walls).
+  4. Detect (in a scope: id, within a clip, classes; layer, default Detected; propose: true): detect_planes (walls,
+     roofs, ground as thin faces with meta.plane: align_clip { to: 'face' } on one), detect_corners (wall corners: a
+     line and a CORNER survey point each; level for a plan height), detect_edges kind intersections | wall_top, or kerb
+     | step from cross profiles along an alignment (kerb top and bottom lines). Each returns counts and the 50 largest.
+     Extract (#301): extract_footprint (buildings, classes [6]), trace_slice (wall lines from a slice), extract_edges
+     (kerbs, edges of seal, as_breaklines for the surface). Put results on layers (Footprints, Kerbs, Walls, Corners).
   5. Check by eye before you answer: view_clip on the slice (pane 2), set_cloud_style { depth: 'xray' } so walls and
      kerbs glow, select the new linework, screenshot, and compare lines and points; fix or say what is off.
   6. Propose, do not overwrite: classification and extraction you start take propose: true (or wrap them in
@@ -5939,7 +5942,7 @@ function registerCore(reg, ctx) {
   };
   const planeReq = (a) => ({ minArea: a.min_area ?? 2, minPoints: a.min_points ?? 500, distance: a.distance ?? 0.03, regularise: !!a.regularise });
   const scopeReply = (r, ms) => ({ points: r.count, ...(r.taken < r.count ? { sampled: r.taken } : {}), ms });
-  def('terrain', 'detect_planes', 'Find the planes in a scan: walls, façades, abutments (vertical), floors, roofs, slabs, ground (horizontal), roof faces and embankments (sloped), in a scope (a cloud, a clip volume, some classes). Each becomes a thin translucent face on the Detected layer clipped to its extent, with meta.plane (normal, offset, RMS, points, area): snap to it, align_clip { to: face } on it, extrude from it. Returns counts and the 50 largest.', obj({ ...PLANE_ARGS, ...PLANE_OPTS }), async (a) => {
+  def('terrain', 'detect_planes', 'Find the planes in a scan: walls, façades, abutments (vertical), floors, roofs, slabs, ground (horizontal), roof faces and embankments (sloped), in a scope (a cloud, a clip volume, some classes). Each becomes a thin translucent face on the Detected layer clipped to its extent, with meta.plane (normal, offset, RMS, points, area): snap to it, align_clip { to: face } on it, extrude from it. Returns counts, the 30 largest and the ids of the first 300 (the rest on the layer).', obj({ ...PLANE_ARGS, ...PLANE_OPTS }), async (a) => {
     const t0 = Date.now();
     const scope = await scopePoints(a);
     const out = await runFeatures(scope.points, { planes: planeReq(a) });
@@ -5947,7 +5950,7 @@ function registerCore(reg, ctx) {
     const made = out.planes.map((p) => addPlane(p, tag));
     const by = {};
     for (const p of out.planes) by[p.type] = (by[p.type] || 0) + 1;
-    return { scope: scopeReply(scope, Date.now() - t0), voxel: r3(out.voxel), count: made.length, by_type: by, planes: made.slice(0, 50).map(planeReply), ids: made.map((e) => e.id), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+    return { scope: scopeReply(scope, Date.now() - t0), voxel: r3(out.voxel), count: made.length, by_type: by, planes: made.slice(0, 30).map(planeReply), ids: made.slice(0, 300).map((e) => e.id), ...(made.length > 300 ? { more: made.length - 300, layer: tag } : {}), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
   }, true);
   /** Planes of Detected entities (meta.plane) in world space, for corners and edges between planes found earlier. */
   const givenPlanes = (refs) =>
