@@ -893,6 +893,72 @@ const PAGES = {
     await run('walk_to', { position: [10, 0, -5], look_at: [40, 2, -20] });
     await shot('Walk to: stand at eye height in the scan (Walk tool: arrows / WASD)');
   },
+  async 'point-cloud-display'() {
+    await fresh();
+    const { streetScan } = await import('../tests/fixtures/streetscan.js');
+    const file = path.join(os.tmpdir(), 'street-scan.las');
+    fs.writeFileSync(file, streetScan().bytes);
+    await run('import_point_cloud', { path: file.split(path.sep).join('/') });
+    await run('set_style', { grid: false });
+    const iso = () => camera([75, 32, 22], [28, 2, -24]);
+    const style = (a) => run('set_cloud_style', { id: 'street-scan', ...a });
+    const filter = (a) => run('set_cloud_filter', { id: 'street-scan', ...a });
+    await iso();
+    await none();
+    await style({ size: 3 });
+    await shot('A street scan in its own colours (RGB)');
+    await style({ color_by: 'intensity' });
+    await shot('Colour by intensity: the lane markings stand out; the legend gives the range (2–98 %)');
+    await style({ color_by: 'elevation', ramp: 'terrain' });
+    await shot('Colour by elevation: from the ditch to the roofs');
+    await style({ color_by: 'classification', ramp: null });
+    await shot('Colour by classification: the ASPRS classes, with their legend');
+    await style({ color_by: 'single', color: '#c8c4ba' });
+    await shot('One colour: walls and trees are hard to read…');
+    await style({ edl: true });
+    await shot('…eye-dome lighting shades depth steps: edges and depth without normals');
+    await camera([33, 6, -6], [22, 4, -16]);
+    await style({ edl: false, color_by: 'rgb', shape: 'paraboloid', size_mode: 'attenuated', size: 0.12 });
+    await shot('Paraboloid points, 12 cm in the world (attenuated): a wall reads as a surface');
+    await style({ shape: 'square', size_mode: 'fixed', size: 3 });
+    await iso();
+    await run('set_layout', { count: 2, arrangement: 'columns' });
+    await run('set_pane', { pane: 2, view: 'top' });
+    await run('zoom_extents', { pane: 2 });
+    await style({ pane: 2, color_by: 'intensity', size: 2 });
+    await filter({ pane: 2, classes: { show: [2, 11] } });
+    await shot('Per pane: RGB in 3D, intensity and ground only in the plan');
+    await run('set_layout', { count: 1 });
+    // reading depth
+    await run('set_view', { preset: 'top' });
+    await run('set_camera', { projection: 'parallel' });
+    await run('zoom_extents', {});
+    await style({ depth: 'xray' });
+    await shot('X-ray: walls seen edge on build up into dark lines, roofs and ground stay light');
+    await run('set_camera', { projection: 'perspective', position: [30, 4, -1], target: [30, 4, -40] });
+    await style({ depth: 'depth' });
+    await shot('Depth colour: near warm, far cool; the tree in front of the far building');
+    await style({ depth: 'fog', focus: 20, fog_near: 2, fog_far: 12 });
+    await shot('Fog: points past the focus fade (hold Alt over a point to focus on it)');
+    await style({ depth: 'off', focus: 'cursor', outside: 'ghost', color_by: 'classification' });
+    await iso();
+    await run('section', { normal: [0, 1, 0], point: [0, 4, 0], name: 'Ground floor' });
+    await shot('A section with the outside as a ghost: what is cut away stays faint, only the rest snaps');
+    await run('section', { enabled: false });
+    await style({ outside: null });
+    // show and hide
+    await filter({ classes: { hide: [3, 4, 5] } });
+    await shot('Show and hide: vegetation (classes 3–5) hidden, from the view and from snapping');
+    await filter({ classes: { show: 'all' }, returns: 'last' });
+    await shot('Last returns only: the ground under the trees, not the canopy');
+    await filter({ returns: 'all', density: 25 });
+    await shot('Density 25 %: the same quarter of the points every frame');
+    await filter({ density: null });
+    await run('select', { ids: ['street-scan'] });
+    await panel('entity');
+    await js("document.querySelector('.cloud-classes')?.scrollIntoView({ block: 'center' }); return 1;");
+    await shot('The Point cloud panel: style, depth, and the classes with their counts');
+  },
   async 'scanned-drawings-and-reading'() {
     await fresh();
     await run('import_image', { path: `${SAMPLES}/scanned-plan.jpg`, scale: '1:100' });

@@ -456,7 +456,7 @@ window.addEventListener('keydown', (ev) => {
     'ctrl+g': 'group', 'ctrl+shift+g': 'ungroup', 'ctrl+a': 'selectAll', 'ctrl+d': 'duplicate', 'ctrl+t': 'timeline', 'ctrl+b': 'sidePanel',
     'ctrl+c': 'copy', 'ctrl+x': 'cut', 'ctrl+v': 'paste',
     f1: 'howto', // over a tool button: Help asks about that tool (#241), below
-    'shift+z': 'zoomExtents', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',
+    'shift+z': 'zoomExtents', 'shift+d': 'cloudDepth', 'shift+ ': 'play', delete: 'delete', backspace: 'delete', k: 'keySel',
   };
   const combo = `${ctrl ? 'ctrl+' : ''}${ev.shiftKey ? 'shift+' : ''}${k.toLowerCase()}`;
   if (app.pickFirst.typeKey(ev)) return ev.preventDefault(); // picking first (#234): numbers go to the cursor box

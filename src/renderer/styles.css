@@ -924,3 +924,13 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .fb-photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: var(--my-space-2); }
 .fb-photo { display: flex; flex-direction: column; gap: 2px; padding: 0; border: 1px solid var(--my-border); background: none; border-radius: var(--my-radius-sm, 4px); overflow: hidden; cursor: pointer; }
 .fb-photo img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+/* point cloud legend (#295): bottom-right of each view pane */
+.cloud-legend { position: absolute; z-index: 3; transform: translate(-100%, -100%); pointer-events: none; min-width: 150px; max-width: 220px; max-height: 45%; overflow: hidden; padding: var(--my-space-1) var(--my-space-2); background: var(--my-surface); border: 1px solid var(--my-border); border-radius: var(--my-radius-md); font: var(--my-text-xs) var(--my-font-ui); color: var(--my-text); opacity: 0.92; }
+.cloud-legend-title { font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cloud-legend-ramp { height: 8px; border-radius: 2px; border: 1px solid var(--my-border); }
+.cloud-legend-ends { display: flex; justify-content: space-between; font-family: var(--my-font-mono); color: var(--my-text-muted); }
+.cloud-legend-class { display: flex; align-items: center; gap: var(--my-space-1); white-space: nowrap; }
+.cloud-legend-class i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.cloud-legend-class.off { opacity: 0.4; text-decoration: line-through; }
+.cloud-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.cloud-panel-legend { margin: var(--my-space-1) 0; font-size: var(--my-text-xs); }

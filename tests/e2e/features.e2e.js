@@ -1498,3 +1498,77 @@ test('clip volumes (#290, #291): the shader cuts, the Clip Box tool, face handle
   await w.evaluate(() => window.mmr.app.selectClip(null));
   await ok('clear_clips');
 });
+
+test('point cloud display: styles per pane, EDL, x-ray, filters on snapping, a slab with a ghost outside', async () => {
+  const { streetScan } = await import('../fixtures/streetscan.js');
+  const scan = streetScan();
+  const file = path.join(home, 'street.las');
+  fs.writeFileSync(file, scan.bytes);
+  await ok('new_model');
+  const pc = await ok('import_point_cloud', { path: file });
+  await ok('set_style', { grid: false });
+  await ok('set_camera', { position: [75, 32, 22], target: [28, 2, -24] });
+  await ok('select', { mode: 'none' });
+  const errors = [];
+  w.on('pageerror', (e) => errors.push(e.message));
+  w.on('console', (m) => /GL_|Feedback loop|shader/i.test(m.text()) && errors.push(m.text())); // GL errors: e.g. the EDL texture read while written
+  // a frame's pixels: how many are darker than the sky
+  const dark = (limit = 200) => w.evaluate((lim) => {
+    const vp = window.mmr.app.viewport;
+    vp.render();
+    const c = document.createElement('canvas');
+    [c.width, c.height] = [vp.canvas.width, vp.canvas.height];
+    const g = c.getContext('2d');
+    g.drawImage(vp.canvas, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) n += d[i] + d[i + 1] + d[i + 2] < lim ? 1 : 0;
+    return n;
+  }, limit);
+  await ok('set_cloud_style', { id: pc.id, color_by: 'single', color: '#d0d0d0', size: 3 });
+  const flat = await dark();
+  await ok('set_cloud_style', { id: pc.id, edl: true });
+  const edl = await dark();
+  assert.ok(edl > flat + 500, `EDL darkens edges: ${flat} → ${edl}`);
+  await ok('set_cloud_style', { id: pc.id, edl: false, depth: 'xray', color_by: 'rgb' });
+  await ok('set_view', { preset: 'top' });
+  assert.ok((await dark()) > 100, 'x-ray: walls seen edge on build up');
+  await ok('set_cloud_style', { id: pc.id, depth: 'off', shape: 'paraboloid', size_mode: 'attenuated', size: 0.03 });
+  await dark();
+  // per pane: the material sets itself up for each renderer
+  await ok('set_layout', { count: 2 });
+  await ok('set_cloud_style', { id: pc.id, pane: 2, color_by: 'intensity' });
+  const modes = await w.evaluate(() => {
+    const vp = window.mmr.app.viewport;
+    const o = [...vp.objs.values()].find((x) => x.userData.cloudEntity);
+    const seen = [];
+    const before = o.material.onBeforeRender;
+    o.material.onBeforeRender = function (r, ...rest) {
+      before.call(this, r, ...rest);
+      seen.push([r.mmrPane, this.uniforms.uMode.value]);
+    };
+    vp.render();
+    o.material.onBeforeRender = before;
+    return seen;
+  });
+  assert.deepEqual(modes, [[1, 0], [2, 1]], 'pane 1 RGB, pane 2 intensity');
+  await ok('set_layout', { count: 1 });
+  // what you see is what you snap to: vegetation hidden, then the ghost outside a section
+  const snaps = () => w.evaluate(() => (window.mmr.app.viewport.vertexCache = null, window.mmr.app.viewport.snapPoints().filter((s) => s.kind === 'Point cloud').length));
+  const all = await snaps();
+  await ok('set_cloud_filter', { id: pc.id, classes: { hide: [3, 4, 5] } });
+  const noTrees = await snaps();
+  assert.ok(noTrees < all, `${all} → ${noTrees}`);
+  // a 20 cm slab whose outside is a ghost (#296): the slab points crisp, the rest faint, only slab points snap
+  await ok('add_clip', { kind: 'slab', name: 'Wall slab', point: [0, 3, 0], normal: [0, 1, 0], thickness: 0.2, outside: 'ghost' });
+  assert.equal((await ok('list_clips')).clips[0].outside, 'ghost');
+  const inSlab = await w.evaluate(() => (window.mmr.app.viewport.vertexCache = null, window.mmr.app.viewport.snapPoints().filter((s) => s.kind === 'Point cloud').map((s) => s.p.y)));
+  assert.ok(inSlab.length && inSlab.every((y) => Math.abs(y - 3) <= 0.1001), `only slab points snap: ${inSlab.length}`);
+  const ghost = await dark(600); // anything darker than the sky
+  await ok('set_clip', { name: 'Wall slab', outside: 'hidden' });
+  assert.ok(ghost > (await dark(600)), 'the ghost draws what the slab cuts away');
+  await ok('delete_clip', { name: 'Wall slab' });
+  const classes = await ok('list_cloud_classes', { id: pc.id });
+  assert.equal(classes.classes.find((c) => c.code === 6).count, scan.counts[6]);
+  assert.deepEqual(errors, []);
+});

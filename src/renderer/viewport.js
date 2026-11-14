@@ -16,6 +16,7 @@ import { Presentation, applyMaps, styleMaterial, sketchEdges, lightObject, seaml
 import * as L from '../core/layers.js';
 import { textureFor, underlayGeometry, rasterOf } from './underlays.js';
 import { bvh, cloudObject, cloudSnaps, underlaySnaps, Gizmo, floorAt } from './scale.js';
+import { attachClouds, syncClouds } from './cloudmaterial.js';
 import { invert as invertAffine } from '../core/underlay.js';
 import { isSurface } from '../core/project.js';
 import { viewDirection } from '../core/layout.js';
@@ -381,6 +382,7 @@ export class Viewport {
     this.listeners = new Set();
     this.proposed = new Set(); // ids an AI proposal added or changed (tinted until accepted)
     this.look = new Presentation(this);
+    attachClouds(this); // point cloud styles (#295): pane numbers, eye-dome lighting, fog focus, legends
     this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 5000);
     this.persp = this.camera;
     this.ghosts = new THREE.Group(); // what a proposal would remove
@@ -517,6 +519,7 @@ export class Viewport {
     this.objs = objs;
     if (s.section_fill !== false) for (const c of CV.slots(doc).box.concat(CV.slots(doc).slab, CV.slots(doc).plane)) this.modelRoot.add(clipCaps(doc, c));
     CS.patchTree(this.modelRoot, doc);
+    syncClouds(this);
     this.grid.visible = this.axes.visible = s.grid;
     // the drawing grid follows the drawing axes (#32): turned, moved, cells of the grid step
     const ax = s.axes;

@@ -21,7 +21,7 @@ export const uniforms = {
   mmrClipGhost: { value: 0 },
 };
 
-const GLSL = /* glsl */ `
+export const CLIP_GLSL = /* glsl */ `
 uniform vec4 mmrClipPlanes[${CV.LIMITS.plane}];
 uniform vec4 mmrClipSlabs[${CV.LIMITS.slab}];
 uniform float mmrClipSlabHalf[${CV.LIMITS.slab}];
@@ -70,7 +70,7 @@ function vertex(src) {
   return VARY + src.replace(MAIN, (m) => `${m}\n  mmrClipWorld = (modelMatrix * vec4(${at}, 1.0)).xyz;`);
 }
 const fragment = (src) =>
-  GLSL + src.replace(MAIN, (m) => `${m}\n  if (mmrClipped(mmrClipWorld) && (mmrClipGhost == 0 || mod(gl_FragCoord.x, 3.0) >= 1.0 || mod(gl_FragCoord.y, 3.0) >= 1.0)) discard;`);
+  CLIP_GLSL + src.replace(MAIN, (m) => `${m}\n  if (mmrClipped(mmrClipWorld) && (mmrClipGhost == 0 || mod(gl_FragCoord.x, 3.0) >= 1.0 || mod(gl_FragCoord.y, 3.0) >= 1.0)) discard;`);
 
 /** Make a material honour the clip volumes. Its mask (userData.mmrClip.value) says which clips cut it (-1: all). */
 export function patchClip(m) {

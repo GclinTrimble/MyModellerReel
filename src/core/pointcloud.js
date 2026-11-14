@@ -30,6 +30,10 @@ function parseLas(u8) {
   const [sx, sy, sz, ox, oy, oz] = [131, 139, 147, 155, 163, 171].map((o) => dv.getFloat64(o, true));
   const rgbAt = { 2: 20, 3: 28, 5: 28, 7: 30, 8: 30, 10: 30 }[fmt];
   const out = alloc(n, rgbAt !== undefined);
+  // display attributes (#295): intensity, returns, classification, point source, GPS time (formats 0–10)
+  const ext = fmt >= 6;
+  const timeAt = ext ? 22 : [1, 3, 4, 5].includes(fmt) ? 20 : -1;
+  Object.assign(out, { intensity: new Uint16Array(n), classification: new Uint8Array(n), returnNumber: new Uint8Array(n), numberOfReturns: new Uint8Array(n), pointSource: new Uint16Array(n), gpsTime: timeAt >= 0 ? new Float64Array(n) : null });
   for (let i = 0; i < n; i++) {
     const p = offset + i * recLen;
     if (p + 12 > u8.length) {
@@ -39,6 +43,15 @@ function parseLas(u8) {
     out.x[i] = dv.getInt32(p, true) * sx + ox;
     out.y[i] = dv.getInt32(p + 4, true) * sy + oy;
     out.z[i] = dv.getInt32(p + 8, true) * sz + oz;
+    if (p + 20 <= u8.length) {
+      const rb = u8[p + 14];
+      out.intensity[i] = dv.getUint16(p + 12, true);
+      out.returnNumber[i] = ext ? rb & 15 : rb & 7;
+      out.numberOfReturns[i] = ext ? rb >> 4 : (rb >> 3) & 7;
+      out.classification[i] = ext ? u8[p + 16] : u8[p + 15] & 31;
+      out.pointSource[i] = dv.getUint16(p + (ext ? 20 : 18), true);
+      if (timeAt >= 0 && p + timeAt + 8 <= u8.length) out.gpsTime[i] = dv.getFloat64(p + timeAt, true);
+    }
     if (rgbAt !== undefined) {
       out.r[i] = dv.getUint16(p + rgbAt, true) >> 8;
       out.g[i] = dv.getUint16(p + rgbAt + 2, true) >> 8;
