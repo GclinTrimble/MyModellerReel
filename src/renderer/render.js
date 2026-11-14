@@ -72,10 +72,10 @@ export async function renderVideo(app, opts, write) {
   const g = comp.getContext('2d', { alpha: !!opts.transparent, willReadFrequently: format === 'gif' });
   const restore = stage(vp, w, h, opts.transparent);
   tl.recording = true;
-  const draw = (i) => {
+  const draw = async (i) => {
     const t = from + i / fps;
     tl.seek(t);
-    vp.draw();
+    await vp.clouds.settle(() => vp.draw()); // no half-loaded point clouds in a frame (#294)
     g.clearRect(0, 0, w, h);
     g.drawImage(vp.canvas, 0, 0, w, h);
     drawCaptions(g, doc.animation.captions, t, w, h);
@@ -96,7 +96,7 @@ export async function renderVideo(app, opts, write) {
       await output.start();
       if (audio) await audio.add(mix);
       for (let i = 0; i < frames; i++) {
-        draw(i);
+        await draw(i);
         await source.add(i / fps, 1 / fps);
         progress(i);
       }
@@ -105,7 +105,7 @@ export async function renderVideo(app, opts, write) {
     } else if (format === 'gif') {
       const gif = GIFEncoder();
       for (let i = 0; i < frames; i++) {
-        draw(i);
+        await draw(i);
         const { data } = g.getImageData(0, 0, w, h);
         const palette = quantize(data, 256, { format: opts.transparent ? 'rgba4444' : 'rgb565', oneBitAlpha: !!opts.transparent });
         gif.writeFrame(applyPalette(data, palette, opts.transparent ? 'rgba4444' : 'rgb565'), w, h, { palette, delay: Math.round(1000 / fps), transparent: !!opts.transparent });
@@ -116,7 +116,7 @@ export async function renderVideo(app, opts, write) {
     } else {
       const base = opts.path.replace(/(_\d+)?\.png$/i, '');
       for (let i = 0; i < frames; i++) {
-        draw(i);
+        await draw(i);
         const blob = await new Promise((r) => comp.toBlob(r, 'image/png'));
         await write(`${base}_${String(i + 1).padStart(4, '0')}.png`, await blob.arrayBuffer());
         progress(i);

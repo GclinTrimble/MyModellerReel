@@ -56,7 +56,7 @@ export function cloudObject(e) {
 }
 /** Snap points from a cloud: a few thousand of the points it shows (its filter and the section). */
 export function cloudSnaps(o, max = 4000) {
-  const p = o.geometry.attributes.position;
+  const p = o.geometry?.attributes.position; // an octree group snaps near the cursor instead (cloudlod.js)
   if (!p) return [];
   const ok = shown(o);
   const step = Math.max(1, Math.floor(p.count / max));

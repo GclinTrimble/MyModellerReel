@@ -107,6 +107,7 @@ class Pane {
     if (this.cfg.style === 'wireframe')
       vp.modelRoot.traverse((o) => o.isMesh && !o.isLineSegments2 && !o.userData.underlay && !o.material?.isLineMaterial && (swapped.push([o, o.material]), (o.material = WIRE)));
     this.renderer.toneMappingExposure = vp.renderer.toneMappingExposure;
+    vp.updateClouds(this.camera, this.renderer.getSize(new THREE.Vector2()), this.i + 1); // this pane's own level of detail (#294)
     try {
       this.renderer.render(scene, this.camera);
     } finally {

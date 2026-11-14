@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { registerAccount, needsSignIn, whenSignedIn, uploadFeedback, getSecret, setSecret, mapServices } = require('./account.cjs');
 const { registerMaps } = require('./maps.cjs');
+const { registerClouds } = require('./clouds.cjs');
 
 // MMR_HOME: e2e runs keep their own data folder (and single-instance lock), away from the user's real app.
 app.setPath('userData', process.env.MMR_HOME || path.join(app.getPath('appData'), 'MyModellerReel'));
@@ -288,6 +289,7 @@ ipcMain.handle('settings:set', (_, patch) => {
   return publicSettings();
 });
 registerMaps({ ipcMain, userDir: USER, settings: () => settings, saveSettings, account: { getSecret, setSecret, mapServices } });
+registerClouds(ipcMain, USER); // point cloud octrees (#293, #294)
 ipcMain.handle('window:title', (_, t) => win.setTitle(t));
 ipcMain.handle('shell:open-path', (_, p) => shell.openPath(p === 'plugins' ? USER_PLUGINS : p === 'library' ? LIBRARY : USER));
 // the component library (#45): GLB / glTF files in a folder; the starter models are copied in once

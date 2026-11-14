@@ -30,6 +30,7 @@
     "geotiff": "3.0.5",
     "gifenc": "^1.0.3",
     "koffi": "^3.3.5",
+    "laz-perf": "^0.0.7",
     "mediabunny": "^1.65.2",
     "meshoptimizer": "^1.3.0",
     "node-llama-cpp": "^3.22.3",

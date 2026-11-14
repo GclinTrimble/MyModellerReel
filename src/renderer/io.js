@@ -95,7 +95,7 @@ const FILTERS = {
   audio: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
   schedule: [{ name: 'Schedules', extensions: ['csv', 'xml', 'xer', 'txt'] }],
   drawing2d: [{ name: '2D drawings', extensions: ['svg', 'dxf'] }],
-  cloud: [{ name: 'Point clouds', extensions: ['ply', 'las', 'xyz', 'pts', 'csv', 'txt'] }],
+  cloud: [{ name: 'Point clouds', extensions: ['las', 'laz', 'ply', 'xyz', 'pts', 'csv', 'txt'] }],
   html: [{ name: 'Web page', extensions: ['html'] }],
   usdz: [{ name: 'USDZ (AR Quick Look)', extensions: ['usdz'] }],
   '3mf': [{ name: '3MF', extensions: ['3mf'] }],
@@ -422,6 +422,20 @@ export class IO {
   /** Read a PDF or an image (underlays). */
   async readBinary(path) {
     return new Uint8Array(await native().invoke('file:read-binary', path));
+  }
+
+  // point cloud octrees (#293): conversion jobs and cache folders in the main process
+  cloudConvert(opts) {
+    return native().invoke('cloud:convert', opts);
+  }
+  cloudJob(id, opts) {
+    return native().invoke('cloud:job', id, opts);
+  }
+  cloudCancel(id) {
+    return native().invoke('cloud:cancel', id);
+  }
+  cloudOpen(opts) {
+    return native().invoke('cloud:open', opts);
   }
 
   /** Size and GeoTIFF tags of a TIFF. */

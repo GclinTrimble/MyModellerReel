@@ -4,11 +4,15 @@
 
 const DEC = new TextDecoder();
 
-/** Points of a file: { x, y, z: Float64Array, r, g, b: Uint8Array | null, count, format }. */
+/**
+ * Points of a file: { x, y, z: Float64Array, r, g, b: Uint8Array | null, count, format }; LAS adds every attribute
+ * (see decodeLasRecords), PLY its other scalar fields by name in extra.
+ */
 export function parsePointCloud(bytes, name = '') {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const ext = name.split('.').pop().toLowerCase();
-  if (ext === 'laz' || ext === 'e57') throw new Error(`.${ext} is compressed: convert it to LAS or PLY first (CloudCompare, PDAL).`);
+  if (ext === 'e57') throw new Error('.e57 is not read yet: convert it to LAS, LAZ or PLY first (CloudCompare, PDAL).');
+  if (ext === 'laz') throw new Error('.laz is compressed: it is read through the conversion worker in the desktop app.');
   const head = DEC.decode(u8.subarray(0, 4));
   if (head === 'LASF') return parseLas(u8);
   if (head.startsWith('ply')) return parsePly(u8);
@@ -19,46 +23,116 @@ function alloc(n, rgb) {
   return { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), r: rgb ? new Uint8Array(n) : null, g: rgb ? new Uint8Array(n) : null, b: rgb ? new Uint8Array(n) : null, count: n };
 }
 
-function parseLas(u8) {
+/** A LAS / LAZ header (1.0–1.4): counts, point format, scale, offset, bounds and the VLRs. */
+export function lasHeader(u8) {
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-  const offset = dv.getUint32(96, true);
-  const fmt = dv.getUint8(104) & 0x3f;
-  const recLen = dv.getUint16(105, true);
-  let n = dv.getUint32(107, true);
-  const verMinor = dv.getUint8(25);
-  if (!n && verMinor >= 4) n = Number(dv.getBigUint64(247, true));
-  const [sx, sy, sz, ox, oy, oz] = [131, 139, 147, 155, 163, 171].map((o) => dv.getFloat64(o, true));
-  const rgbAt = { 2: 20, 3: 28, 5: 28, 7: 30, 8: 30, 10: 30 }[fmt];
-  const out = alloc(n, rgbAt !== undefined);
-  // display attributes (#295): intensity, returns, classification, point source, GPS time (formats 0–10)
+  const minor = dv.getUint8(25);
+  const rawFormat = dv.getUint8(104);
+  let count = dv.getUint32(107, true);
+  if (minor >= 4 && u8.length >= 255) count = Number(dv.getBigUint64(247, true)) || count;
+  const f = (o) => dv.getFloat64(o, true);
+  const h = { version: `1.${minor}`, headerSize: dv.getUint16(94, true), offset: dv.getUint32(96, true), format: rawFormat & 0x3f, compressed: (rawFormat & 0xc0) !== 0, recLen: dv.getUint16(105, true), count, scale: [f(131), f(139), f(147)], origin: [f(155), f(163), f(171)], min: [f(187), f(203), f(219)], max: [f(179), f(195), f(211)], vlrs: [] };
+  // VLRs: 54-byte headers after the header, up to the point data
+  let p = h.headerSize;
+  for (let i = 0, n = dv.getUint32(100, true); i < n && p + 54 <= Math.min(u8.length, h.offset); i++) {
+    const len = dv.getUint16(p + 20, true);
+    h.vlrs.push({ user: DEC.decode(u8.subarray(p + 2, p + 18)).replace(/\0.*$/s, ''), record: dv.getUint16(p + 18, true), at: p + 54, length: len, data: u8.subarray(p + 54, Math.min(u8.length, p + 54 + len)) });
+    p += 54 + len;
+  }
+  return h;
+}
+
+// where the colour sits in each point format, and whether it has GPS time
+const RGB_AT = { 2: 20, 3: 28, 5: 28, 7: 30, 8: 30, 10: 30 };
+const HAS_TIME = (f) => f === 1 || f >= 3;
+
+/** An empty batch of n points with every LAS attribute. */
+export function allocPoints(n, { rgb = true, time = true } = {}) {
+  const u8 = () => new Uint8Array(n);
+  return { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), intensity: new Uint16Array(n), returnNumber: u8(), numberOfReturns: u8(), classification: u8(), classFlags: u8(), userData: u8(), scanAngle: new Float32Array(n), pointSourceId: new Uint16Array(n), gpsTime: time ? new Float64Array(n) : null, r: rgb ? u8() : null, g: rgb ? u8() : null, b: rgb ? u8() : null };
+}
+
+/**
+ * Decode count LAS point records (any format 0–10) starting at byte at of u8 into a batch: positions in doubles,
+ * intensity, returns, classification and its flags (synthetic 1, key point 2, withheld 4, overlap 8), scan angle in
+ * degrees, user data, point source, GPS time and colour (8 bits a channel).
+ */
+export function decodeLasRecords(u8, h, at, count) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const fmt = h.format;
+  const rgbAt = RGB_AT[fmt];
+  const o = allocPoints(count, { rgb: rgbAt !== undefined, time: HAS_TIME(fmt) });
+  const [sx, sy, sz] = h.scale;
+  const [ox, oy, oz] = h.origin;
   const ext = fmt >= 6;
-  const timeAt = ext ? 22 : [1, 3, 4, 5].includes(fmt) ? 20 : -1;
-  Object.assign(out, { intensity: new Uint16Array(n), classification: new Uint8Array(n), returnNumber: new Uint8Array(n), numberOfReturns: new Uint8Array(n), pointSource: new Uint16Array(n), gpsTime: timeAt >= 0 ? new Float64Array(n) : null });
-  for (let i = 0; i < n; i++) {
-    const p = offset + i * recLen;
-    if (p + 12 > u8.length) {
-      out.count = i;
+  // some writers put 8-bit colour in the 16-bit fields: then keep it as it is
+  const shift = rgbAt !== undefined && h.rgb8 ? 0 : 8;
+  for (let i = 0; i < count; i++) {
+    const p = at + i * h.recLen;
+    if (p + h.recLen > u8.length) {
+      o.count = i;
       break;
     }
-    out.x[i] = dv.getInt32(p, true) * sx + ox;
-    out.y[i] = dv.getInt32(p + 4, true) * sy + oy;
-    out.z[i] = dv.getInt32(p + 8, true) * sz + oz;
-    if (p + 20 <= u8.length) {
-      const rb = u8[p + 14];
-      out.intensity[i] = dv.getUint16(p + 12, true);
-      out.returnNumber[i] = ext ? rb & 15 : rb & 7;
-      out.numberOfReturns[i] = ext ? rb >> 4 : (rb >> 3) & 7;
-      out.classification[i] = ext ? u8[p + 16] : u8[p + 15] & 31;
-      out.pointSource[i] = dv.getUint16(p + (ext ? 20 : 18), true);
-      if (timeAt >= 0 && p + timeAt + 8 <= u8.length) out.gpsTime[i] = dv.getFloat64(p + timeAt, true);
+    o.x[i] = dv.getInt32(p, true) * sx + ox;
+    o.y[i] = dv.getInt32(p + 4, true) * sy + oy;
+    o.z[i] = dv.getInt32(p + 8, true) * sz + oz;
+    o.intensity[i] = dv.getUint16(p + 12, true);
+    const b14 = u8[p + 14];
+    if (ext) {
+      o.returnNumber[i] = b14 & 15;
+      o.numberOfReturns[i] = b14 >> 4;
+      o.classFlags[i] = u8[p + 15] & 15;
+      o.classification[i] = u8[p + 16];
+      o.userData[i] = u8[p + 17];
+      o.scanAngle[i] = dv.getInt16(p + 18, true) * 0.006;
+      o.pointSourceId[i] = dv.getUint16(p + 20, true);
+      o.gpsTime[i] = dv.getFloat64(p + 22, true);
+    } else {
+      o.returnNumber[i] = b14 & 7;
+      o.numberOfReturns[i] = (b14 >> 3) & 7;
+      const c = u8[p + 15];
+      o.classification[i] = c & 31;
+      o.classFlags[i] = c >> 5;
+      o.scanAngle[i] = dv.getInt8(p + 16);
+      o.userData[i] = u8[p + 17];
+      o.pointSourceId[i] = dv.getUint16(p + 18, true);
+      if (o.gpsTime) o.gpsTime[i] = dv.getFloat64(p + 20, true);
     }
     if (rgbAt !== undefined) {
-      out.r[i] = dv.getUint16(p + rgbAt, true) >> 8;
-      out.g[i] = dv.getUint16(p + rgbAt + 2, true) >> 8;
-      out.b[i] = dv.getUint16(p + rgbAt + 4, true) >> 8;
+      o.r[i] = dv.getUint16(p + rgbAt, true) >> shift;
+      o.g[i] = dv.getUint16(p + rgbAt + 2, true) >> shift;
+      o.b[i] = dv.getUint16(p + rgbAt + 4, true) >> shift;
     }
   }
-  return { ...out, format: 'LAS' };
+  o.pointSource = o.pointSourceId; // the name the display styles read (#295)
+  return o;
+}
+
+/** Whether a LAS file's colours are 8-bit values in 16-bit fields (looks at up to 2000 records). */
+export function colours8(u8, h, at = h.offset, n = Math.min(h.count, 2000)) {
+  const rgbAt = RGB_AT[h.format];
+  if (rgbAt === undefined) return false;
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  for (let i = 0; i < n && at + (i + 1) * h.recLen <= u8.length; i++) for (let k = 0; k < 3; k++) if (dv.getUint16(at + i * h.recLen + rgbAt + 2 * k, true) > 255) return false;
+  return true;
+}
+
+/** An uncompressed LAS file in batches: { start, count } pick a range of points; batch is the points per piece. */
+export function* readLasBatches(bytes, { start = 0, count = Infinity, batch = 1 << 20 } = {}) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const h = lasHeader(u8);
+  if (h.compressed) throw new Error('This LAS is compressed (LAZ): it is read through the conversion worker.');
+  h.rgb8 = colours8(u8, h);
+  const end = Math.min(h.count, start + count, Math.floor((u8.length - h.offset) / h.recLen));
+  for (let i = start; i < end; i += batch) yield decodeLasRecords(u8, h, h.offset + i * h.recLen, Math.min(batch, end - i));
+}
+
+function parseLas(u8) {
+  const h = lasHeader(u8);
+  if (h.compressed) throw new Error('This LAS is compressed (LAZ): it is read through the conversion worker.');
+  h.rgb8 = colours8(u8, h);
+  const n = Math.min(h.count, Math.max(0, Math.floor((u8.length - h.offset) / h.recLen)));
+  return { ...decodeLasRecords(u8, h, h.offset, n), format: 'LAS', header: h };
 }
 
 function parsePly(u8) {
@@ -77,12 +151,16 @@ function parsePly(u8) {
   const [ix, iy, iz, ir, ig, ib] = ['x', 'y', 'z', 'red', 'green', 'blue'].map(idx);
   if (ix < 0 || iy < 0 || iz < 0) throw new Error('This PLY has no x, y, z vertex properties.');
   const out = alloc(n, ir >= 0);
+  // every other scalar field (intensity, scalar_*, nx…) kept by name
+  const others = props.map((p, k) => k).filter((k) => ![ix, iy, iz, ir, ig, ib].includes(k));
+  out.extra = Object.fromEntries(others.map((k) => [props[k].name, new Float32Array(n)]));
   if (format === 'ascii') {
     const lines = DEC.decode(u8.subarray(end)).split(/\r?\n/).filter((l) => l.trim());
     for (let i = 0; i < n && i < lines.length; i++) {
       const v = lines[i].trim().split(/\s+/).map(Number);
       out.x[i] = v[ix], out.y[i] = v[iy], out.z[i] = v[iz];
       if (out.r) (out.r[i] = v[ir]), (out.g[i] = v[ig]), (out.b[i] = v[ib]);
+      for (const k of others) out.extra[props[k].name][i] = v[k];
     }
   } else {
     const little = format === 'binary_little_endian';
@@ -98,6 +176,7 @@ function parsePly(u8) {
       out.y[i] = read(b + offs[iy], props[iy].type);
       out.z[i] = read(b + offs[iz], props[iz].type);
       if (out.r) (out.r[i] = read(b + offs[ir], props[ir].type)), (out.g[i] = read(b + offs[ig], props[ig].type)), (out.b[i] = read(b + offs[ib], props[ib].type));
+      for (const k of others) out.extra[props[k].name][i] = read(b + offs[k], props[k].type);
     }
   }
   return { ...out, format: 'PLY' };

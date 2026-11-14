@@ -35,8 +35,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   chamfer cutters, mesh intersections), `svg.js` (SVG linework for import_2d), `sequencing.js` (easing curves, clips, constraints, shots, schedules, key editing), `physics.js` (cannon-es
   rigid bodies baked to keys), `sun.js` (solar position, sun studies), `look.js` (texture projection, light / effect / environment
   defaults), `imagegen.js` (ComfyUI and OpenAI-compatible image requests), `units.js` (display units), `clipboard.js`, `templates.js` (start templates as command lists), `howto.js` (the help
-  pages' catalogue; the pages are `docs/how-to/*.md`), `pointcloud.js` (PLY / LAS / XYZ reading, thinning, ground
-  classification), `raster.js` (scan to centre lines), `drawingclues.js` (scale, title, north and grid read from a
+  pages' catalogue; the pages are `docs/how-to/*.md`), `pointcloud.js` (PLY / LAS / XYZ reading with every LAS attribute,
+  batches, thinning, ground classification), `laz.js` (LAZ chunk table and chunks through laz-perf), `copc.js` (COPC
+  hierarchy), `octree.js` (Potree 2.0 octrees: layouts, Poisson sampling, chunking, hierarchy, `selectNodes`), `raster.js` (scan to centre lines), `drawingclues.js` (scale, title, north and grid read from a
   drawing's text), `interop.js` (3MF, the web viewer page, versions, Poly Haven and text-to-3D requests),
   `shortcuts.js`, `i18n.js` (the French dictionary: `t()` on menus and panels), `layout.js` (the 1–4 view panes: rectangles,
   splitters, views).
@@ -58,6 +59,9 @@ UI can reach. Mutating commands set `mutates: true` (one undo snapshot each; `ru
   transform gizmo, walking), `panes.js` (the extra view panes: a renderer, cameras and controls each, over the same scene;
   tools run in a pane through `viewport.withPane`; detached windows; road panes draw on a 2D board), `forms.js` (friendly command forms from the schemas), `learning.js` (the Learn card and guided steps), `roadviews.js` (the
   profile and cross-section drawings). New browser modules need an entry in the importmap in `index.html`.
+- `src/main/clouds.cjs` point cloud conversion jobs (`cloud-worker.cjs` thread running `cloud-convert.mjs`), cache
+  folders `<userData>/clouds/<hash>`, node byte ranges; `src/renderer/cloudlod.js` streams them per pane (decoded in
+  `cloud-worker.js`), `tests/fixtures/scan.js` is the synthetic corridor scan with ground truth.
 - `src/main/stream.cjs` streams AI replies (text to the page as it arrives, the same reply object at the end).
 - `src/mcp/server.js` stdio MCP, zero deps, proxies the HTTP API, launches the app on first tool call.
 
