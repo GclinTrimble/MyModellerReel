@@ -26,6 +26,8 @@ Most drafting over a scan starts from a slice: a thin band of points 1.2 m above
 - **Across an alignment**: `at: 'station'`, `alignment`, `station`; `along: true` puts the slab along the alignment at that station instead.
 - **Through a face**: `at: 'face'`, `id`, `face`, `offset`: parallel to a face of a model, moved along its normal.
 
+On a streamed cloud (an octree, LAZ or COPC), a slice reads every point inside it at full detail, not only what the view has loaded: only the parts of the octree that reach into the slab are read.
+
 A series runs at elevations (floor levels: `from: 0, to: 12, step: 3`) or stations (`from: 0, to: 200, step: 20`).
 
 ## Ask Plumb

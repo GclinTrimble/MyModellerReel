@@ -76,15 +76,14 @@ export const stepIndex = (i, by, n) => Math.max(0, Math.min(n - 1, i + by));
 // ---------------------------------------------------------------- the points inside a slab
 
 /** A point cloud entity's preview positions (the thinned cloud kept in the document): local [x, y, z, …]. */
-export const previewPositions = (e) => new Float32Array(Assets.bytes(e.pointcloud.asset).slice().buffer, 0, e.pointcloud.count * 3);
+export const previewPositions = (e) => (e.pointcloud.asset && e.pointcloud.count ? new Float32Array(Assets.bytes(e.pointcloud.asset).slice().buffer, 0, e.pointcloud.count * 3) : new Float32Array(0));
 
 /**
  * The points of a cloud entity inside a clip, in world space: { count (all of them), points (Float32Array, every
  * k-th one when there are more than max) }. matrix: the entity's world matrix (16 numbers, column-major).
  */
 export function pointsInClip(entity, clip, { max = Infinity, matrix = null, positions = null } = {}) {
-  // shortcut: reads the thinned preview cloud. Octree clouds (#293, #294) add their branch here: visit only the nodes
-  // whose bounds hit the clip and read them at full depth inside it.
+  // the thinned preview cloud; an octree cloud goes through nodesInClip + pointsInNodes (async: its nodes are read)
   const p = positions || previewPositions(entity);
   const c = clip && CV.normalize(clip);
   const t = c ? CV.tester(c) : () => true; // no clip: every point
@@ -112,6 +111,67 @@ export function pointsInClip(entity, clip, { max = Infinity, matrix = null, posi
   const points = new Float32Array(k * 3);
   for (let j = 0; j < k; j++) at(hit[Math.floor(j * step)], points, j * 3);
   return { count, points };
+}
+
+// ---------------------------------------------------------------- octree clouds (#293, #294): full depth in the clip
+
+/** File (east, north, up) → model (x east, y up, z south) for a cloud with this base point: column-major. */
+export const fileToModel = (b = [0, 0, 0]) => [1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, -b[0], -b[2], b[1], 1];
+/** a · b for column-major 4 × 4 matrices. */
+export const mul = (a, b) => Array.from({ length: 16 }, (_, k) => [0, 1, 2, 3].reduce((s, j) => s + a[j * 4 + (k % 4)] * b[(k >> 2) * 4 + j], 0));
+
+const apply = (m, x, y, z, out, k) => {
+  out[k] = m[0] * x + m[4] * y + m[8] * z + m[12];
+  out[k + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+  out[k + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+};
+/** Does a box { min, max } (file coordinates; m: file → world) reach into the clip? False only when it is wholly outside one of its faces. */
+export function boxHitsClip(box, m, clip) {
+  const c = CV.normalize(clip);
+  if (c.kind === 'box' && c.keep === 'outside') return true;
+  const w = [];
+  for (let i = 0; i < 8; i++) apply(m, i & 4 ? box.max[0] : box.min[0], i & 2 ? box.max[1] : box.min[1], i & 1 ? box.max[2] : box.min[2], w, i * 3);
+  return !CV.planesOf(c).some(({ point, normal }) => {
+    for (let i = 0; i < 24; i += 3) if ((w[i] - point[0]) * normal[0] + (w[i + 1] - point[1]) * normal[1] + (w[i + 2] - point[2]) * normal[2] <= 1e-9) return false;
+    return true;
+  });
+}
+/** The octree nodes holding points (each point lives in one node) whose bounds reach into the clip, every level; a node outside skips its subtree. */
+export function nodesInClip(root, m, clip) {
+  const out = [];
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || (clip && !boxHitsClip(n.box, m, clip))) continue;
+    if (n.numPoints > 0) out.push(n);
+    for (const ch of n.children || []) if (ch) stack.push(ch);
+  }
+  return out;
+}
+/**
+ * pointsInClip for octree nodes: read(node) → Float64Array of its points' file coordinates (several at once). The
+ * points inside, in world space: { count (all), points (at most max: an even sample, a reservoir), nodes }.
+ */
+export async function pointsInNodes(nodes, clip, { read, matrix, max = 2e6, parallel = 8 }) {
+  const c = clip && CV.normalize(clip);
+  const t = c ? CV.tester(c) : () => true;
+  const keep = c?.kind === 'box' && c.keep === 'outside' ? (x, y, z) => !t(x, y, z) : t;
+  const cap = Math.max(0, Math.floor(Math.min(max, 2e7)));
+  const out = new Float32Array(cap * 3);
+  const w = [0, 0, 0];
+  let count = 0;
+  let seed = 12345;
+  const take = (ex) => {
+    for (let i = 0; i < ex.length; i += 3) {
+      apply(matrix, ex[i], ex[i + 1], ex[i + 2], w, 0);
+      if (!keep(w[0], w[1], w[2])) continue;
+      let k = count < cap ? count : ((seed = (seed * 16807) % 2147483647) % (count + 1)); // reservoir: every point equally likely
+      if (k < cap) out.set(w, k * 3);
+      count++;
+    }
+  };
+  for (let i = 0; i < nodes.length; i += parallel) for (const ex of await Promise.all(nodes.slice(i, i + parallel).map(read))) take(ex);
+  return { count, points: out.subarray(0, Math.min(count, cap) * 3), nodes: nodes.length };
 }
 
 /** Join several pointsInClip results into one. */

@@ -170,3 +170,31 @@ test('a scan of two buildings and a road: the wall rings at 1.2 m above ground, 
   assert.equal((await reg.run('step_slice', { series: 'Floor' })).name, 'Floor 3.5');
   await assert.rejects(reg.run('step_slice', { series: 'Roofs' }), /No slice series "Roofs"/);
 });
+
+test('octree clouds: only the nodes reaching into the slab are read, every level, and the count matches the preview path', async () => {
+  // the columns cloud in file coordinates (east, north, up) around a base point, split into a root and two children by height
+  const base = [650000, 5400000, 100];
+  const pts = columns(); // model x, y, z with no base
+  const file = (i) => [pts[i] + base[0], -pts[i + 2] + base[1], pts[i + 1] + base[2]];
+  const low = [];
+  const high = [];
+  const top = [];
+  for (let i = 0; i < pts.length; i += 3) (pts[i + 1] === 2.5 ? top : pts[i + 1] > 1 ? high : low).push(...file(i));
+  const box = (min, max) => ({ min: min.map((v, k) => v + base[k]), max: max.map((v, k) => v + base[k]) });
+  const leaf = (name, b, xyz) => ({ name, box: b, numPoints: xyz.length / 3, children: [], xyz: Float64Array.from(xyz) });
+  const root = { ...leaf('r', box([0, -4, 0], [9, 0, 2.5]), low), children: [leaf('r0', box([0, -4, 1.1], [9, 0, 1.3]), high), leaf('r1', box([0, -4, 2.4], [9, 0, 2.6]), top)] };
+  const m = SL.mul(D.worldMatrix(makeCtx().ctx.doc, { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }).elements, SL.fileToModel(base));
+  const slab = { kind: 'slab', point: [4.5, 1.2, 2], normal: [0, 1, 0], thickness: 0.2 };
+  const nodes = SL.nodesInClip(root, m, slab);
+  assert.deepEqual(nodes.map((n) => n.name).sort(), ['r', 'r0'], 'the node above the slab is never read');
+  const read = [];
+  const r = await SL.pointsInNodes(nodes, slab, { matrix: m, read: async (n) => (read.push(n.name), n.xyz) });
+  assert.equal(r.count, 150);
+  assert.deepEqual(SL.stats(slab, r.points).bounds, { min: [-4.5, -2], max: [4.5, 2] });
+  assert.equal(read.length, 2);
+  // a reservoir sample keeps the whole count and stays inside
+  const s = await SL.pointsInNodes(nodes, slab, { matrix: m, read: async (n) => n.xyz, max: 40 });
+  assert.equal(s.count, 150);
+  assert.equal(s.points.length, 120);
+  for (let i = 1; i < s.points.length; i += 3) assert.ok(Math.abs(s.points[i] - 1.2) <= 0.1 + 1e-6);
+});

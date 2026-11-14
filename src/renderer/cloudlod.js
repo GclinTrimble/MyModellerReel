@@ -101,7 +101,7 @@ export class CloudLOD {
       c = { id: e.id, key, kind: oc.kind || 'potree', folder: oc.folder, file: oc.kind === 'copc' ? oc.source : null, base: e.pointcloud.base || [0, 0, 0], material: null, sphere: new THREE.Sphere(), root: null, loadedNodes: new Set() };
       c.F = fileToModel(c.base);
       this.clouds.set(e.id, c);
-      this.open(c, e);
+      c.opening = this.open(c, e);
     }
     c.entity = e;
     c.group = group;
@@ -150,6 +150,23 @@ export class CloudLOD {
       console.error('point cloud octree:', err);
       c.missing = true;
     }
+  }
+
+  /**
+   * What a slice (#292) reads at full depth: { root, base, read(node) → Float64Array of file coordinates }, nodes in the
+   * cache reused, others read and decoded like the streamed ones (not kept). null: no octree open for that entity.
+   */
+  async source(e) {
+    const c = this.clouds.get(e.id);
+    await c?.opening;
+    if (!c?.root || c.missing) return null;
+    const read = async (node) => {
+      const hit = this.cache.get(this.keyOf(c, node));
+      if (hit) return hit.obj.userData.exact;
+      const bytes = await native().invoke('cloud:read-node', { folder: c.folder, file: c.file, byteOffset: node.byteOffset, byteSize: node.byteSize });
+      return (await this.decode({ kind: c.kind, bytes, layout: c.layout, header: c.header, scale: c.scale, offset: c.offset, count: node.numPoints, min: node.box.min, base: c.base, timeBase: c.timeBase }, [bytes])).exact;
+    };
+    return { root: c.root, base: c.base, read };
   }
 
   previewVisibility(c) {
