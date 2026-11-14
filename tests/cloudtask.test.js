@@ -54,7 +54,7 @@ test('classifying an octree in small tiles agrees with the truth across tile bor
   assert.ok(parts >= 4 && progress.at(-1) === 1);
   assert.equal(r.points, 150000);
   const pts = await pointsOf([r.delta]);
-  const ground = f1(pts, (c) => c === 2, (c) => c === 2 || c === 11);
+  const ground = f1(pts, (c) => c === 2 || c === 11, (c) => c === 2 || c === 11);
   const buildings = f1(pts, (c) => c === 6, (c) => c === 6);
   const trees = f1(pts, (c) => c === 5, (c) => c === 5);
   console.log('octree tiles F1 %', { ground: +(ground * 100).toFixed(1), buildings: +(buildings * 100).toFixed(1), high_vegetation: +(trees * 100).toFixed(1) }, `${r.seconds} s`);

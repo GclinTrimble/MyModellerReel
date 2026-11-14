@@ -559,7 +559,12 @@ export function syncClouds(vp) {
 
 /** The legend of the selected (or first) cloud in each pane's bottom-right corner. */
 function legends(vp) {
-  const objs = [...(vp.objs?.values() || [])].filter((o) => o.userData.cloudEntity && o.material?.userData?.cloud && o.visible);
+  // an octree cloud (#294) is a group: its shared node material carries the legend
+  const proxy = (o) => {
+    const c = o.userData.octree && vp.clouds?.clouds.get(o.userData.octreeCloud);
+    return c?.material ? { material: c.material, visible: o.visible, userData: { cloudEntity: c.entity } } : o;
+  };
+  const objs = [...(vp.objs?.values() || [])].map(proxy).filter((o) => o.userData.cloudEntity && o.material?.userData?.cloud && o.visible);
   const sel = objs.find((o) => vp.selection.includes(o.userData.cloudEntity.id)) || objs[0];
   const panes = [{ canvas: vp.canvas, n: 1 }, ...(vp.extra || []).filter((p) => p.visible && !p.win && p.canvas.style.display !== 'none').map((p) => ({ canvas: p.canvas, n: p.i + 1 }))];
   const key = sel ? `${sel.material.uuid}|${sel.userData.cloudEntity.id}|${panes.map((p) => `${p.n}:${p.canvas.offsetLeft},${p.canvas.offsetTop},${p.canvas.offsetWidth},${p.canvas.offsetHeight}`).join(';')}` : '';

@@ -342,11 +342,11 @@ export const DEFAULT_STEPS = ['noise', 'ground', 'vegetation', 'buildings'];
 /** The classes each step owns: a point holding one that the step no longer finds goes back to 1. */
 export const OWNS = { noise: [7, 18], ground: [2], vegetation: [3, 4, 5], buildings: [6], road: [11], wires: [14, 15] };
 export const PARAMS = {
-  noise: { k: 8, sigma: 3, isolated: 0 }, // isolated: m (0 = 8 × the typical spacing)
+  noise: { min_points: 4, ratio: 0.15 }, // points in a 3 × 3 × 3 block of cells (2 spacings each)
   ground: { method: 'pmf', cell: 1, max_window: 20, slope: 0.3, dh0: 0.3, dh_max: 2.5, tolerance: 0.25 },
   vegetation: { bands: [0.5, 2], min_height: 0.15 },
   buildings: { min_height: 2.5, min_area: 4, angle: 10, distance: 0.1 },
-  road: { intensity: null, roughness: 0.03, kerb_class: 64, kerb: [0.07, 0.35] },
+  road: { intensity: null, roughness: 0.03, kerb_class: 64, kerb: [0.07, 0.3] },
   wires: { min_height: 3, linearity: 0.85 },
 };
 export const paramsOf = (p = {}) => Object.fromEntries(Object.entries(PARAMS).map(([k, v]) => [k, { ...v, ...(p[k] || {}) }]));
@@ -354,45 +354,44 @@ export const paramsOf = (p = {}) => Object.fromEntries(Object.entries(PARAMS).ma
 // ---------------------------------------------------------------- noise
 
 /**
- * Statistical outliers: a point whose mean distance to its k nearest is beyond mean + sigma standard deviations, or
- * that has fewer than 3 points within isolated metres. Returns a Uint8Array flag per point and the median mean distance.
+ * Outliers by local density: the points in a point's block of 3 × 3 × 3 voxel cells. A point is noise when its block
+ * holds fewer than min_points, or under ratio × the median block of the cloud (a bird, a multipath echo, a speck far
+ * below the ground). Counted per cell, so it costs about the same for 50 M points as reading them. Returns a Uint8Array
+ * flag per point and the typical spacing (the cell over the cube root of the median block).
  */
-export function outliers(g, { k = 8, sigma = 3, isolated = 0 } = {}, use = null) {
-  const n = g.count;
-  const mean = new Float32Array(n);
-  const third = new Float32Array(n);
-  let out = new Uint32Array(k + 1);
-  const p = g.pos;
-  let [mu, m2, cnt] = [0, 0, 0];
-  for (let i = 0; i < n; i++) {
-    if (use && !use[i]) continue;
-    const nb = neighbours(g, i, { k: k + 1, rmax: 16 * g.cell }, out);
-    let s = 0;
-    let [d1, d2, d3] = [Infinity, Infinity, Infinity]; // the three nearest others
-    for (const j of nb) {
-      if (j === i) continue;
-      const d = Math.hypot(p[j * 3] - p[i * 3], p[j * 3 + 1] - p[i * 3 + 1], p[j * 3 + 2] - p[i * 3 + 2]);
-      s += d;
-      if (d < d1) [d1, d2, d3] = [d, d1, d2];
-      else if (d < d2) [d2, d3] = [d, d2];
-      else if (d < d3) d3 = d;
-    }
-    third[i] = d3;
-    mean[i] = nb.length > k ? s / k : 16 * g.cell; // too few within reach: far from everything
-    cnt++;
-    const d = mean[i] - mu;
-    mu += d / cnt;
-    m2 += d * (mean[i] - mu);
+export function outliers(g, { min_points = 4, ratio = 0.15 } = {}) {
+  const { dims, map, start } = g;
+  const cells = start.length - 1;
+  const coord = new Int32Array(cells * 3);
+  for (const [key, c] of map) {
+    const ix = key % dims[0];
+    const r = (key - ix) / dims[0];
+    const iy = r % dims[1];
+    coord.set([ix, iy, (r - iy) / dims[1]], c * 3);
   }
-  const limit = mu + sigma * Math.sqrt(m2 / (cnt || 1));
+  const block = new Uint32Array(cells);
+  for (let c = 0; c < cells; c++) {
+    const [x, y, z] = [coord[c * 3], coord[c * 3 + 1], coord[c * 3 + 2]];
+    let sum = 0;
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const [a, b, e] = [x + dx, y + dy, z + dz];
+          if (a < 0 || b < 0 || e < 0 || a >= dims[0] || b >= dims[1] || e >= dims[2]) continue;
+          const o = map.get(a + dims[0] * (b + dims[1] * e));
+          if (o !== undefined) sum += start[o + 1] - start[o];
+        }
+    block[c] = sum;
+  }
   const sample = [];
-  for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 20000))) if (!use || use[i]) sample.push(mean[i]);
+  for (let i = 0; i < g.count; i += Math.max(1, Math.floor(g.count / 20000))) sample.push(block[g.slot[i]]);
   sample.sort((a, b) => a - b);
   const median = sample[sample.length >> 1] || 0;
-  const iso = isolated || 8 * median;
-  const flag = new Uint8Array(n);
-  for (let i = 0; i < n; i++) if ((!use || use[i]) && (mean[i] > limit || third[i] > iso)) flag[i] = 1;
-  return { flag, spacing: median };
+  const limit = Math.max(min_points, ratio * median);
+  const flag = new Uint8Array(g.count);
+  for (let i = 0; i < g.count; i++) if (block[g.slot[i]] < limit) flag[i] = 1;
+  // points per cell on a surface go as (cell / spacing)²: 27 cells of a block see about 9 of them
+  return { flag, spacing: g.cell / Math.sqrt(Math.max(1, median / 9)) };
 }
 
 // ---------------------------------------------------------------- ground
@@ -614,14 +613,25 @@ export function classifyPoints(input, { steps = DEFAULT_STEPS, params = {}, writ
     onProgress(0.6, 'planes');
     const B = P.buildings;
     const minPts = Math.max(20, Math.round(B.min_area / (spacing * spacing || 1) / 2));
-    const seg = planarSegments(g, f, { angle: B.angle, distance: B.distance, minPoints: minPts, maxScatter: 0.01, allowed: (i) => mask[i] === 1 });
+    const seg = planarSegments(g, f, { angle: B.angle, distance: B.distance, radius: 1.5 * g.cell, minPoints: minPts, maxScatter: 0.01, allowed: (i) => mask[i] === 1 });
     // segments that touch form clusters; a cluster is a building when it is wide and reaches min_height
     const parent = Int32Array.from({ length: seg.sizes.length }, (_, i) => i);
     const root = (a) => (parent[a] === a ? a : (parent[a] = root(parent[a])));
-    for (let i = 0; i < n; i += 3) {
+    // segments in the same voxel cell or touching cells join (a roof and its walls)
+    const first = new Int32Array(g.start.length - 1).fill(-1);
+    for (let i = 0; i < n; i++) {
       const s = seg.segment[i];
       if (s < 0) continue;
-      for (const j of near(i, 2.5 * g.cell)) if (seg.segment[j] >= 0) parent[root(seg.segment[j])] = root(s);
+      const c = g.slot[i];
+      if (first[c] < 0) first[c] = s;
+      else parent[root(s)] = root(first[c]);
+    }
+    for (const [key, c] of g.map) {
+      if (first[c] < 0) continue;
+      for (const d of [1, g.dims[0], g.dims[0] * g.dims[1], 1 + g.dims[0], 1 - g.dims[0], g.dims[0] * g.dims[1] + 1, g.dims[0] * g.dims[1] - 1, g.dims[0] * g.dims[1] + g.dims[0], g.dims[0] * g.dims[1] - g.dims[0]]) {
+        const o = g.map.get(key + d);
+        if (o !== undefined && first[o] >= 0) parent[root(first[o])] = root(first[c]);
+      }
     }
     const box = new Map();
     for (let i = 0; i < n; i++) {
@@ -644,7 +654,7 @@ export function classifyPoints(input, { steps = DEFAULT_STEPS, params = {}, writ
       const add = [];
       for (let i = 0; i < n; i++) {
         if (!mask[i] || building[i] || planar[i]) continue;
-        const nb = near(i, 1.5 * g.cell);
+        const nb = near(i, g.cell);
         let b = 0;
         for (const j of nb) b += building[j];
         if (b * 2 > nb.length) add.push(i);
@@ -668,7 +678,7 @@ export function classifyPoints(input, { steps = DEFAULT_STEPS, params = {}, writ
     const [b1, b2] = P.vegetation.bands;
     for (let i = 0; i < n; i++) if (above(i) && !building[i] && !planar[i] && !found[i]) set(i, hag[i] < b1 ? 3 : hag[i] < b2 ? 4 : 5);
   }
-  if (on.has('road') && hasGround) roadAndKerbs(input, ground, noise, P.road, set, near);
+  if (on.has('road') && hasGround) roadAndKerbs(input, ground, noise, P.road, set);
   onProgress(0.95, 'writing');
 
   // what this run writes: what it found; a point in a class the run owns that it no longer finds goes back to 1
@@ -678,46 +688,98 @@ export function classifyPoints(input, { steps = DEFAULT_STEPS, params = {}, writ
   let changed = 0;
   for (let i = 0; i < n; i++) {
     if (writable && !writable[i]) continue;
-    const c = found[i] || (owned.has(cur[i]) ? 1 : cur[i]);
+    let c = found[i] || (owned.has(cur[i]) ? 1 : cur[i]);
+    if (c === 2 && !on.has('road') && (cur[i] === 11 || cur[i] === P.road.kerb_class)) c = cur[i]; // road and kerbs are ground too
     if (c !== cur[i]) (classes[i] = c), changed++;
   }
   onProgress(1, 'done');
   return { classes, changed, spacing };
 }
 
-/** Road surface (11): smooth ground of the road's intensity; kerbs (kerb_class): sharp steps of kerb height. */
-function roadAndKerbs(input, ground, noise, R, set, near) {
+/**
+ * Road surface (11) and kerbs (kerb_class), from the ground points on two grids. Kerbs: on 0.25 m cells of mean ground
+ * height, a step of kerb height between two cells with level ground on both sides (a slope rises cell after cell, a
+ * kerb at once). Road: on 0.5 m cells, mostly of the asphalt's intensity (the darker Otsu class of the ground, or
+ * intensity [lo, hi]) and smooth (the residual of a plane through the cell under roughness).
+ */
+function roadAndKerbs(input, ground, noise, R, set) {
   const n = input.count;
   const pos = input.pos;
   const ids = [];
   for (let i = 0; i < n; i++) if (ground[i] && !noise[i]) ids.push(i);
   if (!ids.length) return;
-  // kerbs: within 0.3 m the ground steps by kerb height, sharply (a poor plane fit, a steep normal)
-  const kerb = new Uint8Array(n);
+  const use = (i) => ground[i] && !noise[i];
+  const K = grid2(pos, n, 0.25, use);
+  const zs = new Float64Array(K.nx * K.ny);
+  const cn = new Uint32Array(K.nx * K.ny);
   for (const i of ids) {
-    const nb = near(i, 0.3);
-    let [lo, hi, m] = [Infinity, -Infinity, 0];
-    const own = new Uint32Array(nb.length);
-    for (const j of nb) if (ground[j]) (own[m++] = j), (lo = Math.min(lo, pos[j * 3 + 2])), (hi = Math.max(hi, pos[j * 3 + 2]));
-    if (m < 4 || hi - lo < R.kerb[0] || hi - lo > R.kerb[1]) continue;
-    const c = covarianceFeatures(pos, own, m);
-    if (Math.sqrt(c.eigen[2]) >= 0.02 && c.verticality >= 0.15) kerb[i] = 1;
+    const c = K.at(pos[i * 3], pos[i * 3 + 1]);
+    zs[c] += pos[i * 3 + 2];
+    cn[c]++;
   }
-  // road: the darker Otsu class of ground intensity (asphalt), smooth, among mostly road neighbours
+  const z = (x, y) => (x < 0 || y < 0 || x >= K.nx || y >= K.ny || !cn[y * K.nx + x] ? NaN : zs[y * K.nx + x] / cn[y * K.nx + x]);
+  const kerbCell = new Uint8Array(K.nx * K.ny);
+  const flat = R.kerb[0] / 2;
+  for (let y = 0; y < K.ny; y++)
+    for (let x = 0; x < K.nx; x++) {
+      if (!cn[y * K.nx + x]) continue;
+      for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+        const step = Math.abs(z(x + dx, y + dy) - z(x, y));
+        if (!(step >= R.kerb[0] && step <= R.kerb[1])) continue;
+        if (!(Math.abs(z(x, y) - z(x - dx, y - dy)) < flat) || !(Math.abs(z(x + 2 * dx, y + 2 * dy) - z(x + dx, y + dy)) < flat)) continue;
+        kerbCell[y * K.nx + x] = 1;
+        kerbCell[(y + dy) * K.nx + x + dx] = 1;
+      }
+    }
   const inten = input.intensity;
-  const band = R.intensity || (inten ? [0, otsu(ids.map((i) => inten[i]))] : null);
+  const band = R.intensity || (inten ? [0, otsu(ids.filter((_, k) => k % 7 === 0).map((i) => inten[i]))] : null);
+  let roadCell = null;
+  const Rg = grid2(pos, n, 0.5, use);
   if (band) {
-    const cand = new Uint8Array(n);
-    for (const i of ids) if (!kerb[i] && inten[i] >= band[0] && inten[i] <= band[1]) cand[i] = 1;
+    // per cell: dark points, and the sums of a least-squares plane z = a x + b y + c about the cell's first point
+    const S = new Float64Array(Rg.nx * Rg.ny * 11);
     for (const i of ids) {
-      if (!cand[i]) continue;
-      const nb = near(i, 0.5);
-      let [k, m] = [0, 0];
-      const own = new Uint32Array(nb.length);
-      for (const j of nb) if (ground[j]) (own[m++] = j), (k += cand[j]);
-      if (m < 4 || k < 0.6 * m) continue;
-      if (Math.sqrt(covarianceFeatures(pos, own, m).eigen[2]) <= R.roughness) set(i, 11);
+      const c = Rg.at(pos[i * 3], pos[i * 3 + 1]);
+      const o = c * 11;
+      if (!S[o]) (S[o + 9] = pos[i * 3]), (S[o + 10] = pos[i * 3 + 1]);
+      const [x, y, w] = [pos[i * 3] - S[o + 9], pos[i * 3 + 1] - S[o + 10], pos[i * 3 + 2]];
+      S[o]++;
+      if (inten[i] >= band[0] && inten[i] <= band[1]) S[o + 1]++;
+      S[o + 2] += x * x;
+      S[o + 3] += x * y;
+      S[o + 4] += y * y;
+      S[o + 5] += x;
+      S[o + 6] += y;
+      S[o + 7] += w;
+      S[o + 8] += w * w;
+    }
+    // the residual needs Σxz and Σyz too: a second pass, the plane solved per cell
+    const XZ = new Float64Array(Rg.nx * Rg.ny * 2);
+    for (const i of ids) {
+      const c = Rg.at(pos[i * 3], pos[i * 3 + 1]);
+      const o = c * 11;
+      XZ[c * 2] += (pos[i * 3] - S[o + 9]) * pos[i * 3 + 2];
+      XZ[c * 2 + 1] += (pos[i * 3 + 1] - S[o + 10]) * pos[i * 3 + 2];
+    }
+    roadCell = new Uint8Array(Rg.nx * Rg.ny);
+    for (let c = 0; c < roadCell.length; c++) {
+      const o = c * 11;
+      const m = S[o];
+      if (m < 4 || S[o + 1] < 0.6 * m) continue;
+      // normal equations [Sxx Sxy Sx; Sxy Syy Sy; Sx Sy n] [a b c] = [Sxz Syz Sz]
+      const A = [[S[o + 2], S[o + 3], S[o + 5]], [S[o + 3], S[o + 4], S[o + 6]], [S[o + 5], S[o + 6], m]];
+      const r = [XZ[c * 2], XZ[c * 2 + 1], S[o + 7]];
+      const det = (M) => M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+      const D = det(A);
+      if (Math.abs(D) < 1e-12) continue;
+      const sol = [0, 1, 2].map((k) => det(A.map((row, j) => row.map((v, q) => (q === k ? r[j] : v)))) / D);
+      const resid = (S[o + 8] - (sol[0] * r[0] + sol[1] * r[1] + sol[2] * r[2])) / m;
+      if (Math.sqrt(Math.max(0, resid)) <= R.roughness) roadCell[c] = 1;
     }
   }
-  for (const i of ids) if (kerb[i]) set(i, R.kerb_class);
+  for (const i of ids) {
+    const [x, y] = [pos[i * 3], pos[i * 3 + 1]];
+    if (kerbCell[K.at(x, y)]) set(i, R.kerb_class);
+    else if (roadCell?.[Rg.at(x, y)] && inten[i] >= band[0] && inten[i] <= band[1]) set(i, 11);
+  }
 }

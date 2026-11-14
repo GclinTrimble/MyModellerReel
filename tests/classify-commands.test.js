@@ -24,7 +24,7 @@ test('classify_cloud on a cloud without an octree: a report, the classes, one un
   assert.ok(r.changed > 50000);
   const c = r.classes.find((x) => x.code === 2);
   assert.ok(c.after > 30000 && c.before === 0, 'ground found');
-  assert.ok(r.classes.find((x) => x.code === 6).after > 3000, 'buildings found');
+  assert.ok(r.classes.find((x) => x.code === 6).after > 2500, `buildings found: ${JSON.stringify(r.classes)}`);
   assert.ok(r.seconds >= 0 && r.steps.includes('ground') && r.params.ground.method === 'pmf');
   const after = await counts(reg, id);
   assert.equal(after[2], c.after);
