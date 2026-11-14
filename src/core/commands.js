@@ -52,6 +52,7 @@ import * as Units from './units.js';
 import * as Clip from './clipboard.js';
 import * as CV from './clip.js';
 import * as SL from './slices.js';
+import * as CF from './cloudfeatures.js';
 import * as TI from './ties.js';
 import { TEMPLATES } from './templates.js';
 import { HOWTOS, findHowtos } from './howto.js';
@@ -163,6 +164,10 @@ export const GUIDE = `MyModellerReel conventions:
   or PageDown / PageUp step), view_clip (a pane square-on to it, pane 2 keeps the 3D view), slice_points (the points
   in its 2D frame, or store: a point set to snap to). Read their stats (count, bounds, density, height histogram)
   rather than asking for points. add_scene keeps the slices that cut; animate_section { clip } sweeps one in a video.
+- Features in a scan: detect_planes (walls, roofs, slabs, ground, embankments), detect_corners (wall corners: lines
+  and CORNER points), detect_edges (intersections, wall_top, kerb / step along an alignment), in a scope (within a
+  clip, classes). They land on the Detected layer: snap to them, align_clip { to: 'face' } on a plane, extrude from
+  one. Pass propose: true so the user accepts or rejects what you found.
 - the person: ask_user (a question with choice buttons, waits), show_form (a command's form filled in for them to adjust and Run), pick_in_view (they click a point or an object), show_panel; rate_ai_turn / list_ai_feedback (their verdicts on your answers, kept as training data).
   To 3D: elevate_linework, linework_to_breaklines, extrude_linework, sweep_linework (by ids or a layer glob).
 - Files: import reads LandXML, IFC and DXF (and 3D models) and says what it skipped; export writes landxml, ifc
@@ -5529,6 +5534,169 @@ function registerCore(reg, ctx) {
     const asset = Assets.put(new Uint8Array(flat.buffer), { mime: 'application/x-mmr-points', name: `${c.name}.points` });
     const e = D.addEntity(ctx.doc, { type: 'pointcloud', name: a.as || D.uniqueName(ctx.doc, `${c.name} points`), pointcloud: { asset, count: flat.length / 3, colors: false, format: 'slice', of: st.count }, material: { color: '#c8553d' }, meta: { slice: c.name } });
     return { clip: c.name, id: e.id, name: e.name, stored: flat.length / 3, stats: st };
+  }, true);
+  // features in a scan (#300): planes, corners, plane edges, wall tops and kerb / step edges found in the points of a
+  // scope (a cloud, a clip, some classes; an octree at full depth), kept as entities on the Detected layer so they
+  // snap, select and align clips; the maths (cloudfeatures.js) runs in a worker when the app has one
+  const scopePoints = async (a, clip = a.within ? clipOf(a.within) : null, max = a.max_points ?? 5e6) => {
+    let clouds = cloudsOf(clip);
+    if (a.id) {
+      const [e] = D.resolve(ctx.doc, a.id);
+      if (!e.pointcloud) throw new Error(`${e.name} is not a point cloud.`);
+      clouds = [e];
+    }
+    if (!clouds.length) throw new Error(a.within ? `No point cloud shown inside ${a.within}.` : 'No point cloud shown: import one (import_point_cloud).');
+    const parts = [];
+    for (const e of clouds) {
+      const m = D.worldMatrix(ctx.doc, e).elements;
+      const src = e.pointcloud.octree?.status === 'ready' && (await ctx.view?.clouds?.source?.(e));
+      if (src) {
+        const fm = SL.mul(m, SL.fileToModel(src.base));
+        parts.push(await SL.pointsInNodes(SL.nodesInClip(src.root, fm, clip), clip, { read: (n) => src.read(n, a.classes), matrix: fm, max }));
+        continue;
+      }
+      let positions = null;
+      if (a.classes) {
+        const d = CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset));
+        if (!d.classification) throw new Error(`${e.name} has no classes: leave classes out (or classify it first).`);
+        const keep = new Set(a.classes);
+        const p = [];
+        for (let i = 0; i < d.count; i++) if (keep.has(d.classification[i])) p.push(d.position[i * 3], d.position[i * 3 + 1], d.position[i * 3 + 2]);
+        positions = Float32Array.from(p);
+      }
+      parts.push(SL.pointsInClip(e, clip, { max, matrix: m, positions }));
+    }
+    const r = SL.merge(parts);
+    if (r.points.length < 300) throw new Error(`Only ${r.points.length / 3} scan points in that scope: too few to find features.`);
+    return { ...r, taken: r.points.length / 3 }; // (the points go to the worker: their buffer moves there)
+  };
+  const runFeatures = (points, req) => (ctx.features ? ctx.features.run(points, req) : CF.runFeatures(points, req));
+  const COLORS = { vertical: '#d9822b', horizontal: '#3d8bd9', sloped: '#9b59b6', corner: '#d63c3c', edge: '#2f9e6e', top: '#c0392b', bottom: '#e0b400' };
+  /** Entities from here on go on the Detected layer, and into a proposal the user accepts or rejects with propose. */
+  const detectedLayer = (a) => {
+    if (a.propose) ctx.store?.beginProposal?.();
+    const name = a.layer || 'Detected';
+    const t = L.ensureLayer(ctx.doc, name);
+    t.color ||= '#e07b39';
+    return name;
+  };
+  const addPolyline = (pts, name, tag, color, meta) => {
+    const { origin } = G.recenter({ v: pts, f: [] });
+    const o = D.round3(origin);
+    return D.addEntity(ctx.doc, { type: 'curve', name: D.uniqueName(ctx.doc, name), curve: { kind: 'polyline', points: pts.map((p) => G.sub(p, o).map(r4)), closed: false }, position: o, tag, material: { color }, meta });
+  };
+  const PLANE_NAMES = { vertical: 'Wall plane 1', horizontal: 'Level plane 1', sloped: 'Sloped plane 1' };
+  const addPlane = (p, tag) => {
+    const { origin } = G.recenter({ v: p.extent, f: [] });
+    const o = D.round3(origin);
+    const plane = { type: p.type, normal: p.normal, offset: r4(p.d), rms: r4(p.rms), count: p.count, area: r3(p.area), ...(p.regularised ? { regularised: true } : {}) };
+    return D.addEntity(ctx.doc, { name: D.uniqueName(ctx.doc, PLANE_NAMES[p.type]), mesh: { v: p.extent.map((q) => G.sub(q, o).map(r4)), f: [p.extent.map((_, i) => i)] }, position: o, tag, material: { color: COLORS[p.type], opacity: 0.35, metalness: 0, roughness: 0.9 }, meta: { detected: 'plane', plane } });
+  };
+  const planeReply = (e) => ({ id: e.id, name: e.name, type: e.meta.plane.type, normal: e.meta.plane.normal, area: e.meta.plane.area, rms: e.meta.plane.rms, points: e.meta.plane.count });
+  const PLANE_ARGS = {
+    id: str('the point cloud (default: every one shown)'),
+    within: str('a clip volume: only the points inside it'),
+    classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes (6 building, 2 ground, 1 unclassified…)' },
+    max_points: num('points read at most (default 5000000; an even sample past that)'),
+    propose: bool('keep the result as a proposal the user accepts or rejects (propose accept / reject)'),
+    layer: str('the layer they go on (default Detected)'),
+  };
+  const PLANE_OPTS = {
+    min_area: num('m² (default 2)'),
+    min_points: num('default 500'),
+    distance: num('m from the plane a point may lie (default 0.03)'),
+    regularise: bool('make near-vertical planes vertical and walls square to the main direction'),
+  };
+  const planeReq = (a) => ({ minArea: a.min_area ?? 2, minPoints: a.min_points ?? 500, distance: a.distance ?? 0.03, regularise: !!a.regularise });
+  const scopeReply = (r, ms) => ({ points: r.count, ...(r.taken < r.count ? { sampled: r.taken } : {}), ms });
+  def('terrain', 'detect_planes', 'Find the planes in a scan: walls, façades, abutments (vertical), floors, roofs, slabs, ground (horizontal), roof faces and embankments (sloped), in a scope (a cloud, a clip volume, some classes). Each becomes a thin translucent face on the Detected layer clipped to its extent, with meta.plane (normal, offset, RMS, points, area): snap to it, align_clip { to: face } on it, extrude from it. Returns counts and the 50 largest.', obj({ ...PLANE_ARGS, ...PLANE_OPTS }), async (a) => {
+    const t0 = Date.now();
+    const scope = await scopePoints(a);
+    const out = await runFeatures(scope.points, { planes: planeReq(a) });
+    const tag = detectedLayer(a);
+    const made = out.planes.map((p) => addPlane(p, tag));
+    const by = {};
+    for (const p of out.planes) by[p.type] = (by[p.type] || 0) + 1;
+    return { scope: scopeReply(scope, Date.now() - t0), voxel: r3(out.voxel), count: made.length, by_type: by, planes: made.slice(0, 50).map(planeReply), ids: made.map((e) => e.id), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+  }, true);
+  /** Planes of Detected entities (meta.plane) in world space, for corners and edges between planes found earlier. */
+  const givenPlanes = (refs) =>
+    D.resolve(ctx.doc, refs).map((e) => {
+      if (!e.meta?.plane) throw new Error(`${e.name} is not a detected plane (detect_planes makes them).`);
+      const m = D.worldMesh(ctx.doc, e);
+      const n = G.faceNormal(m, 0);
+      return { normal: n, d: G.dot(n, m.v[0]), extent: m.v, type: e.meta.plane.type, centroid: G.scl(m.v.reduce((s, v) => G.add(s, v), [0, 0, 0]), 1 / m.v.length), id: e.id };
+    });
+  const cornerName = () => {
+    const taken = new Set(ctx.doc.entities.filter((x) => x.type === 'point').map((x) => x.name));
+    let i = 1;
+    while (taken.has(`CNR${i}`)) i++;
+    return `CNR${i}`;
+  };
+  def('terrain', 'detect_corners', 'Find the corners of a scan: where two walls (vertical planes) meet at min_angle° or more, a vertical corner line over the height both walls reach, and a survey point coded CORNER at its foot (or at level: the corner in a horizontal slice at that elevation). On the Detected layer, with the angle and height in meta. planes: corners between planes detect_planes made; otherwise the planes are found first (and kept too).', obj({ ...PLANE_ARGS, planes: { type: 'array', items: { type: 'string' }, description: 'detected plane ids (default: find the planes now)' }, min_angle: num('degrees (default 30)'), level: num('an elevation (project z): corners in a horizontal slice there, points at that height'), ...PLANE_OPTS }), async (a) => {
+    const t0 = Date.now();
+    const scope = await scopePoints(a);
+    const given = a.planes && givenPlanes(a.planes);
+    const level = a.level !== undefined ? modelY(a.level) : null;
+    const out = await runFeatures(scope.points, { planes: planeReq(a), given, corners: { minAngle: a.min_angle ?? 30, level } });
+    const tag = detectedLayer(a);
+    const planeIds = given ? given.map((p) => p.id) : out.planes.map((p) => addPlane(p, tag).id);
+    if (!S.geo(ctx.doc).base) S.geo(ctx.doc).base = [0, 0, 0]; // the points' project coordinates follow the model's
+    const made = out.corners.map((k) => {
+      const meta = { detected: 'corner', corner: { angle: r3(k.angle), height: r3(k.height), planes: k.planes.map((i) => planeIds[i]) } };
+      const line = addPolyline([k.base, k.top], 'Corner 1', tag, COLORS.corner, meta);
+      const pt = S.addPoint(ctx.doc, { name: cornerName(), ...S.toProject(ctx.doc, k.point), code: 'CORNER', desc: line.name });
+      Object.assign(pt, { tag, position: D.round3(k.point) });
+      pt.meta = { ...meta, line: line.id };
+      return { line, pt, k };
+    });
+    return { scope: scopeReply(scope, Date.now() - t0), count: made.length, corners: made.slice(0, 50).map(({ line, pt, k }) => ({ id: line.id, point: pt.name, at: [r3(pt.point.e), r3(pt.point.n), r3(pt.point.z)], angle: r3(k.angle), height: r3(k.height) })), ...(given ? {} : { planes: planeIds.length }), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
+  }, true);
+  const EDGE_KINDS = ['intersections', 'kerb', 'step', 'wall_top'];
+  def('terrain', 'detect_edges', 'Find edges in a scan. intersections: where planes meet (eaves, ridges, verges, wall feet), clipped to where both have points; wall_top: the top of each wall; kerb: kerb top and bottom lines (steps of min_height to 0.4 m) and step: any height jump (wall tops, retaining walls, terraces), both from cross profiles every spacing m along an alignment (or two points). Curves on the Detected layer with their fit in meta. Returns counts and per edge its kind, length, height.', obj({ ...PLANE_ARGS, kind: str('what to find', EDGE_KINDS), alignment: str('kerb / step: the alignment (or any curve) the profiles cross'), points: { type: 'array', description: 'kerb / step: or two points [x, y, z] (or survey point names) giving the direction' }, spacing: num('kerb / step: m between profiles (default 1)'), width: num('kerb / step: m either side of the alignment (default 10)'), min_height: num('kerb / step: the smallest jump, m (default 0.05 kerb, 0.2 step)'), planes: { type: 'array', items: { type: 'string' }, description: 'intersections / wall_top: detected plane ids (default: find them now)' }, ...PLANE_OPTS }, ['kind']), async (a) => {
+    if (!EDGE_KINDS.includes(a.kind)) throw new Error(`kind is one of ${EDGE_KINDS.join(', ')}.`);
+    const t0 = Date.now();
+    const step = a.kind === 'kerb' || a.kind === 'step';
+    let path = null;
+    let clip = a.within ? clipOf(a.within) : null;
+    if (step) {
+      if (a.alignment) {
+        const [al] = D.resolve(ctx.doc, a.alignment);
+        if (!al.curve) throw new Error(`${al.name} is not an alignment or curve.`);
+        path = SW.alignmentPath(ctx.doc, al);
+      } else if (a.points?.length === 2) {
+        const [p, q] = a.points.map((x) => (Array.isArray(x) ? x : D.worldMatrix(ctx.doc, pointsByRefs([x])[0]).elements.slice(12, 15)));
+        path = [[...p, 0], [...q, Math.hypot(q[0] - p[0], q[2] - p[2])]];
+      } else throw new Error(`kind '${a.kind}' needs an alignment (or two points) for its cross profiles.`);
+      // only the corridor around it is read (a box over the alignment, width either side)
+      if (!clip) {
+        const w = (a.width ?? 10) + 1;
+        const xs = path.map((p) => p[0]);
+        const zs = path.map((p) => p[2]);
+        const [x0, x1, z0, z1] = [Math.min(...xs) - w, Math.max(...xs) + w, Math.min(...zs) - w, Math.max(...zs) + w];
+        clip = CV.normalize({ kind: 'box', name: 'corridor', center: [(x0 + x1) / 2, 0, (z0 + z1) / 2], size: [x1 - x0, 1e5, z1 - z0], rotation: [0, 0, 0] });
+      }
+    }
+    const scope = await scopePoints(a, clip);
+    const given = !step && a.planes ? givenPlanes(a.planes) : undefined;
+    const req = step
+      ? { steps: { path, spacing: a.spacing ?? 1, width: a.width ?? 10, minHeight: a.min_height ?? (a.kind === 'kerb' ? 0.05 : 0.2), maxHeight: a.kind === 'kerb' ? 0.4 : 50 } }
+      : { planes: planeReq(a), given, ...(a.kind === 'intersections' ? { edges: {} } : { tops: {} }) };
+    const out = await runFeatures(scope.points, req);
+    const tag = detectedLayer(a);
+    const made = [];
+    if (step) {
+      const word = a.kind === 'kerb' ? 'Kerb' : 'Step';
+      for (const s of out.steps) {
+        const meta = (part) => ({ detected: a.kind, edge: { part, height: r3(s.height), side: s.side > 0 ? 'right' : 'left', offset: r3(s.offset), from: r3(s.from), to: r3(s.to), profiles: s.stations } });
+        for (const part of ['top', 'bottom']) made.push({ e: addPolyline(s[part], `${word} ${part} 1`, tag, COLORS[part], meta(part)), length: CF.round.r3(DR.length(s[part].map((p) => [p[0], -p[2]]))), height: s.height, part });
+      }
+    } else {
+      if (!given) out.planes.forEach((p) => addPlane(p, tag));
+      if (a.kind === 'intersections') for (const e of out.edges) made.push({ e: addPolyline([e.from, e.to], 'Edge 1', tag, COLORS.edge, { detected: 'edge', edge: { angle: r3(e.angle), length: r3(e.length) } }), length: e.length });
+      else for (const t of out.tops) made.push({ e: addPolyline(t.points, 'Wall top 1', tag, COLORS.top, { detected: 'wall_top', edge: { length: r3(t.length) } }), length: t.length });
+    }
+    return { scope: scopeReply(scope, Date.now() - t0), kind: a.kind, count: made.length, edges: made.slice(0, 50).map((m) => ({ id: m.e.id, name: m.e.name, length: r3(m.length), ...(m.part ? { part: m.part, height: r3(m.height) } : {}) })), ...(a.propose ? { proposal: !!ctx.store?.proposal } : {}) };
   }, true);
   // the section planes of #187, kept as wrappers: plane clips, one cutting at a time
   const planes = () => clips().filter((c) => c.kind === 'plane');

@@ -1775,3 +1775,74 @@ test('slices (#292): a plan slice of a scan, square-on in pane 2, snapping to it
   assert.ok(Math.abs(y - sw.to[1]) < 1e-3, `the slab is at the top at the end: ${y}`);
   await ok('clear_clips');
 });
+
+test('features in a scan (#300): planes, corners and kerbs from a streamed octree, in the worker; lines snap to corners; a box aligns to a roof; a proposal rejected', async () => {
+  const { makeScan, writeLas, SITE } = await import('../fixtures/scan.js');
+  const file = path.join(home, 'detect.las');
+  fs.writeFileSync(file, writeLas(makeScan({ points: 2000000 })));
+  await ok('new_model');
+  await w.evaluate(() => window.mmr.app.ui.setRibbon(null));
+  await ok('import_point_cloud', { path: file, octree: true, name: 'Corridor scan' });
+  let state = null;
+  for (let i = 0; i < 300 && state?.octree !== 'ready'; i++) {
+    await new Promise((res) => setTimeout(res, 200));
+    state = await ok('point_cloud_job', { id: 'Corridor scan' });
+  }
+  assert.equal(state.octree, 'ready');
+  const b = await w.evaluate(() => window.mmr.doc.geo.base);
+  const O = SITE.origin;
+  const L = (x, n, z = 0) => [O[0] + x - b[0], O[2] + z - b[2], -(O[1] + n - b[1])];
+  await ok('add_clip', { kind: 'box', name: 'Buildings', center: L(44, 58.5, 6), size: [64, 14, 20] });
+  // planes: read at full depth from the octree inside the box, found in the worker
+  const p = await ok('detect_planes', { within: 'Buildings', min_points: 300 });
+  assert.ok(p.scope.points > 300000, `full depth inside the box: ${p.scope.points}`);
+  assert.ok(p.by_type.vertical >= 8 && p.by_type.sloped >= 2, JSON.stringify(p.by_type));
+  assert.ok(JSON.stringify(await ok('list_layers')).includes('"Detected"'), 'a Detected layer');
+  // corners of the building points only (class 6), between the planes found above
+  const c = await ok('detect_corners', { within: 'Buildings', planes: p.ids, classes: [6] });
+  assert.equal(c.count, 8);
+  for (const B of SITE.buildings) for (const [e, n] of B.footprint) assert.ok(c.corners.some((k) => Math.hypot(k.at[0] - e, k.at[1] - n) < 0.03), `a corner within 3 cm of ${e}, ${n}`);
+  // the Line tool from one CORNER point to another lands exactly on them
+  const near = (x, n) => c.corners.find((k) => Math.hypot(k.at[0] - O[0] - x, k.at[1] - O[1] - n) < 0.1).point;
+  const names = [near(15, 55), near(27, 65)];
+  await ok('set_camera', { position: L(5, 40, 14), target: L(21, 60, 4) });
+  await w.waitForTimeout(500);
+  const screen = await w.evaluate((ns) => {
+    const vp = window.mmr.app.viewport;
+    vp.vertexCache = null;
+    return ns.map((n) => { const e = window.mmr.doc.entities.find((x) => x.name === n); const q = vp.toScreen(new window.mmr.THREE.Vector3(...e.position)); return { at: e.position, q: [q.x + 2, q.y + 1] }; });
+  }, names);
+  await w.evaluate(() => window.mmr.app.tools.set('line'));
+  for (const { q } of screen) {
+    await w.mouse.move(q[0] - 6, q[1]);
+    await w.mouse.move(...q);
+    await w.mouse.click(...q);
+  }
+  await w.keyboard.press('Escape');
+  await w.waitForTimeout(300);
+  await w.evaluate(() => window.mmr.app.tools.set('select'));
+  const line = await w.evaluate(() => { const e = window.mmr.doc.entities.find((x) => x.name.startsWith('Line')); return e && e.curve.points.map((q) => q.map((v, i) => v + e.position[i])); });
+  assert.ok(line?.length >= 2, 'a line was drawn');
+  for (const [k, end] of [line[0], line.at(-1)].entries()) assert.ok(Math.hypot(...end.map((v, i) => v - screen[k].at[i])) < 1e-3, `line end ${k} on ${names[k]}: ${end} vs ${screen[k].at}`);
+  // a clip box aligned to a detected roof face
+  const roof = p.planes.find((x) => x.type === 'sloped');
+  await ok('add_clip', { kind: 'box', name: 'Roof', center: L(66, 57, 9), size: [14, 2, 8] });
+  const al = await ok('align_clip', { name: 'Roof', to: 'face', id: roof.id, face: 0 });
+  const R = await w.evaluate((rot) => new window.mmr.THREE.Matrix4().makeRotationFromEuler(new window.mmr.THREE.Euler(...rot.map((d) => (d * Math.PI) / 180))).elements, al.clip.rotation);
+  const axes = [[R[0], R[1], R[2]], [R[4], R[5], R[6]], [R[8], R[9], R[10]]];
+  assert.ok(axes.some((a) => Math.abs(a[0] * roof.normal[0] + a[1] * roof.normal[1] + a[2] * roof.normal[2]) > 0.9999), 'an axis along the roof normal');
+  await ok('delete_clip', { name: 'Roof' });
+  // kerbs along Main road
+  await ok('create_alignment', { name: 'Main road', points: [[L(0, 40)[0], L(0, 40)[2]], [L(100, 40)[0], L(100, 40)[2]]] });
+  const k = await ok('detect_edges', { kind: 'kerb', alignment: 'Main road' });
+  assert.equal(k.count, 4);
+  assert.ok(k.edges.every((x) => Math.abs(x.height - 0.15) < 0.01 && x.length > 95), JSON.stringify(k.edges));
+  // proposal mode: everything found waits; reject leaves the model as it was
+  const before = await w.evaluate(() => window.mmr.doc.entities.length);
+  const e = await ok('detect_edges', { kind: 'intersections', within: 'Buildings', propose: true });
+  assert.ok(e.count > 10 && e.proposal, `${e.count} edges in a proposal`);
+  assert.ok(await w.evaluate(() => !document.getElementById('proposal-bar').hidden), 'the proposal bar shows');
+  await ok('propose', { action: 'reject' });
+  assert.equal(await w.evaluate(() => window.mmr.doc.entities.length), before);
+  await ok('clear_clips');
+});

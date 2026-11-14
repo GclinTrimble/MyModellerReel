@@ -160,11 +160,21 @@ export class CloudLOD {
     const c = this.clouds.get(e.id);
     await c?.opening;
     if (!c?.root || c.missing) return null;
-    const read = async (node) => {
+    // classes (#300): only the points of those ASPRS classes
+    const read = async (node, classes = null) => {
       const hit = this.cache.get(this.keyOf(c, node));
-      if (hit) return hit.obj.userData.exact;
-      const bytes = await native().invoke('cloud:read-node', { folder: c.folder, file: c.file, byteOffset: node.byteOffset, byteSize: node.byteSize });
-      return (await this.decode({ kind: c.kind, bytes, layout: c.layout, header: c.header, scale: c.scale, offset: c.offset, count: node.numPoints, min: node.box.min, base: c.base, timeBase: c.timeBase }, [bytes])).exact;
+      let exact = hit?.obj.userData.exact;
+      let cls = hit?.obj.geometry.getAttribute('classification')?.array;
+      if (!hit) {
+        const bytes = await native().invoke('cloud:read-node', { folder: c.folder, file: c.file, byteOffset: node.byteOffset, byteSize: node.byteSize });
+        const d = await this.decode({ kind: c.kind, bytes, layout: c.layout, header: c.header, scale: c.scale, offset: c.offset, count: node.numPoints, min: node.box.min, base: c.base, timeBase: c.timeBase }, [bytes]);
+        (exact = d.exact), (cls = d.classification);
+      }
+      if (!Array.isArray(classes) || !cls) return exact; // (map passes an index as the second argument)
+      const keep = new Set(classes);
+      const out = [];
+      for (let i = 0; i < cls.length; i++) if (keep.has(cls[i])) out.push(exact[i * 3], exact[i * 3 + 1], exact[i * 3 + 2]);
+      return Float64Array.from(out);
     };
     return { root: c.root, base: c.base, read };
   }
