@@ -31,9 +31,9 @@ await api.walk_to({ position: [10, 0, -5], look_at: [40, 2, -20] });
 
 ## Good to know
 
-- LAZ (compressed LAS) and E57 are not read yet: convert them to LAS or PLY first (CloudCompare, PDAL).
+- LAZ and COPC come in too, and big clouds stream at full detail: see [Work in a large point cloud](howto:large-point-clouds). E57 is not read yet: convert it to LAS or PLY first (CloudCompare, PDAL).
 - `window` must be wider than the biggest building: a scanner sees no ground under a roof, so the ground there comes from the points around it.
-- The cloud's points are saved inside the model file, so the model stays one file.
+- A thinned cloud's points are saved inside the model file, so the model stays one file.
 
 ## Related
 

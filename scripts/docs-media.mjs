@@ -13,8 +13,10 @@ const OUT = path.join(ROOT, 'docs', 'how-to', 'media');
 const SAMPLES = path.join(ROOT, 'docs', 'how-to', 'samples').replace(/\\/g, '/');
 const HOME = process.env.MMR_HOME || path.join(process.env.APPDATA || path.join(os.homedir(), '.config'), 'MyModellerReel');
 const { port, token } = JSON.parse(fs.readFileSync(path.join(HOME, 'api.json'), 'utf8'));
-const req = async (method, p, body) => {
-  const r = await fetch(`http://127.0.0.1:${port}${p}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+const req = async (method, p, body, again = true) => {
+  // a kept-alive socket the server already closed: try once more on a fresh one
+  const r = await fetch(`http://127.0.0.1:${port}${p}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).catch((e) => (again && e.cause?.code === 'ECONNRESET' ? null : Promise.reject(e)));
+  if (!r) return req(method, p, body, false);
   return p.includes('screenshot') ? Buffer.from(await r.arrayBuffer()) : r.json();
 };
 const run = async (command, args = {}) => {
@@ -958,6 +960,48 @@ const PAGES = {
     await panel('entity');
     await js("document.querySelector('.cloud-classes')?.scrollIntoView({ block: 'center' }); return 1;");
     await shot('The Point cloud panel: style, depth, and the classes with their counts');
+  },
+  async 'large-point-clouds'() {
+    await fresh();
+    await run('set_layout', { count: 1 });
+    // the synthetic corridor scan of the tests (road, kerbs, ditch, buildings, wall, trees), a new file each run
+    const F = await import('../tests/fixtures/scan.js');
+    const file = path.join(os.tmpdir(), `corridor-scan-${Date.now()}.las`).replace(/\\/g, '/');
+    fs.writeFileSync(file, F.writeLas(F.makeScan({ points: 6e6 })));
+    const cloud = "api.doc.entities.find((e) => e.name === 'Corridor scan')";
+    try {
+      await run('import_point_cloud', { path: file, name: 'Corridor scan' });
+      while (!(await js(`return ${cloud}?.pointcloud.count || 0;`))) await wait(200);
+      const base = await js(`return ${cloud}.pointcloud.base;`);
+      const at = (e, n, up = 0) => [e - base[0], F.groundAt(e, n) - base[2] + up, -(n - base[1])];
+      await none();
+      await camera(at(650120, 5399990, 60), at(650050, 5400040));
+      await shot('Converting in the background: the preview first, the progress in the status bar', { moving: true });
+      while ((await run('point_cloud_job', { id: 'Corridor scan' })).octree !== 'ready') await wait(300);
+      await js('await window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()); return 1;');
+      await shot('The octree streams: 6 M points, the whole corridor within the point budget');
+      await camera(at(650052, 5400041.2, 0.55), at(650049, 5400043.6, 0.1));
+      await js('await window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()); return 1;');
+      const p = await run('pick_cloud_point', { x: 0.5, y: 0.6 });
+      const cls = { 2: 'ground', 11: 'road surface' }[p.classification] || `class ${p.classification}`;
+      await shot(p.project ? `Close to the kerb: every point. Picked ${p.project[0].toFixed(3)} E, ${p.project[1].toFixed(3)} N, ${p.project[2].toFixed(3)} m, ${cls}, intensity ${p.intensity}` : 'Close to the kerb: every point of the scan');
+      await camera(at(650120, 5399990, 60), at(650050, 5400040));
+      await run('set_layout', { count: 4, arrangement: 'grid' });
+      await run('set_pane', { pane: 2, view: 'top' });
+      await run('zoom_extents', { pane: 2 });
+      await run('set_camera', { pane: 3, position: at(650030, 5400045, 6), target: at(650020, 5400058, 3) });
+      await run('set_camera', { pane: 4, position: at(650051, 5400040.4, 1.4), target: at(650049.5, 5400043.6) });
+      await js('await window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()); return 1;');
+      await shot('Four panes, each refining for its own camera, one budget and one cache');
+      await run('set_layout', { count: 1 });
+      await camera(at(650036, 5400032, 9), at(650024, 5400056, 3));
+      await run('set_cloud_budget', { points: 500000 });
+      await js('await window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()); return 1;');
+      await shot('Site › Point cloud budget: 0.5 M points at once (3 M by default), the nearest nodes first');
+    } finally {
+      await run('set_cloud_budget', { points: 3000000 });
+      fs.rmSync(file, { force: true });
+    }
   },
   async 'scanned-drawings-and-reading'() {
     await fresh();

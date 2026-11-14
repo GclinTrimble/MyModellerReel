@@ -935,5 +935,5 @@ table.qty td.n, table.qty th.n { text-align: right; }
 .cloud-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .cloud-panel-legend { margin: var(--my-space-1) 0; font-size: var(--my-text-xs); }
 /* point cloud streaming statistics (#294) */
-.cloud-stats { position: absolute; right: var(--my-space-3); bottom: var(--my-space-2); font: var(--my-text-xs) var(--my-font-mono); color: var(--my-text-muted); pointer-events: none; }
+.cloud-stats { position: absolute; left: calc(var(--my-space-3) + 6rem); bottom: var(--my-space-2); font: var(--my-text-xs) var(--my-font-mono); color: var(--my-text-muted); pointer-events: none; }
 .toast.cloud-offer { display: flex; flex-wrap: wrap; gap: var(--my-space-2); align-items: center; }

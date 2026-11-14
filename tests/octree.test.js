@@ -155,3 +155,27 @@ test('selectNodes: coarse far away, fine close up, within the budget, skipping w
   const two = OT.selectNodes([cloud, { ...cloud, id: 'd' }], { position: [2, 2, 66], projFactor: 1000 }, { budget: 50000 });
   assert.ok(two.points <= 50000 && new Set(two.visible.map((v) => v.cloud.id)).size === 2);
 });
+
+test('clip volumes (#290) leave whole nodes out: a box, a plane and a slab as planes', async () => {
+  const { clipPlanes } = await import('../src/renderer/cloudlod.js');
+  const inside = (planes, p) => planes.every(([a, b, c, d]) => a * p[0] + b * p[1] + c * p[2] + d >= -1e-9);
+  const box = clipPlanes([{ kind: 'box', center: [10, 0, -10], size: [4, 2, 6], rotation: [0, 90, 0] }]);
+  assert.equal(box.length, 6);
+  assert.ok(inside(box, [10, 0, -10]) && inside(box, [12.9, 0.9, -10]), 'turned 90°: x now spans the 6 m side');
+  assert.ok(!inside(box, [10, 0, -12.5]) && !inside(box, [10, 1.5, -10]));
+  const plane = clipPlanes([{ kind: 'plane', point: [0, 5, 0], normal: [0, 1, 0] }]);
+  assert.ok(inside(plane, [0, 4, 0]) && !inside(plane, [0, 6, 0]), 'a plane cuts its normal side away');
+  const slab = clipPlanes([{ kind: 'slab', point: [0, 0, 3], normal: [0, 0, 1], thickness: 2 }]);
+  assert.ok(inside(slab, [0, 0, 3.9]) && !inside(slab, [0, 0, 4.1]) && !inside(slab, [0, 0, 1.9]));
+  assert.equal(clipPlanes([{ kind: 'box', center: [0, 0, 0], enabled: false }]).length, 0, 'switched off');
+  assert.equal(clipPlanes([{ kind: 'box', center: [0, 0, 0] }, { kind: 'box', center: [50, 0, 0] }]).length, 0, 'two boxes are a union: neither alone leaves nodes out');
+  // the selection with a box clip: only nodes touching the box
+  const cube = { min: [0, 0, 0], max: [64, 64, 64] };
+  const build = (name, depth) => ({ name, level: name.length - 1, box: OT.boxOf(cube, name), numPoints: 1000, children: depth ? Array.from({ length: 8 }, (_, i) => build(name + i, depth - 1)) : [] });
+  const cloud = { id: 'c', root: build('r', 3), matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], rootSpacing: 0.5, loaded: () => true };
+  const cam = { position: [32, 200, 32], projFactor: 2000 };
+  const all = OT.selectNodes([cloud], cam, { budget: 1e9 });
+  const clipped = OT.selectNodes([cloud], cam, { budget: 1e9, clips: clipPlanes([{ kind: 'box', center: [4, 4, 4], size: [6, 6, 6] }]) });
+  assert.ok(clipped.visible.length < all.visible.length / 4, `${clipped.visible.length} of ${all.visible.length} nodes`);
+  assert.ok(clipped.visible.every((v) => v.node.box.min.every((m) => m <= 7)));
+});
