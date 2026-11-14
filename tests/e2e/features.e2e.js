@@ -1572,3 +1572,89 @@ test('point cloud display: styles per pane, EDL, x-ray, filters on snapping, a s
   assert.equal(classes.classes.find((c) => c.code === 6).count, scan.counts[6]);
   assert.deepEqual(errors, []);
 });
+
+test('SpaceMouse (#303): injected reports move the camera of the pane under the cursor, buttons run commands, the mapping is kept', async () => {
+  await ok('new_model');
+  await ok('set_layout', { count: 1 });
+  await ok('create_terrain', { width: 60, depth: 40, spacing: 4, name: 'Ground' });
+  await ok('set_spacemouse', { mode: 'object', pivot: 'view', speed: 1, dominant: false });
+  await ok('set_camera', { position: [30, 25, 40], target: [0, 0, 0] });
+  const cam = (i = 0) => w.evaluate((n) => window.mmr.app.panes.all()[n].camera?.position.toArray() || window.mmr.app.viewport.camera.position.toArray(), i);
+  const axes = (...v) => [...new Uint8Array(new Int16Array(v).buffer)];
+  const feed = (id, b) => w.evaluate(([i, x]) => window.mmr.spacemouse.feed(i, x), [id, b]);
+  const push = async (raw, ms = 400) => {
+    await feed(1, axes(...raw));
+    await w.waitForTimeout(ms);
+    await feed(1, axes(0, 0, 0, 0, 0, 0));
+    await w.waitForTimeout(100);
+  };
+  const len = (p) => Math.hypot(...p);
+  // at rest, noise inside the dead zone moves nothing
+  const a0 = await cam();
+  await push([6, -4, 3, 2, -5, 1], 300);
+  assert.deepEqual(await cam(), a0, 'no drift at rest');
+  // object mode: a twist turns the view around the target, at the same distance; released, it stops
+  await push([0, 0, 0, 0, 0, -300]);
+  const a1 = await cam();
+  assert.ok(Math.hypot(a1[0] - a0[0], a1[2] - a0[2]) > 1, `turned: ${a0} → ${a1}`);
+  assert.ok(Math.abs(len(a1) - len(a0)) < 0.5, 'around the target');
+  await w.waitForTimeout(200);
+  assert.deepEqual(await cam(), a1, 'stops when released');
+  // fly mode: pushing forward moves the eye forward
+  await ok('set_spacemouse', { mode: 'fly' });
+  await push([0, -300, 0, 0, 0, 0]);
+  const a2 = await cam();
+  assert.ok(len(a2) < len(a1) - 1, `flew forward: ${len(a1)} → ${len(a2)}`);
+  // buttons: Fit (bit 1) fits the model; a mapped button 1 (bit 12) sets the top view
+  await ok('set_camera', { position: [400, 300, 500], target: [0, 0, 0] });
+  await feed(3, [2, 0, 0, 0]);
+  await feed(3, [0, 0, 0, 0]);
+  await w.waitForFunction(() => window.mmr.app.viewport.camera.position.length() < 300);
+  await ok('map_spacemouse_button', { button: '1', command: 'set_view', args: { preset: 'top' } });
+  await feed(3, [0, 16, 0, 0]);
+  await feed(3, [0, 0, 0, 0]);
+  await w.waitForFunction(() => {
+    const v = window.mmr.app.viewport;
+    return Math.hypot(v.camera.position.x - v.controls.target.x, v.camera.position.z - v.controls.target.z) < 0.01;
+  });
+  const d = await ok('list_input_devices');
+  assert.equal(d.last_button, '1');
+  assert.ok(Array.isArray(d.devices));
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8')).spacemouse;
+  assert.deepEqual(saved.buttons['1'], { command: 'set_view', args: { preset: 'top' } }, 'kept in settings.json');
+  assert.equal(saved.mode, 'fly');
+  // clip box hold: button 2 mapped to sm:clip (bit 13); the puck moves the selected box, a hovered face is pushed, release = one undo step
+  await ok('add_clip', { kind: 'box', name: 'Scan box', center: [0, 2, 0], size: [10, 4, 10] });
+  await w.evaluate(() => window.mmr.app.selectClip('Scan box'));
+  await ok('map_spacemouse_button', { button: '2', action: 'sm:clip' });
+  await ok('set_camera', { position: [0, 20, 40], target: [0, 0, 0] });
+  const clip = () => w.evaluate(() => structuredClone(window.mmr.doc.clips.find((c) => c.name === 'Scan box')));
+  const undo0 = await w.evaluate(() => window.mmr.app.store.undoStack.length);
+  await feed(3, [0, 32, 0, 0]);
+  await push([300, 0, 0, 0, 0, 0]);
+  assert.deepEqual((await clip()).center, [0, 2, 0], 'previewed while held, the document unchanged');
+  await w.evaluate(() => Object.assign(window.mmr.app.clipGizmo, { hover: null, face: '+y' })); // no handle under the mouse: the Tab-picked face
+  await push([0, 300, 0, 0, 0, 0]); // pulled towards you: the picked face comes out
+  await feed(3, [0, 0, 0, 0]);
+  await w.waitForFunction(() => window.mmr.doc.clips.find((c) => c.name === 'Scan box').center[0] > 0.5);
+  const moved = await clip();
+  assert.ok(moved.size[1] > 4.2, `the top face came up: ${moved.size}`);
+  assert.equal(await w.evaluate(() => window.mmr.app.store.undoStack.length), undo0 + 1, 'one undo step');
+  await ok('undo');
+  assert.deepEqual((await clip()).center, [0, 2, 0]);
+  await w.evaluate(() => ((window.mmr.app.clipGizmo.face = null), window.mmr.app.selectClip(null)));
+  await ok('clear_clips');
+  // four panes: the pane under the cursor moves, the others stay; 2D mode pans
+  await ok('set_layout', { count: 4 });
+  await ok('zoom_extents', { pane: 'all' });
+  await ok('set_spacemouse', { mode: '2d' });
+  await w.evaluate(() => window.mmr.app.panes.focus(1));
+  const [m0, p0] = [await cam(0), await cam(1)];
+  await push([300, 0, 0, 0, 0, 300]);
+  const [m1, p1] = [await cam(0), await cam(1)];
+  assert.deepEqual(m1, m0, 'the main pane stayed');
+  assert.ok(Math.abs(p1[0] - p0[0]) > 0.5 && Math.abs(p1[1] - p0[1]) < 1e-6, `pane 2 panned in plan: ${p0} → ${p1}`);
+  await w.evaluate(() => window.mmr.app.panes.focus(0));
+  await ok('set_layout', { count: 1 });
+  await ok('set_spacemouse', { mode: 'object' });
+});

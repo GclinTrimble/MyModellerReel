@@ -28,6 +28,7 @@ import * as RS from './raster.js';
 import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
 import * as SC from './shortcuts.js';
+import * as SM from './spacemouse.js';
 import * as I18N from './i18n.js';
 import { SKILLS, USER_SKILLS, skillPrompt } from './skills.js';
 import * as UT from './usertools.js';
@@ -4572,6 +4573,37 @@ function registerCore(reg, ctx) {
     return { shortcuts: s };
   });
   def('scene', 'list_shortcuts', 'Your keyboard shortcuts (on top of the built-in ones).', obj({}), () => ctx.io?.settings?.().shortcuts || {});
+  // 3Dconnexion SpaceMouse (#303): the user's settings and button mapping, kept with the app's settings
+  const axesOf = (d) => obj(Object.fromEntries(SM.AXES.map((k) => [k, d])));
+  const smSaved = () => ctx.io?.settings?.()?.spacemouse || ctx.spacemouseSaved || {};
+  const smSave = async (patch) => {
+    if (ctx.io?.setSettings) await ctx.io.setSettings({ spacemouse: patch });
+    else ctx.spacemouseSaved = { ...smSaved(), ...patch };
+    ctx.spacemouse?.reload?.();
+  };
+  def('view', 'set_spacemouse', 'SpaceMouse navigation: mode object (the model turns around a pivot) | fly (the eye moves, inside a scan) | walk (at eye height, the floor followed) | 2d (pan and zoom only); speed; per-axis sensitivity (0–10), invert and enable (tx ty tz rx ry rz); dead_zone (0–1); curve linear | quadratic; lock_horizon (no roll); dominant (only the strongest axis); pivot view | cursor | selection; clip: move the selected clip box. Saved in the app settings.', obj({ mode: str('navigation mode', SM.MODES), speed: num('global speed (1 = default)'), sensitivity: axesOf(num('0–10')), invert: axesOf(bool('')), enable: axesOf(bool('')), dead_zone: num('0–1 of full deflection (default 0.05)'), curve: str('response curve', SM.CURVES), lock_horizon: bool('no roll'), dominant: bool('only the strongest axis'), pivot: str('what object mode turns around', SM.PIVOTS), clip: bool('the puck moves the selected clip box (a hovered face: push / pull moves it); off commits one set_clip') }), async (a) => {
+    const { clip, ...rest } = a;
+    const c = SM.configure(smSaved(), rest);
+    const { buttons, ...keep } = smSaved();
+    await smSave({ ...keep, ...c });
+    if (clip !== undefined) ctx.spacemouse?.setClip?.(clip);
+    return c;
+  });
+  def('view', 'map_spacemouse_button', `What a SpaceMouse button does (by its name: Menu, Fit, T, F, R, Iso 1, 1…12, Ctrl…, or "Button N"): action (a menu action name, tool:<id>, key:<key> held with the button, "none", or a SpaceMouse action: ${Object.entries(SM.SM_ACTIONS).map(([k, v]) => `sm:${k} ${v}`).join('; ')}), or command with args. Saved in the app settings.`, obj({ button: str('the button name as the Settings panel shows it when pressed'), action: str('menu action, tool:<id>, key:<key>, sm:<action> or "none"'), command: str('a command to run'), args: { type: 'object', description: 'the command arguments' } }, ['button']), async (a) => {
+    if (!a.action === !a.command) throw new Error('Give an action or a command.');
+    if (a.command && !reg.commands.has(a.command)) throw new Error(`No command "${a.command}".`);
+    if (a.action?.startsWith('sm:') && !(a.action.slice(3) in SM.SM_ACTIONS)) throw new Error(`No SpaceMouse action "${a.action}": ${Object.keys(SM.SM_ACTIONS).map((k) => `sm:${k}`).join(', ')}.`);
+    const buttons = { ...smSaved().buttons, [a.button]: a.command ? (a.args ? { command: a.command, args: a.args } : { command: a.command }) : a.action };
+    await smSave({ buttons });
+    return { buttons };
+  });
+  def('view', 'list_input_devices', 'The 3D input devices (3Dconnexion SpaceMouse) the app can read, whether they are open, the button last pressed, and the SpaceMouse settings and button mapping.', obj({}), async () => ({
+    devices: (await ctx.spacemouse?.devices?.()) || [],
+    webhid: !!ctx.spacemouse?.supported,
+    last_button: ctx.spacemouse?.lastButton || null,
+    settings: SM.configure(smSaved()),
+    buttons: { ...SM.DEFAULT_BUTTONS, ...smSaved().buttons },
+  }));
   // learning modules (#213): progress is the user's, kept with the app's settings (not in the model)
   const learnState = () => ctx.io?.settings?.()?.learning || ctx.learning || {};
   const lessonsDone = () => learnState().done || [];

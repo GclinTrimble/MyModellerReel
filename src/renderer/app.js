@@ -29,6 +29,7 @@ import { newDoc as freshDoc } from '../core/document.js';
 import { PickFirst } from './pickfirst.js';
 import { ClipGizmo } from './clipgizmo.js';
 import { migrate as migrateClips } from '../core/clip.js';
+import { SpaceMouse } from './spacemouse.js';
 import { GroundMap, MapLayers, pickLocation } from './maps.js';
 
 const native = window.native;
@@ -396,6 +397,8 @@ window.mmr = {
   csg: { booleanMeshes },
   addToolbarButton: (b) => app.ui.addPluginButton({ ...b, run: b.run || (() => app.reg.run(b.command, b.args || {}).catch((e) => app.ui.toast(e.message, 'danger'))) }),
   toast: (m) => app.ui.toast(m),
+  /** SpaceMouse input reports injected as if the device sent them (#303): feed(1, [12 bytes]) moves, feed(3, [bitmask]) presses. */
+  spacemouse: { feed: (reportId, bytes) => app.spacemouse.feed(reportId, bytes) },
 };
 
 // ---------------------------------------------------------------- plugins
@@ -510,6 +513,7 @@ app.clipGizmo = new ClipGizmo(app);
 app.selectClip = (name) => app.clipGizmo.select(name);
 app.panes = new Panes(app);
 app.panes.sync();
+app.spacemouse = app.ctx.spacemouse = new SpaceMouse(app); // #303: the pane under the cursor moves
 app.viewport.rebuild();
 app.ui.show('ai');
 app.ui.refresh();

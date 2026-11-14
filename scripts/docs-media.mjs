@@ -1650,6 +1650,33 @@ const PAGES = {
     await shot('Buildings from a WFS stand on the DTM (OGC WCS 2.0) from their ground and roof heights');
     await clean();
   },
+  async spacemouse() {
+    // no device needed: reports go in through window.mmr.spacemouse.feed, as the device would send them
+    const feed = (id, bytes) => js(`window.mmr.spacemouse.feed(${id}, ${JSON.stringify(bytes)}); return 1;`);
+    const axes = (...v) => [...new Uint8Array(new Int16Array(v).buffer)];
+    await fresh();
+    await roadScene(ROAD);
+    await run('set_spacemouse', { mode: 'object', pivot: 'view', speed: 1 });
+    await camera([60, 55, 90], [0, 0, 0]);
+    await panel('settings');
+    await js("document.querySelector('#sm-pressed')?.scrollIntoView({ block: 'center' }); return 1;");
+    await feed(3, [2, 0, 0, 0]);
+    await feed(3, [0, 0, 0, 0]);
+    await shot('Settings › SpaceMouse: press a button, see what it does (Fit → zoom extents)');
+    await panel('ai');
+    await camera([60, 55, 90], [0, 0, 0]);
+    await feed(1, axes(0, 0, 0, 0, 0, -260)); // twist: the model turns about the view centre
+    await wait(900);
+    await shot('Object mode: twist the cap, the site turns around the pivot (the dot)', { moving: true });
+    await feed(1, axes(0, 0, 0, 0, 0, 0));
+    await run('set_spacemouse', { mode: 'walk' });
+    await camera([-100, 4, 75], [-20, 2, 10]);
+    await feed(1, axes(0, -220, 0, 0, 0, 0)); // push forward: walk along, the ground followed
+    await wait(1200);
+    await feed(1, axes(0, 0, 0, 0, 0, 0));
+    await shot('Walk mode: push forward, the eye stays 1.6 m over the ground');
+    await run('set_spacemouse', { mode: 'object' });
+  },
   async 'check-for-clashes'() {
     await fresh();
     await run('create_box', { width: 8, height: 0.5, depth: 0.3, position: [0, 3, 0], name: 'Beam B1', color: '#9aa3ab' });

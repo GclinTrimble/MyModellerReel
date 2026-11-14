@@ -22,6 +22,7 @@ const TITLES = { create_layer: 'New layer', define_profile: 'New sweep profile',
 import { t, LANGUAGES } from '../core/i18n.js';
 import { parseUserFile, fileName } from '../core/usertools.js';
 import { USER_SKILLS } from '../core/skills.js';
+import * as SM from '../core/spacemouse.js';
 const tr = (label) => t(label.replace(/\s*\(.*$/, '')) + (label.match(/\s*\(.*$/)?.[0] || '');
 
 /** Tiny DOM helper: h('button.btn', { onclick }, 'Label', child…) */
@@ -749,6 +750,7 @@ export class UI {
       askHere: { label: 'Ask an agent here…', icon: 'chat-teardrop-dots', key: 'Ctrl+Space', run: () => app.agents.askAt() },
       agents: { label: 'Agents…', icon: 'users-three', run: () => this.show('agents') },
       aiSettings: { label: 'AI and API settings', icon: 'gear', run: () => this.show('settings') },
+      spacemouse: { label: 'SpaceMouse settings and buttons', icon: 'joystick', run: () => this.show('settings') },
       aiPanel: { label: 'Ask Plumb', icon: 'sparkle', run: () => this.show('ai') },
       aiFeedback: { label: 'Copilot feedback…', icon: 'thumbs-up', run: () => this.feedbackDialog() },
       aiSetup: { label: 'Set up the local AI model…', icon: 'download-simple', run: () => (this.show('ai'), this.app.ai.add(this.app.ai.setupCard())) },
@@ -3162,6 +3164,7 @@ export class UI {
       h('h3', {}, t('Keyboard shortcuts')),
       h('p.small.muted', {}, Object.keys(s.shortcuts || {}).length ? Object.entries(s.shortcuts).map(([k, v]) => `${k} → ${v}`).join(' · ') : 'None of your own yet.'),
       h('div.row', {}, h('button.btn.sm', { onclick: () => this.commandDialog('set_shortcut', { key: 'Ctrl+Shift+F', action: 'filletEdges' }) }, icon('keyboard'), 'Add a shortcut…')),
+      ...this.spacemouseCard(),
       h('h3', {}, t('Appearance')),
       h('label.field', {}, h('span', {}, t('Theme')), h('select', { onchange: (e) => app.reg.run('set_theme', { mode: e.target.value }) }, [['auto', t('Auto (follow Windows)')], ['light', t('Light')], ['dark', t('Dark')]].map(([v, l]) => h('option', { value: v, selected: v === app.themeMode }, l)))),
       app.startup.supported &&
@@ -3172,6 +3175,39 @@ export class UI {
           'Start MyModellerReel when Windows starts',
         ),
     );
+  }
+
+  /** Settings › SpaceMouse (#303): the device, the mode, and each button as it is pressed with what it does. */
+  spacemouseCard() {
+    const app = this.app;
+    const sm = app.spacemouse;
+    if (!sm) return [];
+    const c = sm.cfg;
+    const set = (patch) => app.reg.run('set_spacemouse', patch).then(() => this.renderDock(), (e) => this.toast(e.message, 'danger'));
+    const says = (a) => (!a ? 'nothing' : typeof a === 'string' ? a : `${a.command}${a.args ? ` ${JSON.stringify(a.args)}` : ''}`);
+    if (!this.smListening) {
+      this.smListening = true;
+      sm.listeners.add((name) => {
+        const el = document.getElementById('sm-pressed');
+        if (el) el.textContent = `${name} → ${says(SM.actionOf(name, sm.buttons))}`;
+      });
+    }
+    const devs = sm.devices();
+    const choose = (label, key, values, names = {}) => h('label.field', {}, h('span', {}, label), h('select', { onchange: (e) => set({ [key]: e.target.value }) }, values.map((v) => h('option', { value: v, selected: v === c[key] }, names[v] || v))));
+    const mine = { ...SM.DEFAULT_BUTTONS, ...sm.buttons };
+    return [
+      h('h3', {}, 'SpaceMouse'),
+      h('p.small.muted', {}, !sm.supported ? 'This window cannot read HID devices.' : devs.length ? devs.map((d) => `${d.model}${d.error ? ` (${d.error})` : ''}`).join(' · ') : 'No 3Dconnexion device found. Plug one in, or connect it here.'),
+      sm.supported && h('div.row', {}, h('button.btn.sm', { onclick: () => sm.request().then(() => this.renderDock(), (e) => this.toast(e.message, 'danger')) }, icon('joystick'), 'Connect a SpaceMouse…')),
+      choose('Navigation', 'mode', SM.MODES, { object: 'Object: the model turns', fly: 'Fly: the eye moves', walk: 'Walk: at eye height', '2d': '2D: pan and zoom' }),
+      choose('Turn around', 'pivot', SM.PIVOTS, { view: 'The centre of the view', cursor: 'The point under the cursor', selection: 'The selection' }),
+      h('label.field', {}, h('span', {}, `Speed ${c.speed}`), h('input', { type: 'range', min: 0.1, max: 5, step: 0.1, value: c.speed, onchange: (e) => set({ speed: +e.target.value }) })),
+      h('label.row.small', {}, h('input', { type: 'checkbox', checked: c.lock_horizon, onchange: (e) => set({ lock_horizon: e.target.checked }) }), 'Lock the horizon (no roll)'),
+      h('label.row.small', {}, h('input', { type: 'checkbox', checked: c.dominant, onchange: (e) => set({ dominant: e.target.checked }) }), 'Dominant axis only'),
+      h('p.small', {}, 'Pressed: ', h('strong', { id: 'sm-pressed' }, sm.lastButton ? `${sm.lastButton} → ${says(SM.actionOf(sm.lastButton, sm.buttons))}` : 'press a button on the device')),
+      h('p.small.muted', {}, Object.entries(mine).filter(([, a]) => a && a !== 'none').map(([b, a]) => `${b} → ${says(a)}`).join(' · ')),
+      h('div.row', {}, h('button.btn.sm', { onclick: () => this.commandDialog('map_spacemouse_button', { button: sm.lastButton || '1', action: 'sm:clip' }) }, icon('keyboard'), 'Map a button…'), h('button.btn.sm', { onclick: () => this.commandDialog('set_spacemouse', { sensitivity: c.sensitivity, invert: c.invert, dead_zone: c.dead_zone, curve: c.curve }) }, icon('sliders-horizontal'), 'Axes…')),
+    ];
   }
 
   /** Settings › Account (#115): the MyStudioReel sign-in shared by every Reel app on this PC (MySnipReel's wording). */
