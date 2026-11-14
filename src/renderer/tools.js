@@ -295,6 +295,11 @@ export class Tools {
       const d = Math.hypot(sp.x - mx, sp.y - my) - (s.point ? 4 : 0); // a survey point wins over a vertex on it
       if (!sp.behind && d < bestD) (bestD = d), (best = s);
     }
+    // octree point clouds (#294): the nearest loaded point near the cursor, full detail where you look
+    if (on('cloud') && (!best || bestD > 4)) {
+      const c = vp.cloudPoint(ev, best ? Math.min(SNAP_PX, bestD) : SNAP_PX);
+      if (c) return done({ point: c.point, kind: 'Point cloud', label: `${c.project.map((v) => v.toFixed(3)).join(', ')}${c.attributes.classification !== undefined ? ` · class ${c.attributes.classification}` : ''}`, hit, snapped: true, cloud: c });
+    }
     // pointId: what a vertex placed here ties to (unless set_snaps tie: false)
     if (best) return done({ point: best.p.clone(), kind: best.kind, label: best.label, pointId: best.point && on('tie') ? best.point : null, hit, snapped: true });
     if (from && on('axis'))

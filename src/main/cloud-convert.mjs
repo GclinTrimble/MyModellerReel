@@ -17,14 +17,18 @@ const GRID = 128;
 const BATCH = 1 << 20;
 
 function reader(file) {
-  const fd = fs.openSync(file, 'r');
+  let fd = fs.openSync(file, 'r');
   const size = fs.fstatSync(fd).size;
   const read = (at, n) => {
     const b = Buffer.allocUnsafe(Math.max(0, Math.min(n, size - at)));
     fs.readSync(fd, b, 0, b.length, at);
     return new Uint8Array(b.buffer, b.byteOffset, b.length);
   };
-  return { fd, size, read, close: () => fs.closeSync(fd) };
+  const close = () => {
+    if (fd !== null) fs.closeSync(fd);
+    fd = null;
+  };
+  return { size, read, close };
 }
 
 /** A source: { header: { count, min, max, scale, origin, format }, batches() async generator, close() }. */
@@ -289,6 +293,30 @@ export function readOctree(folder) {
   const metadata = JSON.parse(fs.readFileSync(path.join(folder, 'metadata.json'), 'utf8'));
   const root = OT.decodeHierarchy(new Uint8Array(fs.readFileSync(path.join(folder, 'hierarchy.bin'))), metadata.hierarchy.firstChunkSize, metadata.boundingBox);
   return { metadata, layout: OT.layoutFromMetadata(metadata), root };
+}
+
+/** A preview from an octree's top levels (a finished cache needs no conversion, but the document wants its preview). */
+export function octreePreview(folder, n = 300000) {
+  const { metadata: m, layout, root } = readOctree(folder);
+  const preview = new Preview(n);
+  const r = reader(path.join(folder, 'octree.bin'));
+  try {
+    const queue = [root];
+    while (queue.length && preview.seen < n) {
+      const node = queue.shift();
+      if (node.numPoints > 0) {
+        const d = OT.decodeRecords(r.read(node.byteOffset, node.byteSize), layout, m.scale, m.offset, node.numPoints);
+        const b = { count: d.count, x: new Float64Array(d.count), y: new Float64Array(d.count), z: new Float64Array(d.count) };
+        for (let i = 0; i < d.count; i++) (b.x[i] = d.position[i * 3]), (b.y[i] = d.position[i * 3 + 1]), (b.z[i] = d.position[i * 3 + 2]);
+        if (d.rgb) for (const [k, c] of ['r', 'g', 'b'].entries()) b[c] = Uint8Array.from({ length: d.count }, (_, i) => d.rgb[i * 3 + k] >> 8);
+        preview.add(b);
+      }
+      queue.push(...node.children.filter(Boolean));
+    }
+  } finally {
+    r.close();
+  }
+  return preview.result();
 }
 
 /** Bytes of a file range (a node of octree.bin, or of a COPC file). */

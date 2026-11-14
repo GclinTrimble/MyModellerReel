@@ -1658,3 +1658,41 @@ test('SpaceMouse (#303): injected reports move the camera of the pane under the 
   await ok('set_layout', { count: 1 });
   await ok('set_spacemouse', { mode: 'object' });
 });
+
+test('point cloud octree (#293, #294): the synthetic scan converts in the worker, streams, and a picked point is the source point', async () => {
+  const { makeScan, writeLas } = await import('../fixtures/scan.js');
+  const scan = makeScan({ points: 400000 });
+  const file = path.join(home, 'corridor.las');
+  fs.writeFileSync(file, writeLas(scan));
+  await ok('new_model');
+  const r = await ok('import_point_cloud', { path: file, octree: true, name: 'Corridor scan' });
+  assert.ok(r.job, 'a job id at once');
+  let state = null;
+  for (let i = 0; i < 150 && state?.octree !== 'ready'; i++) {
+    await new Promise((res) => setTimeout(res, 200));
+    state = await ok('point_cloud_job', { id: 'Corridor scan' });
+  }
+  assert.equal(state.octree, 'ready', 'the app attached the finished octree');
+  assert.equal(state.points, 400000);
+  await ok('zoom_extents');
+  // the frame's nodes, loaded (screenshots wait for them)
+  await w.evaluate(() => window.mmr.app.viewport.clouds.settle(() => window.mmr.app.viewport.render()));
+  const perf = await ok('performance_report');
+  assert.ok(perf.cloud_nodes > 1 && perf.cloud_points > 50000, JSON.stringify(perf));
+  const p = await ok('pick_cloud_point', { x: 0.5, y: 0.5, pixels: 30 });
+  assert.ok(p.project, 'a point under the middle of the view');
+  let best = Infinity;
+  let at = -1;
+  for (let i = 0; i < scan.count; i++) {
+    const d = Math.hypot(scan.x[i] - p.project[0], scan.y[i] - p.project[1], scan.z[i] - p.project[2]);
+    if (d < best) (best = d), (at = i);
+  }
+  assert.ok(best < 1e-3, `the source point, within 1 mm: ${best}`);
+  assert.equal(p.classification, scan.classification[at]);
+  assert.equal(p.intensity, scan.intensity[at]);
+  // the budget is an app setting, clamped to 0.5–20 M
+  assert.equal((await ok('set_cloud_budget', { points: 100 })).points, 500000);
+  await ok('set_cloud_budget', { points: 3000000 });
+  const e = (await ok('get_scene')).entities.find((x) => x.name === 'Corridor scan');
+  assert.ok(e, 'the cloud is in the scene');
+});

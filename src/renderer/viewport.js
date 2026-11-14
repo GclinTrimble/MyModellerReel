@@ -21,6 +21,7 @@ import { invert as invertAffine } from '../core/underlay.js';
 import { isSurface } from '../core/project.js';
 import { viewDirection } from '../core/layout.js';
 import { lineworkOffsets } from '../core/survey.js';
+import { CloudLOD, clipPlanes } from './cloudlod.js';
 
 const D2R = Math.PI / 180;
 /** Where a survey point waits while the timeline has it hidden (#283): off the model, but a real number. */
@@ -195,6 +196,16 @@ export function buildModel(doc, { edges = true, xray = false, wireframe = false,
         const tl = new THREE.LineSegments((g.wire ||= new THREE.WireframeGeometry(g.geometry)), new THREE.LineBasicMaterial({ color: '#22313a', transparent: true, opacity: 0.6, clippingPlanes: clipping }));
         tl.raycast = () => {};
         o.add(tl);
+      }
+    } else if (e.pointcloud?.octree?.status === 'ready') {
+      // an octree (#294): its nodes stream in under this group; the thinned preview shows until the root arrives
+      o = new THREE.Group();
+      o.userData.octree = true;
+      o.userData.pointcloud = true;
+      if (e.pointcloud.asset && e.pointcloud.count) {
+        const pv = cloudObject(e);
+        pv.userData.preview = true;
+        o.add(pv);
       }
     } else if (e.pointcloud) {
       o = cloudObject(e);
@@ -383,6 +394,7 @@ export class Viewport {
     this.proposed = new Set(); // ids an AI proposal added or changed (tinted until accepted)
     this.look = new Presentation(this);
     attachClouds(this); // point cloud styles (#295): pane numbers, eye-dome lighting, fog focus, legends
+    this.clouds = new CloudLOD(this); // point cloud octrees streamed per pane (#294)
     this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 5000);
     this.persp = this.camera;
     this.ghosts = new THREE.Group(); // what a proposal would remove
@@ -458,7 +470,14 @@ export class Viewport {
     this.clipFor(1);
     const outline = this.scene.getObjectByName('Clip volumes'); // the clips' edges and handles: not in renders
     if (outline) outline.visible = show;
+    this.updateClouds(this.camera, this.renderer.getSize(new THREE.Vector2()), 1);
     this.look.draw(this.store.doc);
+  }
+
+  /** The cloud nodes this pane's camera should see (#294); its clip volumes (#290) leave whole nodes out. */
+  updateClouds(camera, size, pane = this.paneNow ? this.paneNow.i + 1 : 1) {
+    const doc = this.store.doc;
+    this.clouds.update(camera, size.x, size.y, clipPlanes(CV.clipsOf(doc).filter((c) => CV.inPane(c, pane)), doc.settings.clip_combine === 'all'));
   }
 
   /** The main pane's camera and target, even while another pane is being worked in. */
@@ -506,6 +525,7 @@ export class Viewport {
     const doc = this.store.doc;
     const s = doc.settings;
     this.clipping = []; // clip volumes are drawn by the shader (clipshader.js, #290); renderer.clippingPlanes is SectionTool's preview
+    this.clouds.detach(); // streamed cloud nodes outlive the rebuild
     for (const o of this.modelRoot.children) disposeTree(o, false); // geometry is cached, see below
     this.modelRoot.clear();
     this.geoCache ||= { map: new WeakMap(), live: new Set() };
@@ -517,6 +537,8 @@ export class Viewport {
     this.geoCache.live = this.geoCache.used;
     if (root.children.length) this.modelRoot.add(...root.children);
     this.objs = objs;
+    for (const [id, o] of objs) if (o.userData.octree) this.clouds.attach(doc.entities.find((x) => x.id === id), o);
+    this.clouds.sync(new Set([...objs].filter(([, o]) => o.userData.octree).map(([id]) => id)));
     if (s.section_fill !== false) for (const c of CV.slots(doc).box.concat(CV.slots(doc).slab, CV.slots(doc).plane)) this.modelRoot.add(clipCaps(doc, c));
     CS.patchTree(this.modelRoot, doc);
     syncClouds(this);
@@ -845,6 +867,22 @@ export class Viewport {
     this.raycaster.setFromCamera(this.ndc(ev), this.camera);
     return this.raycaster.ray;
   }
+  /** The loaded point cloud point under the mouse (#294), at full precision with its attributes, or null. */
+  cloudPoint(ev, px = 6) {
+    if (!this.clouds.cache.size) return null;
+    const [w, h] = [this.input.clientWidth || this.canvas.clientWidth, this.input.clientHeight || this.canvas.clientHeight];
+    this.updateClouds(this.camera, { x: w, y: h }); // the nodes this pane's camera sees
+    const pane = this.paneNow ? this.paneNow.i + 1 : 1;
+    const doc = this.store.doc;
+    const clips = CV.clipsOf(doc);
+    const keep = clips.length ? (p, entity) => CV.visible(doc, [p.x, p.y, p.z], { pane, entity, clips }) : null;
+    return this.clouds.nearest(this.ray(ev).clone(), this.camera, h, px, keep);
+  }
+  /** The same at fractions of the view (0–1 from the left and top). */
+  cloudPointAt(fx, fy, px = 6) {
+    const r = this.input.getBoundingClientRect();
+    return this.cloudPoint({ clientX: r.left + fx * r.width, clientY: r.top + fy * r.height }, px);
+  }
   /** First visible face under the mouse: { entityId, faceIndex, point, normal } in world space. */
   pick(ev) {
     this.raycaster.setFromCamera(this.ndc(ev), this.camera);
@@ -973,7 +1011,8 @@ export class Viewport {
   /** Draw statistics (#111): calls and triangles of the last frame, and frames per second. */
   stats() {
     const i = this.renderer.info.render;
-    return { draw_calls: i.calls, rendered_triangles: i.triangles, fps: this.fps ? Math.round(this.fps) : null };
+    const c = this.clouds.stats;
+    return { draw_calls: i.calls, rendered_triangles: i.triangles, fps: this.fps ? Math.round(this.fps) : null, ...(this.clouds.clouds.size ? { cloud_points: c.points, cloud_nodes: c.nodes, cloud_loaded: c.loaded, cloud_pending: c.pending, cloud_cache_mb: c.cache_mb } : {}) };
   }
   /** Stand at eye height over what is under a point, looking towards another (#69). */
   walkTo(position, lookAt, eye = 1.6) {
@@ -1003,7 +1042,8 @@ export class Viewport {
   }
 
   /** A path-traced still (#63) at the given size: PNG bytes. */
-  pathTrace(opts) {
+  async pathTrace(opts) {
+    await this.clouds.settle(() => this.render());
     return this.look.pathTrace(opts, stage, (n, of) => this.onStatus?.(`Path tracing: ${n} of ${of} samples…`));
   }
   /** A seamless version of an image (base64 PNG) for AI textures (#65): PNG bytes. */
@@ -1074,7 +1114,7 @@ export class Viewport {
   }
 
   async screenshot({ width = 1024 } = {}) {
-    this.render();
+    await this.clouds.settle(() => this.render(), 5000); // the frame's cloud nodes, loaded
     const src = this.canvas;
     const w = Math.min(width, src.width);
     const h = Math.round((src.height / src.width) * w);

@@ -31,6 +31,7 @@ import { ClipGizmo } from './clipgizmo.js';
 import { migrate as migrateClips } from '../core/clip.js';
 import { SpaceMouse } from './spacemouse.js';
 import { GroundMap, MapLayers, pickLocation } from './maps.js';
+import { watchClouds } from './cloudlod.js';
 
 const native = window.native;
 const AUTOSAVE = 'mymodellerreel.autosave';
@@ -152,6 +153,7 @@ app.ctx = {
   ],
 };
 app.reg = createRegistry(app.ctx);
+watchClouds(app); // point cloud conversions and streaming statistics (#293, #294)
 /** One request to the configured AI provider (the main process holds the keys). Errors read as plain sentences. */
 app.chat = async (body) => {
   try {

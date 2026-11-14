@@ -167,6 +167,10 @@ export const GUIDE = `MyModellerReel conventions:
 - Surface materials (takeoff): define_surface_material (code, colour, density, thickness, cost per m²), paint_surface
   on faces (brush at + radius, fill from a seed face stopped by breaklines, inside a boundary, all), show_surface_materials
   (turn them on / off by type), material_takeoff (area, plan area, volume, weight, cost; CSV, JSON or GeoJSON).
+- Point clouds: import_point_cloud reads LAS 1.0–1.4 (ASPRS, point formats 0–10), LAZ (LASzip, through laz-perf),
+  COPC (Cloud Optimized Point Cloud, streamed in place), PLY and XYZ / PTS / CSV; big ones become a Potree 2.0 octree
+  (open spec) in a cache folder with every attribute, streamed at full detail where you look (point_cloud_job for
+  progress, set_cloud_budget, pick_cloud_point for a point's exact coordinates and class). E57 is not read yet.
 - Standards, always: prefer open formats and OGC standards (ogc.org/standards) for anything exchanged: GeoJSON / OGC API
   Features encodings, CityGML / CityJSON, LandXML, IFC, EPSG codes for coordinate systems (urn:ogc:def:crs:EPSG::n),
   CSV with a header row. Name the standard a file follows, keep project coordinates and units (metres) explicit.
@@ -4356,11 +4360,8 @@ function registerCore(reg, ctx) {
   // ---------------------------------------------------------------- interop, scale and input (Phase 15)
   const pcPositions = (e) => new Float32Array(Assets.bytes(e.pointcloud.asset).slice().buffer, 0, e.pointcloud.count * 3);
 
-  def('file', 'import_point_cloud', 'A scan or drone point cloud as a reference to model over: PLY, LAS (uncompressed) or XYZ / PTS / CSV text, thinned to max_points, in project coordinates (the base point, or set from the cloud). Snap to it; classify_ground makes a terrain from it.', obj({ path: str('absolute .ply / .las / .xyz / .pts / .csv path'), max_points: num('default 300000'), name: common.name }, ['path']), async (a) => {
-    if (!ctx.io?.readBinary) throw new Error('Point clouds need the desktop app.');
-    const doc = ctx.doc;
-    const pc = PC.parsePointCloud(await ctx.io.readBinary(a.path), a.path);
-    const keep = PC.thin(pc, a.max_points || 300000);
+  /** The thinned preview of a cloud as an asset in model coordinates (base point set from the cloud if there is none). */
+  const cloudPreview = (doc, pc, keep, name) => {
     const g = S.geo(doc);
     let base = g.base;
     if (!base) {
@@ -4370,23 +4371,128 @@ function registerCore(reg, ctx) {
       base = big ? [Math.round(mx), Math.round(my), Math.floor(mz)] : [0, 0, Math.floor(mz)];
       if (base.some((x) => x)) g.base = base;
     }
+    const col = pc.rgb || pc.r ? new Uint8Array(keep.length * 3) : null;
     const pos = new Float32Array(keep.length * 3);
-    const col = pc.r ? new Uint8Array(keep.length * 3) : null;
     keep.forEach((i, k) => {
       pos[k * 3] = pc.x[i] - base[0];
       pos[k * 3 + 1] = pc.z[i] - base[2];
       pos[k * 3 + 2] = -(pc.y[i] - base[1]);
-      if (col) (col[k * 3] = pc.r[i]), (col[k * 3 + 1] = pc.g[i]), (col[k * 3 + 2] = pc.b[i]);
+      if (col) col.set(pc.rgb ? pc.rgb.subarray(i * 3, i * 3 + 3) : [pc.r[i], pc.g[i], pc.b[i]], k * 3);
     });
     const { attributes, parts } = CS.encodeAttributes(pc, keep); // preview layout 2 (#295): after the rgb block
     const blocks = [new Uint8Array(pos.buffer), ...(col ? [col] : []), ...parts];
     const bytes = new Uint8Array(blocks.reduce((s, b) => s + b.byteLength, 0));
     blocks.reduce((at, b) => (bytes.set(b, at), at + b.byteLength), 0);
-    const asset = Assets.put(bytes, { mime: 'application/x-mmr-points', name: a.path.split(/[\\/]/).pop() });
-    const e = D.addEntity(doc, { type: 'pointcloud', name: a.name || a.path.split(/[\\/]/).pop().replace(/\.\w+$/, ''), pointcloud: { asset, count: keep.length, colors: !!col, format: pc.format, of: pc.count, ...(parts.length ? { layout: 2, attributes } : {}) }, material: { color: '#7a8a96' } });
+    return { asset: Assets.put(bytes, { mime: 'application/x-mmr-points', name }), count: keep.length, colors: !!col, base: [...base], ...(parts.length ? { layout: 2, attributes } : {}) };
+  };
+
+  // point cloud octrees (#293): what a finished conversion (or a COPC file) tells the entity
+  const COPC_ATTRS = ['position', 'intensity', 'return number', 'number of returns', 'classification', 'classification flags', 'scan angle', 'user data', 'point source id', 'gps-time'];
+  const attachOctree = async (e, folder) => {
+    const oc = e.pointcloud.octree;
+    if (!oc) throw new Error(`${e.name} has no octree: import it with octree: true, or rebuild_point_cloud_octree.`);
+    if (!ctx.io?.cloudOpen) throw new Error('Point cloud octrees need the desktop app.');
+    let j = null;
+    if (oc.job && !folder) j = await ctx.io.cloudJob(oc.job, { preview: !e.pointcloud.asset }).catch(() => null);
+    if (j?.preview && !e.pointcloud.asset) {
+      const pv = j.preview;
+      Object.assign(e.pointcloud, cloudPreview(ctx.doc, pv, Array.from({ length: pv.count }, (_, i) => i), oc.source.split(/[\\/]/).pop()));
+    }
+    if (j && (j.status === 'error' || j.status === 'cancelled')) Object.assign(oc, { status: j.status, error: j.error || null });
+    if (j?.status === 'done' || folder) {
+      const o = await ctx.io.cloudOpen(oc.kind === 'copc' ? { file: oc.source } : { folder: folder || oc.folder });
+      if (o.missing) throw new Error(`No octree in ${o.folder} (it needs metadata.json, hierarchy.bin and octree.bin).`);
+      const m = o.metadata;
+      Object.assign(oc, {
+        status: 'ready',
+        folder: folder || oc.folder,
+        points: m ? m.points : o.points,
+        attributes: m ? m.attributes.map((x) => x.name) : COPC_ATTRS.concat([7, 8].includes(o.header.format) ? ['rgb'] : []),
+        bounds: m ? m.tightBounds || { min: m.attributes[0].min, max: m.attributes[0].max } : { min: o.header.min, max: o.header.max },
+        spacing: m ? m.spacing : o.info.spacing,
+      });
+      delete oc.job;
+      delete oc.error;
+      e.pointcloud.of = oc.points;
+    }
+    return { id: e.id, name: e.name, octree: oc.status, points: oc.points ?? null, preview_points: e.pointcloud.count, stage: j?.stage, progress: j ? Math.round(j.fraction * 100) : undefined };
+  };
+
+  def('file', 'import_point_cloud', 'A scan or drone point cloud as a reference to model over: LAS 1.0–1.4, LAZ, COPC (Cloud Optimized Point Cloud, read in place), PLY or XYZ / PTS / CSV text, in project coordinates (the base point, or set from the cloud). octree (default auto: above 2 M points, and always for LAZ and COPC) converts it once into a Potree 2.0 octree with every attribute (intensity, classification, returns, GPS time, colour) and streams it at full detail; the command returns at once with a job (point_cloud_job) and the entity shows a thinned preview (max_points) until the octree is ready. octree: false thins it to max_points only (LAS / PLY / text). Snap to it; classify_ground makes a terrain from it.', obj({ path: str('absolute .las / .laz / .copc.laz / .ply / .xyz / .pts / .csv path'), max_points: num('preview points, default 300000'), octree: { description: 'true | false | "auto" (default)', enum: [true, false, 'auto'] }, name: common.name }, ['path']), async (a) => {
+    if (!ctx.io?.readBinary) throw new Error('Point clouds need the desktop app.');
+    const doc = ctx.doc;
+    const file = a.path.split(/[\\/]/).pop();
+    const name = a.name || file.replace(/(\.copc)?\.\w+$/i, '');
+    const laz = /\.laz$/i.test(a.path);
+    const mode = a.octree ?? 'auto';
+    if ((mode !== false || laz) && ctx.io.cloudConvert) {
+      const job = await ctx.io.cloudConvert({ path: a.path, name, minPoints: mode === 'auto' && !laz ? 2e6 : 0 });
+      if (job.status !== 'small') {
+        const kind = job.kind;
+        const format = kind === 'copc' ? 'COPC' : laz ? 'LAZ' : file.split('.').pop().toUpperCase();
+        const e = D.addEntity(doc, { type: 'pointcloud', name, pointcloud: { asset: null, count: 0, colors: false, format, of: job.points || 0, octree: { job: job.id, kind, hash: job.hash, folder: job.folder || null, source: a.path, status: 'building' } }, material: { color: '#7a8a96' } });
+        ctx.selection.set([e.id]);
+        const r = job.status === 'done' ? await attachOctree(e) : null;
+        return { id: e.id, name: e.name, job: job.id, octree: r?.octree || 'building', points: r?.points ?? job.points ?? null, format, cached: !!job.cached, note: r?.octree === 'ready' ? 'Ready: the octree streams as you look around.' : 'Converting in the background: point_cloud_job reports progress; the preview shows first.' };
+      }
+    }
+    const pc = PC.parsePointCloud(await ctx.io.readBinary(a.path), a.path);
+    const keep = PC.thin(pc, a.max_points || 300000);
+    const pv = cloudPreview(doc, pc, keep, file);
+    const e = D.addEntity(doc, { type: 'pointcloud', name, pointcloud: { ...pv, format: pc.format, of: pc.count }, material: { color: '#7a8a96' } });
     ctx.selection.set([e.id]);
-    return { id: e.id, name: e.name, points: keep.length, in_file: pc.count, format: pc.format, colors: !!col, base };
+    return { id: e.id, name: e.name, points: keep.length, in_file: pc.count, format: pc.format, colors: pv.colors, base: pv.base };
   }, true);
+
+  def('file', 'point_cloud_job', 'Progress of a point cloud octree conversion: by job id or the cloud entity. Returns status (running, done, error, cancelled), stage (counting, sorting, building), progress %, points.', obj({ id: str('job id (from import_point_cloud) or the point cloud') }, ['id']), async (a) => {
+    if (!ctx.io?.cloudJob) throw new Error('Point cloud octrees need the desktop app.');
+    const e = /^cloud-\d+$/.test(a.id) ? null : cloudOf(a.id);
+    const id = e ? e.pointcloud.octree?.job : a.id;
+    if (!id) return { id: e.id, name: e.name, octree: e.pointcloud.octree?.status || 'none', points: e.pointcloud.octree?.points ?? e.pointcloud.of };
+    const j = await ctx.io.cloudJob(id);
+    return { job: j.id, status: j.status, stage: j.stage, progress: Math.round((j.fraction || 0) * 100), points: j.points ?? j.of ?? null, done: j.done, error: j.error, ...(e ? { id: e.id, name: e.name } : {}) };
+  });
+
+  def('file', 'attach_point_cloud_octree', 'Bring a point cloud up to date with its octree: the preview once counted and the octree once converted (the app does this for you as a conversion runs). folder: an octree folder (Potree 2.0: metadata.json, hierarchy.bin, octree.bin) to use instead, e.g. after moving the cache.', obj({ id: str('the point cloud'), folder: str('absolute folder of an octree') }, ['id']), (a) => attachOctree(cloudOf(a.id), a.folder), true);
+
+  def('file', 'rebuild_point_cloud_octree', "Convert a point cloud's source file to its octree again (when the cache folder was deleted or the file moved: path gives the new place). Runs in the background like import_point_cloud.", obj({ id: str('the point cloud'), path: str('the source file, if it moved') }, ['id']), async (a) => {
+    const e = cloudOf(a.id);
+    if (!ctx.io?.cloudConvert) throw new Error('Point cloud octrees need the desktop app.');
+    const source = a.path || e.pointcloud.octree?.source;
+    if (!source) throw new Error(`${e.name} has no source file to convert: give path.`);
+    const job = await ctx.io.cloudConvert({ path: source, name: e.name });
+    e.pointcloud.octree = { job: job.id, kind: job.kind, hash: job.hash, folder: job.folder || null, source, status: 'building' };
+    const r = job.status === 'done' ? await attachOctree(e) : null;
+    return { id: e.id, name: e.name, job: job.id, octree: r?.octree || 'building' };
+  }, true);
+
+  def('file', 'cancel_point_cloud_job', 'Stop a point cloud octree conversion (its half-written cache is removed; the preview stays).', obj({ id: str('job id or the point cloud') }, ['id']), async (a) => {
+    if (!ctx.io?.cloudCancel) throw new Error('Point cloud octrees need the desktop app.');
+    const e = /^cloud-\d+$/.test(a.id) ? ctx.doc.entities.find((x) => x.pointcloud?.octree?.job === a.id) : cloudOf(a.id);
+    const id = e?.pointcloud.octree?.job || a.id;
+    const j = await ctx.io.cloudCancel(id);
+    if (e && j.status === 'cancelled') e.pointcloud.octree.status = 'cancelled';
+    return { job: id, status: j.status };
+  }, true);
+
+  def('view', 'set_cloud_budget', 'How much of the point clouds the view draws (an app setting): points (budget shared by every cloud and pane, 0.5–20 million, default 3 M), cache_mb (loaded nodes kept, default 1024), while_moving (fewer points while the camera moves, refined when it stops; default true).', obj({ points: num('points drawn, e.g. 3000000'), cache_mb: num('MB of loaded nodes kept'), while_moving: bool('fewer points while moving') }), async (a) => {
+    const cur = { budget: 3e6, cache_mb: 1024, while_moving: true, ...(ctx.io?.settings?.()?.clouds || {}) };
+    if (a.points !== undefined) cur.budget = Math.min(20e6, Math.max(0.5e6, a.points));
+    if (a.cache_mb !== undefined) cur.cache_mb = Math.min(32768, Math.max(64, a.cache_mb));
+    if (a.while_moving !== undefined) cur.while_moving = !!a.while_moving;
+    await ctx.io?.setSettings?.({ clouds: cur });
+    ctx.view?.clouds?.setSettings(cur);
+    return { points: cur.budget, cache_mb: cur.cache_mb, while_moving: cur.while_moving };
+  });
+
+  def('view', 'pick_cloud_point', 'The point cloud point under a spot of the view (x, y fractions 0–1 from the left and top, as in a screenshot): its project coordinates at full precision (east, north, elevation), model position and attributes (classification, intensity, returns, GPS time, colour). Looks at the streamed points, so zoom in for full detail.', obj({ x: num('0 = left edge, 1 = right edge'), y: num('0 = top edge, 1 = bottom edge'), pane: num('which view pane, 1–4 (default 1)'), pixels: num('how near the spot, default 16') }, ['x', 'y']), (a) => {
+    if (!ctx.view?.cloudPointAt) throw new Error('Needs the desktop app.');
+    const r = inPane(a.pane, () => ctx.view.cloudPointAt(a.x, a.y, a.pixels || 16));
+    if (!r) return { hit: null, note: 'No loaded cloud point there: zoom in, or wait for the nodes to load.' };
+    const e = D.getEntity(ctx.doc, r.entity);
+    const at = r.attributes;
+    return { id: e?.id, name: e?.name, project: r.project.map((v) => Math.round(v * 1e6) / 1e6), position: D.round3(r.point.toArray()), classification: at.classification, intensity: at.intensity, return_number: at.return_number, number_of_returns: at.number_of_returns, gps_time: at.gps_time, point_source: at.point_source, rgb: at.rgb, node: r.node };
+  });
 
   // point cloud display (#295–#297): style, filters, classes; the renderer reads pointcloud.style / .filter
   const cloudOf = (id) => {
@@ -4858,7 +4964,7 @@ function registerCore(reg, ctx) {
     const v = ctx.view?.stats?.() || {};
     const tips = [];
     if (tris > 2e6) tips.push('Over 2 million triangles: simplify_mesh on the heaviest imports.');
-    if (pts > 2e6) tips.push('A very big point cloud: import it again with a lower max_points.');
+    if (pts > 2e6) tips.push('A very big thinned point cloud: import it with octree: true to stream it instead (set_cloud_budget caps what is drawn).');
     if ((v.calls || 0) > 3000) tips.push('Many separate shapes: make repeated ones components (they share geometry).');
     return { entities: doc.entities.length, triangles: tris, points: pts, ...v, tips };
   });
