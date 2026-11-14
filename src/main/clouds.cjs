@@ -34,7 +34,7 @@ function registerClouds(ipcMain, userData) {
       fs.closeSync(fd);
     }
   };
-  const summary = (j) => ({ id: j.id, cached: !!j.cached, status: j.status, stage: j.stage, fraction: j.fraction, done: j.done, of: j.of, error: j.error, kind: j.kind, folder: j.folder, hash: j.hash, source: j.source, points: j.points, hasPreview: !!j.preview });
+  const summary = (j) => ({ id: j.id, task: j.task || 'convert', cached: !!j.cached, status: j.status, stage: j.stage, fraction: j.fraction, done: j.done, of: j.of, error: j.error, kind: j.kind, folder: j.folder, hash: j.hash, source: j.source, points: j.points, hasPreview: !!j.preview });
 
   // a conversion (or an instant result: a finished cache, a COPC file)
   ipcMain.handle('cloud:convert', async (_, { path: file, folder, name, minPoints = 0 } = {}) => {
@@ -137,6 +137,46 @@ function registerClouds(ipcMain, userData) {
   });
 
   ipcMain.handle('cloud:cache-folder', () => cacheRoot);
+
+  // classification and export of a whole octree (#298, #299) in a worker: progress, cancel, classes as tiles finish
+  const taskUrl = pathToFileURL(path.join(__dirname, 'cloud-task.mjs')).href;
+  ipcMain.handle('cloud:task', (_, { task, opts } = {}) => {
+    if (!['classify', 'export'].includes(task)) throw new Error(`No point cloud task ${task}.`);
+    const src = opts.kind === 'copc' ? path.resolve(opts.file || '') : path.resolve(opts.folder || '', 'octree.bin');
+    if (!readable.has(src)) throw new Error('That point cloud is not open.');
+    if (task === 'export' && !/.(las|ply)$/i.test(opts.path || '')) throw new Error('Export writes .las or .ply files.');
+    const id = `cloud-${next++}`;
+    const job = { id, task, status: 'running', stage: 'starting', fraction: 0, kind: opts.kind, parts: [], result: null };
+    jobs.set(id, job);
+    const w = new Worker(path.join(__dirname, 'cloud-worker.cjs'), { workerData: { task, opts, taskUrl }, resourceLimits: { maxOldGenerationSizeMb: 3072 } });
+    job.worker = w;
+    w.on('message', (m) => {
+      if (m.type === 'progress') Object.assign(job, { stage: m.stage, fraction: m.fraction, done: m.done, of: m.of });
+      else if (m.type === 'part') job.parts.push(...m.nodes);
+      else if (m.type === 'done') Object.assign(job, { status: 'done', stage: 'done', fraction: 1, result: m.result });
+      else if (m.type === 'error') Object.assign(job, { status: 'error', error: m.message });
+    });
+    w.on('error', (e) => Object.assign(job, { status: 'error', error: e.message }));
+    w.on('exit', () => {
+      job.worker = null;
+      if (job.status === 'running') Object.assign(job, { status: 'error', error: 'The task stopped.' });
+      if (task === 'export' && job.status !== 'done') fs.rmSync(`${opts.path}.part`, { force: true });
+    });
+    return summary(job);
+  });
+  // classes of the nodes finished since part number since: [[name, classes]], and how many there are now
+  ipcMain.handle('cloud:parts', (_, id, since = 0) => {
+    const j = jobs.get(id);
+    if (!j?.parts) throw new Error(`No point cloud task ${id}.`);
+    return { parts: j.parts.slice(since), next: j.parts.length };
+  });
+  // the finished task's result (classification: the class delta and the counts), once
+  ipcMain.handle('cloud:task-result', (_, id) => {
+    const j = jobs.get(id);
+    if (!j?.result) throw new Error(`Point cloud task ${id} has no result (${j?.status || 'unknown'}).`);
+    j.parts = [];
+    return j.result;
+  });
 }
 
 module.exports = { registerClouds };

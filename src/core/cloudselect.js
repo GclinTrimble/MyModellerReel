@@ -281,14 +281,21 @@ export function selectionStats(sel) {
   let min = [Infinity, Infinity, Infinity];
   let max = [-Infinity, -Infinity, -Infinity];
   for (const e of sel.nodes.values()) {
-    if (e.shadow || !e.stats) continue;
+    if (e.shadow) continue;
+    if (!e.stats) {
+      // combined selections keep the classes of their points, not their bounds
+      out.points += e.idx.length;
+      for (const c of e.cls) out.classes[c] = (out.classes[c] || 0) + 1;
+      continue;
+    }
     out.points += e.stats.count;
     for (const [c, n] of Object.entries(e.stats.classes)) out.classes[c] = (out.classes[c] || 0) + n;
     min = min.map((v, k) => Math.min(v, e.stats.min[k]));
     max = max.map((v, k) => Math.max(v, e.stats.max[k]));
     isum += e.stats.intensity_sum;
   }
-  if (out.points) (out.bounds = { min, max }), (out.mean_intensity = Math.round(isum / out.points));
+  const measured = [...sel.nodes.values()].filter((e) => !e.shadow && e.stats).reduce((t, e) => t + e.stats.count, 0);
+  if (measured) (out.bounds = { min, max }), (out.mean_intensity = Math.round(isum / measured));
   return out;
 }
 
@@ -427,3 +434,7 @@ export function afterEdit(sel, delta) {
     if (e) (e.cls = d.cls), (e.flags = d.flags);
   }
 }
+
+const decoded = new Map();
+/** The decoded deltas of a list of asset ids (decoded once each: assets never change). */
+export const deltasFor = (ids = [], bytesOf) => ids.map((id) => decoded.get(id) || decoded.set(id, decodeDelta(bytesOf(id))).get(id));

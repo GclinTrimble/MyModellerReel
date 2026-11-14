@@ -385,3 +385,23 @@ export function plyRecords(b, idx, { rgb = false } = {}) {
 
 /** A minimal OGC WKT for an EPSG code (name and authority), for the LAS CRS VLR when the source had none. */
 export const wktOf = (crs) => (crs?.epsg ? `PROJCS["${String(crs.name || `EPSG:${crs.epsg}`).replace(/"/g, '')}",AUTHORITY["EPSG","${crs.epsg}"]]` : '');
+
+/** A whole LAS 1.4 (or PLY: format 'ply') file of the points idx of a batch: bounds and returns counted, offset rounded. */
+export function writePoints(b, idx, { format = 'las', wkt = '' } = {}) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const byReturn = new Array(15).fill(0);
+  for (const i of idx) {
+    [b.x[i], b.y[i], b.z[i]].forEach((v, k) => ((min[k] = Math.min(min[k], v)), (max[k] = Math.max(max[k], v))));
+    byReturn[Math.max(0, Math.min(14, (b.returnNumber?.[i] || 1) - 1))]++;
+  }
+  const rgb = !!b.r;
+  const parts = format === 'ply' ? [plyHeader(idx.length, { rgb }), plyRecords(b, idx, { rgb })] : (() => {
+    const opts = { format: rgb ? 7 : 6, scale: [0.001, 0.001, 0.001], offset: min.map((m) => Math.floor(m)) };
+    return [las14Header({ ...opts, count: idx.length, min, max, byReturn, wkt }), las14Records(b, idx, opts)];
+  })();
+  const out = new Uint8Array(parts[0].length + parts[1].length);
+  out.set(parts[0]);
+  out.set(parts[1], parts[0].length);
+  return out;
+}

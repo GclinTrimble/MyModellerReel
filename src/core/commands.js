@@ -24,6 +24,8 @@ import * as MD from './modeling.js';
 import * as SVG from './svg.js';
 import * as PC from './pointcloud.js';
 import * as CS from './cloudstyle.js';
+import * as CL from './classify.js';
+import * as CSel from './cloudselect.js';
 import * as RS from './raster.js';
 import * as DC from './drawingclues.js';
 import * as IO2 from './interop.js';
@@ -4473,10 +4475,10 @@ function registerCore(reg, ctx) {
   def('file', 'point_cloud_job', 'Progress of a point cloud octree conversion: by job id or the cloud entity. Returns status (running, done, error, cancelled), stage (counting, sorting, building), progress %, points.', obj({ id: str('job id (from import_point_cloud) or the point cloud') }, ['id']), async (a) => {
     if (!ctx.io?.cloudJob) throw new Error('Point cloud octrees need the desktop app.');
     const e = /^cloud-\d+$/.test(a.id) ? null : cloudOf(a.id);
-    const id = e ? e.pointcloud.octree?.job : a.id;
+    const id = e ? (e.pointcloud.classify?.status === 'running' ? e.pointcloud.classify.job : e.pointcloud.octree?.job) : a.id;
     if (!id) return { id: e.id, name: e.name, octree: e.pointcloud.octree?.status || 'none', points: e.pointcloud.octree?.points ?? e.pointcloud.of };
     const j = await ctx.io.cloudJob(id);
-    return { job: j.id, status: j.status, stage: j.stage, progress: Math.round((j.fraction || 0) * 100), points: j.points ?? j.of ?? null, done: j.done, error: j.error, ...(e ? { id: e.id, name: e.name } : {}) };
+    return { job: j.id, task: j.task, status: j.status, stage: j.stage, progress: Math.round((j.fraction || 0) * 100), points: j.points ?? j.of ?? null, done: j.done, error: j.error, ...(e ? { id: e.id, name: e.name } : {}) };
   });
 
   def('file', 'attach_point_cloud_octree', 'Bring a point cloud up to date with its octree: the preview once counted and the octree once converted (the app does this for you as a conversion runs). folder: an octree folder (Potree 2.0: metadata.json, hierarchy.bin, octree.bin) to use instead, e.g. after moving the cache.', obj({ id: str('the point cloud'), folder: str('absolute folder of an octree') }, ['id']), (a) => attachOctree(cloudOf(a.id), a.folder), true);
@@ -4492,12 +4494,16 @@ function registerCore(reg, ctx) {
     return { id: e.id, name: e.name, job: job.id, octree: r?.octree || 'building' };
   }, true);
 
-  def('file', 'cancel_point_cloud_job', 'Stop a point cloud octree conversion (its half-written cache is removed; the preview stays).', obj({ id: str('job id or the point cloud') }, ['id']), async (a) => {
+  def('file', 'cancel_point_cloud_job', 'Stop a point cloud octree conversion (its half-written cache is removed; the preview stays), a background classification (the cloud keeps its classes) or an export (by its job id).', obj({ id: str('job id or the point cloud') }, ['id']), async (a) => {
     if (!ctx.io?.cloudCancel) throw new Error('Point cloud octrees need the desktop app.');
-    const e = /^cloud-\d+$/.test(a.id) ? ctx.doc.entities.find((x) => x.pointcloud?.octree?.job === a.id) : cloudOf(a.id);
-    const id = e?.pointcloud.octree?.job || a.id;
+    const byJob = /^cloud-\d+$/.test(a.id);
+    const e = byJob ? ctx.doc.entities.find((x) => x.pointcloud?.octree?.job === a.id || x.pointcloud?.classify?.job === a.id) : cloudOf(a.id);
+    const k = e?.pointcloud.classify;
+    const id = byJob ? a.id : k?.status === 'running' ? k.job : e?.pointcloud.octree?.job || a.id;
     const j = await ctx.io.cloudCancel(id);
-    if (e && j.status === 'cancelled') e.pointcloud.octree.status = 'cancelled';
+    // a classification (#298) cancelled: the cloud keeps its classes
+    if (e && j.status === 'cancelled' && k?.job === id) (e.pointcloud = { ...e.pointcloud, classify: { ...k, status: 'cancelled' } }), ctx.view?.cloudClassifying?.(e, null);
+    else if (e && j.status === 'cancelled') e.pointcloud.octree.status = 'cancelled';
     return { job: id, status: j.status };
   }, true);
 
@@ -4526,7 +4532,13 @@ function registerCore(reg, ctx) {
     if (!e?.pointcloud) throw new Error(`${e?.name || 'That'} is not a point cloud.`);
     return e;
   };
-  const cloudData = (e) => CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset));
+  const cloudData = (e) => {
+    const d = CS.decodePreview(e.pointcloud, Assets.bytes(e.pointcloud.asset));
+    // the class edits (#299) on the preview's points
+    if (e.pointcloud.edits?.length) d.classification = CSel.effective(d.classification, d.count, deltasOf(e), 'preview').classes;
+    return d;
+  };
+  const PANE_N = num('which view pane, 1–4 (default 1)');
   /** Indices of a cloud's points that pass its filter (pane 1) and an extra one: what you see is what analysis uses. */
   const cloudKept = (e, extra = {}) => {
     const d = cloudData(e);
@@ -4545,7 +4557,7 @@ function registerCore(reg, ctx) {
     if (Array.isArray(change.ramp) && !(change.ramp.length >= 2 && change.ramp.length <= 3 && change.ramp.every((c) => /^#[0-9a-f]{6}$/i.test(c)))) throw new Error('A custom ramp is two or three "#rrggbb" stops.');
     if (typeof change.ramp === 'string' && !CS.RAMPS[change.ramp]) throw new Error(`No ramp "${change.ramp}": ${Object.keys(CS.RAMPS).join(', ')}.`);
     if (change.color_by === 'intensity' && !e.pointcloud.attributes?.intensity) throw new Error(`${e.name} has no intensity (import it again from a LAS file to keep it).`);
-    if (change.color_by === 'classification' && !e.pointcloud.attributes?.classification) throw new Error(`${e.name} has no classification.`);
+    if (change.color_by === 'classification' && !e.pointcloud.attributes?.classification && !e.pointcloud.edits?.length) throw new Error(`${e.name} has no classification.`);
     if (change.color_by === 'rgb' && !e.pointcloud.colors) throw new Error(`${e.name} has no colours: try intensity, elevation or single.`);
     e.pointcloud = { ...e.pointcloud, style: CS.merge(e.pointcloud.style, change, pane) };
     const st = CS.styleOf(e, pane || 1);
@@ -4574,30 +4586,289 @@ function registerCore(reg, ctx) {
     const d = cloudData(e);
     const f = CS.filterOf(e, a.pane || 1);
     const more = { hag: f.above_ground ? CS.heightAboveGround(d.position, d.count, d.classification) : undefined, spacing: f.spacing ? CS.spacingRanks(d.position, d.count) : undefined };
-    const classes = CS.classCounts(d, f, e.position?.[1] || 0, more);
-    return { id: e.id, classified: !!d.classification, classes, points: d.count, shown: classes.reduce((s, c) => s + c.shown, 0) };
+    const classes = CS.classCounts(d, f, e.position?.[1] || 0, more).map((c) => ({ ...c, name: nameOf(c.code) }));
+    // a classification that read every point (#298) knows the full counts; the preview is a sample of them
+    const full = e.pointcloud.counts;
+    if (full) {
+      for (const c of classes) (c.sample = c.count), (c.count = full[c.code] || 0);
+      for (const [code, n] of Object.entries(full)) if (!classes.some((c) => c.code === +code)) classes.push({ code: +code, name: nameOf(+code), count: n, sample: 0, visible: !f.hide?.includes(+code), shown: 0 });
+      classes.sort((x, y) => x.code - y.code);
+    }
+    return { id: e.id, classified: !!d.classification, classes, points: full ? Object.values(full).reduce((s, n) => s + n, 0) : d.count, ...(full ? { preview_points: d.count } : {}), shown: classes.reduce((s, c) => s + c.shown, 0) };
   });
 
-  def('terrain', 'classify_ground', 'A terrain surface from a point cloud: the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated. Uses the points the cloud shows (set_cloud_filter); classes and returns narrow it further.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes (e.g. [2] when the scan is already classified)' }, returns: str('', CS.RETURNS), name: common.name }, ['id']), (a) => {
+  def('terrain', 'classify_ground', 'A terrain surface from a point cloud: its ground class (2) when it has one (classify_cloud), else the ground points found (lowest per cell, within tolerance of the ground and its slope; buildings and trees left out), thinned, triangulated. Uses the points the cloud shows (set_cloud_filter); classes and returns narrow it further.', obj({ id: str('the point cloud'), cell: num('m (default 1)'), tolerance: num('m above the ground still ground (default 0.25)'), slope: num('rise per m allowed (default 0.3)'), window: num('m, wider than the biggest building (default 20)'), classes: { type: 'array', items: { type: 'number' }, description: 'only these ASPRS classes (e.g. [2] when the scan is already classified)' }, returns: str('', CS.RETURNS), name: common.name }, ['id']), (a) => {
     const doc = ctx.doc;
     const [pcE] = D.resolve(doc, a.id);
     if (!pcE.pointcloud) throw new Error(`${pcE.name} is not a point cloud.`);
     const all = pcPositions(pcE);
     const extra = { ...(a.returns ? { returns: a.returns } : {}), ...(a.classes ? { hide: [...Array(256).keys()].filter((c) => !a.classes.includes(c)) } : {}) };
-    const { kept } = cloudKept(pcE, extra);
+    const { kept, d } = cloudKept(pcE, extra);
     const n = kept.length;
     const p = new Float32Array(n * 3);
     kept.forEach((i, k) => p.set(all.subarray(i * 3, i * 3 + 3), k * 3));
     const pc = { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), count: n };
     for (let i = 0; i < n; i++) (pc.x[i] = p[i * 3]), (pc.y[i] = -p[i * 3 + 2]), (pc.z[i] = p[i * 3 + 1]);
-    const idx = PC.classifyGround(pc, { cell: a.cell || 1, tolerance: a.tolerance ?? 0.25, slope: a.slope ?? 0.3, window: a.window || 20 });
+    // a classified cloud (#298): its ground class as it is, one point per cell, no search again
+    const reuse = !a.classes && !!d.classification && kept.some((i) => d.classification[i] === 2);
+    let idx;
+    if (reuse) {
+      const low = new Map();
+      const c = a.cell || 1;
+      kept.forEach((i, k) => {
+        if (d.classification[i] !== 2) return;
+        const key = `${Math.floor(pc.x[k] / c)},${Math.floor(pc.y[k] / c)}`;
+        const j = low.get(key);
+        if (j === undefined || pc.z[k] < pc.z[j]) low.set(key, k);
+      });
+      idx = [...low.values()];
+    } else idx = PC.classifyGround(pc, { cell: a.cell || 1, tolerance: a.tolerance ?? 0.25, slope: a.slope ?? 0.3, window: a.window || 20 });
     if (idx.length < 3) throw new Error('Too few ground points: try a bigger cell or tolerance.');
     const pts = idx.map((i) => [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]].map((x) => Math.round(x * 1000) / 1000));
     const { faces } = TR.triangulate(pts, { maxEdge: Math.max((a.cell || 1) * 8, a.window || 20) }); // bridges the footprints
     const { mesh, origin } = G.recenter({ v: pts, f: faces });
     const e = D.addEntity(doc, { name: a.name || `${pcE.name} ground`, mesh, position: D.round3(origin), material: { color: '#8fae7a', roughness: 0.95 }, meta: { surface: true, source: pcE.name } });
-    return { ...summary(doc, e), ground_points: pts.length, of: n };
+    return { ...summary(doc, e), ground_points: pts.length, of: n, ground: reuse ? 'class 2 as classified' : 'found' };
   }, true);
+
+  // ---------------------------------------------------------------- classification (#298) and class edits (#299)
+  // A cloud's classes: the octree or preview as read, then the deltas on pointcloud.edits in order (cloudselect.js).
+  const editsOf = (e) => e.pointcloud.edits || [];
+  const deltasOf = (e) => CSel.deltasFor(editsOf(e), (x) => Assets.bytes(x));
+  const pushEdit = (e, delta, name) => {
+    const asset = Assets.put(CSel.encodeDelta(delta), { mime: 'application/x-mmr-classes', name });
+    e.pointcloud = { ...e.pointcloud, edits: [...editsOf(e), asset] };
+    return asset;
+  };
+  const pointClasses = () => ({ ...Object.fromEntries(Object.entries(CL.USER_CLASSES).map(([c, [name, color]]) => [c, { name, color }])), ...(ctx.doc.pointClasses || {}) });
+  const nameOf = (c) => pointClasses()[c]?.name || CS.className(c);
+  /** Full counts per class when a classification read every point (adjusted by hand edits); null otherwise. */
+  const addCounts = (e, change) => {
+    if (!e.pointcloud.counts) return;
+    const c = { ...e.pointcloud.counts };
+    for (const [k, v] of Object.entries(change)) c[k] = (c[k] || 0) + v;
+    for (const k of Object.keys(c)) if (!c[k]) delete c[k];
+    e.pointcloud = { ...e.pointcloud, counts: c };
+  };
+  /** The preview as a source node in file axes (x east, y north, z up); shadow when an octree carries the real points. */
+  const previewNode = (e, shadow) => {
+    const d = cloudData(e);
+    const b = e.pointcloud.base || [0, 0, 0];
+    const n = d.count;
+    const exact = new Float64Array(n * 3);
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < n; i++) {
+      const p = [d.position[i * 3] + b[0], -d.position[i * 3 + 2] + b[1], d.position[i * 3 + 1] + b[2]];
+      exact.set(p, i * 3);
+      for (let k = 0; k < 3; k++) (min[k] = Math.min(min[k], p[k])), (max[k] = Math.max(max[k], p[k]));
+    }
+    const { flags } = CSel.effective(null, n, deltasOf(e), 'preview');
+    const v = { count: n, exact, classification: d.classification, flags, intensity: d.intensity, returnNumber: d.returns?.map((r) => r & 15), numberOfReturns: d.returns?.map((r) => r >> 4) };
+    return { name: 'preview', count: n, box: { min, max }, shadow, v };
+  };
+  /** What selections and edits read: the octree's nodes at full depth (the view streams them) and the preview. */
+  const sourceOf = async (e) => {
+    const tree = e.pointcloud.octree?.status === 'ready' && ctx.view?.cloudSource ? await ctx.view.cloudSource(e) : null;
+    const pv = e.pointcloud.asset ? previewNode(e, !!tree) : null;
+    return { nodes: [...(tree?.nodes || []), ...(pv ? [pv] : [])], view: (n) => (n === pv ? n.v : tree.view(n)), octree: !!tree };
+  };
+  /** A clip volume by name: its test of file points (base point, entity position) and its box in file axes. */
+  const clipScope = (e, name) => {
+    const c = CV.clipsOf(ctx.doc).find((x) => x.name === name);
+    if (!c) throw new Error(`No clip volume "${name}": ${CV.clipsOf(ctx.doc).map((x) => x.name).join(', ') || 'make one with add_clip'}.`);
+    const clip = CV.normalize(c);
+    const [bx, by, bz] = e.pointcloud.base || [0, 0, 0];
+    const [ex, ey, ez] = e.position || [0, 0, 0];
+    const test = (x, y, z) => CV.inside(clip, [x - bx + ex, z - bz + ey, -(y - by) + ez]);
+    let box = null;
+    if (clip.kind === 'box' && clip.keep !== 'outside') {
+      const m = CV.rotationMatrix(clip.rotation).elements;
+      const h = clip.size.map((s) => s / 2);
+      const ext = [0, 1, 2].map((k) => Math.abs(m[k]) * h[0] + Math.abs(m[4 + k]) * h[1] + Math.abs(m[8 + k]) * h[2]);
+      const lo = clip.center.map((v, k) => v - ext[k]);
+      const hi = clip.center.map((v, k) => v + ext[k]);
+      box = { min: [lo[0] - ex + bx, -(hi[2] - ez) + by, lo[1] - ey + bz], max: [hi[0] - ex + bx, -(lo[2] - ez) + by, hi[1] - ey + bz] };
+    }
+    return { clip, test, box, scope: { clip, base: [bx, by, bz], position: [ex, ey, ez] } };
+  };
+  const STEPS = { type: 'array', items: { type: 'string', enum: CL.STEPS }, description: `which passes, in order: ${CL.STEPS.join(', ')} (default ${CL.DEFAULT_STEPS.join(', ')})` };
+  const report = (before, after, extra) => {
+    const codes = [...new Set([...Object.keys(before), ...Object.keys(after)])].map(Number).sort((x, y) => x - y);
+    return { classes: codes.map((c) => ({ code: c, name: nameOf(c), before: before[c] || 0, after: after[c] || 0 })), ...extra };
+  };
+
+  def('terrain', 'classify_cloud', 'Classify a point cloud automatically into ASPRS LAS 1.4 classes, each pass optional: noise (statistical outliers and isolated points → 7 low / 18 high noise), ground (2: a progressive morphological filter, right on slopes, embankments and ditches; params.ground.method "cell" keeps the old lowest-per-cell method), vegetation (3 low / 4 medium / 5 high by height above ground, params.vegetation.bands [0.5, 2] m, only non-planar points), buildings (6: large planar roofs and walls standing high), road (11 road surface: smooth ground of the asphalt\'s intensity; kerb steps → user class 64 "Kerb"), wires (14 wires, 15 poles: linear points high above ground). within: only inside that clip volume; only_unclassified: only points of class 0 or 1; points locked by hand stay unless overwrite. Undo takes it back in one step. An octree cloud classifies in the background tile by tile: the view recolours as tiles finish, point_cloud_job reports progress, cancel_point_cloud_job leaves the cloud as it was, and the result (counts per class before and after, time, parameters) comes back once it is attached (the app does this). Colour by classification to see it: set_cloud_style color_by classification.', obj({ id: str('the point cloud (default the first one)'), steps: STEPS, within: str('a clip volume name: change only the points inside it'), only_unclassified: bool('change only unclassified points (0, 1)'), overwrite: bool('also change points locked by hand'), params: { type: 'object', description: '{ noise: { k, sigma, isolated }, ground: { method: "pmf" | "cell", cell, max_window, slope, dh0, dh_max, tolerance }, vegetation: { bands: [low, high], min_height }, buildings: { min_height, min_area, angle, distance }, road: { intensity: [lo, hi], roughness, kerb_class, kerb: [min, max] }, wires: { min_height, linearity } }' } }), async (a) => {
+    const e = cloudOf(a.id);
+    const steps = a.steps?.length ? CL.STEPS.filter((s) => a.steps.includes(s)) : CL.DEFAULT_STEPS;
+    const params = CL.paramsOf(a.params);
+    const scope = a.within ? clipScope(e, a.within) : null;
+    const oc = e.pointcloud.octree;
+    if (oc && oc.status !== 'ready') throw new Error(`${e.name}'s octree is ${oc.status || 'not ready'}: wait for point_cloud_job to finish (or rebuild_point_cloud_octree).`);
+    if (oc && ctx.io?.cloudTask) {
+      if (e.pointcloud.classify?.status === 'running') throw new Error(`${e.name} is already being classified (job ${e.pointcloud.classify.job}): wait, or cancel_point_cloud_job.`);
+      const pv = e.pointcloud.asset ? previewNode(e, true).v : null;
+      const job = await ctx.io.cloudTask('classify', {
+        kind: oc.kind || 'potree', folder: oc.folder, file: oc.kind === 'copc' ? oc.source : null, deltas: editsOf(e).map((x) => Assets.bytes(x)), steps, params: a.params || {},
+        overwrite: !!a.overwrite, only_unclassified: !!a.only_unclassified, scope: scope?.scope || null,
+        preview: pv ? { x: Float64Array.from({ length: pv.count }, (_, i) => pv.exact[i * 3]), y: Float64Array.from({ length: pv.count }, (_, i) => pv.exact[i * 3 + 1]), z: Float64Array.from({ length: pv.count }, (_, i) => pv.exact[i * 3 + 2]), classification: pv.classification } : null,
+      });
+      e.pointcloud = { ...e.pointcloud, classify: { job: job.id, status: 'running', steps, params: a.params || {}, within: a.within || null, only_unclassified: !!a.only_unclassified, overwrite: !!a.overwrite } };
+      ctx.view?.cloudClassifying?.(e, job.id);
+      return { id: e.id, name: e.name, job: job.id, status: 'running', steps, note: 'Classifying in the background: the view recolours as tiles finish; point_cloud_job reports progress, the counts come once it is attached.' };
+    }
+    // the preview is the whole cloud: classify it here
+    if (!e.pointcloud.asset) throw new Error(`${e.name} has no points loaded yet.`);
+    const t0 = Date.now();
+    const v = previewNode(e, false).v;
+    const n = v.count;
+    const pos = v.exact;
+    const writable = new Uint8Array(n);
+    for (let i = 0; i < n; i++) writable[i] = !(v.flags[i] & CSel.DELETED) && (a.overwrite || !(v.flags[i] & CSel.LOCK)) && (!a.only_unclassified || v.classification[i] <= 1) && (!scope || scope.test(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])) ? 1 : 0;
+    const cur = v.classification || new Uint8Array(n).fill(1);
+    const r = CL.classifyPoints({ count: n, pos, classification: cur, intensity: v.intensity }, { steps, params: a.params, writable });
+    const before = {};
+    const after = {};
+    for (let i = 0; i < n; i++) (before[cur[i]] = (before[cur[i]] || 0) + 1), (after[r.classes[i]] = (after[r.classes[i]] || 0) + 1);
+    if (r.changed) pushEdit(e, new Map([['preview', { dense: r.classes }]]), `${e.name} classes`);
+    const rep = report(before, after, { changed: r.changed, seconds: Math.round((Date.now() - t0) / 100) / 10, steps, params, within: a.within || null });
+    e.pointcloud = { ...e.pointcloud, classify: { status: 'done', steps, params: a.params || {}, within: a.within || null, changed: r.changed, seconds: rep.seconds } };
+    return { id: e.id, name: e.name, points: n, ...rep };
+  }, true);
+
+  def('terrain', 'attach_point_cloud_classes', "Bring a point cloud's background classification into the model once it has finished (the app does this for you): one undo step, with the report (counts per class before and after, time, parameters). Reports progress while it runs.", obj({ id: str('the point cloud (default the first one)') }), async (a) => {
+    const e = cloudOf(a.id);
+    const k = e.pointcloud.classify;
+    if (!k?.job) throw new Error(`${e.name} has no background classification.`);
+    const j = await ctx.io.cloudJob(k.job).catch(() => null);
+    if (!j) {
+      e.pointcloud = { ...e.pointcloud, classify: { ...k, status: 'lost' } };
+      ctx.view?.cloudClassifying?.(e, null);
+      return { id: e.id, status: 'lost', note: 'The app restarted since: classify_cloud again.' };
+    }
+    if (j.status === 'running') return { id: e.id, job: k.job, status: 'running', stage: j.stage, progress: Math.round((j.fraction || 0) * 100) };
+    ctx.view?.cloudClassifying?.(e, null);
+    if (j.status !== 'done') {
+      e.pointcloud = { ...e.pointcloud, classify: { ...k, status: j.status, error: j.error || null } };
+      return { id: e.id, job: k.job, status: j.status, error: j.error, note: 'The cloud keeps its classes.' };
+    }
+    const r = await ctx.io.cloudTaskResult(k.job);
+    if (r.nodes) pushEdit(e, CSel.decodeDelta(new Uint8Array(r.delta)), `${e.name} classes`);
+    e.pointcloud = { ...e.pointcloud, counts: r.points >= (e.pointcloud.octree?.points || 0) ? { ...r.after } : e.pointcloud.counts, classify: { ...k, status: 'done', changed: r.changed, seconds: r.seconds, tiles: r.tiles } };
+    return { id: e.id, name: e.name, status: 'done', points: r.points, tiles: r.tiles, ...report(r.before, r.after, { changed: r.changed, seconds: r.seconds, steps: k.steps, params: CL.paramsOf(k.params), within: k.within }) };
+  }, true);
+
+  def('terrain', 'define_point_class', 'Name and colour a point class (user classes 64–255, e.g. 64 "Kerb", 65 "Vehicle", 66 "Manhole"): kept in the document, shown in the legend, the class list and the filter panel. color "#rrggbb".', obj({ code: num('class code 64–255'), name: str('its name'), color: str('#rrggbb') }, ['code', 'name']), (a) => {
+    if (!(Number.isInteger(a.code) && a.code >= 64 && a.code <= 255)) throw new Error('User classes are 64–255 (0–63 are ASPRS classes).');
+    if (a.color && !/^#[0-9a-f]{6}$/i.test(a.color)) throw new Error('color is "#rrggbb".');
+    const cur = pointClasses()[a.code];
+    ctx.doc.pointClasses = { ...(ctx.doc.pointClasses || {}), [a.code]: { name: a.name, color: a.color || cur?.color || '#b0b0b0' } };
+    return { code: a.code, ...ctx.doc.pointClasses[a.code] };
+  }, true);
+
+  // the point selection of #299: kept here, not in the document (it is not undone); the view highlights it
+  let pointSel = null; // { id, sel }
+  const showSel = () => ctx.view?.showCloudSelection?.(pointSel);
+  const selResult = (e, extra = {}) => {
+    const st = pointSel?.id === e.id ? CSel.selectionStats(pointSel.sel) : { points: 0, classes: {} };
+    return { id: e.id, name: e.name, selected: st.points, classes: Object.entries(st.classes).map(([c, n]) => ({ code: +c, name: nameOf(+c), points: n })), bounds: st.bounds, mean_intensity: st.mean_intensity, ...extra };
+  };
+  def('view', 'select_points', 'Select points of a cloud (a point selection, not entities: the view highlights it; set_point_class acts on it). By screen polygon (lasso, box or brush: polygon [[x, y], …] as fractions 0–1 of the pane, from the left and top) through everything, or front_only: only the points facing the camera, not those behind; by clip volume (within: "Box 1"); by attributes (classes, intensity [lo, hi], elevation [lo, hi] m, returns); or grow_from a point ([x, y] on screen, or [east, north, elevation]) over its plane (a wall, a roof, a road; tolerance degrees, distance m), stopping at corners. mode set (default) | add | remove | invert. Returns how many points and of which classes, their bounds and mean intensity (never the points).', obj({ id: str('the point cloud (default the first one)'), polygon: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: '[[x, y], …] screen fractions 0–1' }, pane: PANE_N, front_only: bool('only the front-most points'), within: str('a clip volume name'), classes: { type: 'array', items: { type: 'number' }, description: 'ASPRS codes' }, intensity: PAIR('[lo, hi] 0–65535'), elevation: PAIR('[lo, hi] m, file elevations'), returns: str('', ['first', 'last', 'only']), grow_from: { type: 'array', items: { type: 'number' }, description: '[x, y] screen fractions or [east, north, elevation]' }, tolerance: num('grow: degrees between normals (default 12)'), distance: num('grow: m off the plane (default 0.08)'), mode: str('', ['set', 'add', 'remove', 'invert']) }), async (a) => {
+    const e = cloudOf(a.id);
+    const src = await sourceOf(e);
+    const cur = pointSel?.id === e.id ? pointSel.sel : null;
+    let sel;
+    if (a.mode === 'invert') sel = await CSel.invert(src, cur || { nodes: new Map() });
+    else if (a.grow_from) {
+      let at = a.grow_from;
+      if (at.length === 2) {
+        if (!ctx.view?.cloudPointAt) throw new Error('grow_from [x, y] needs the view: give [east, north, elevation].');
+        const hit = inPane(a.pane, () => ctx.view.cloudPointAt(at[0], at[1], 16));
+        if (!hit) throw new Error('No cloud point there: zoom in, or wait for the points to load.');
+        at = hit.project;
+      }
+      sel = await CSel.grow(src, at, { angle: a.tolerance ?? 12, distance: a.distance ?? 0.08 });
+    } else {
+      const q = { classes: a.classes, intensity: a.intensity, elevation: a.elevation, returns: a.returns, front_only: !!a.front_only };
+      if (a.within) {
+        const s = clipScope(e, a.within);
+        (q.within = s.test), (q.box = s.box);
+      }
+      if (a.polygon) {
+        if (!(a.polygon.length >= 3)) throw new Error('polygon needs at least 3 points [x, y] (screen fractions).');
+        if (!ctx.view?.cloudCamera) throw new Error('A screen polygon needs the view.');
+        const cam = inPane(a.pane, () => ctx.view.cloudCamera(e));
+        q.screen = { camera: cam, polygon: a.polygon };
+        q.pixels = [cam.width, cam.height];
+      }
+      if (!a.polygon && !a.within && !a.classes && !a.intensity && !a.elevation && !a.returns) throw new Error('Say which points: polygon, within, classes, intensity, elevation, returns or grow_from.');
+      sel = await CSel.select(src, q);
+    }
+    pointSel = { id: e.id, sel: CSel.combine(cur, sel, a.mode === 'invert' ? 'set' : a.mode || 'set') };
+    showSel();
+    return selResult(e, { mode: a.mode || 'set' });
+  });
+  def('view', 'clear_point_selection', 'Clear the point selection (select_points).', obj({}), () => {
+    pointSel = null;
+    showSel();
+    return { selected: 0 };
+  });
+  def('view', 'point_selection', 'The point selection now: how many points of which classes, bounds, mean intensity.', obj({}), () => (pointSel ? selResult(D.getEntity(ctx.doc, pointSel.id) || { id: pointSel.id, name: '' }) : { selected: 0 }));
+
+  def('terrain', 'set_point_class', 'Change the selected points (select_points): class (an ASPRS code, or a user class 64–255), lock true (automatic passes leave them alone, unless overwrite) or false, or delete (class 7 noise, hidden; left out on export). One undo step; the counts in list_cloud_classes and the legend follow.', obj({ id: str('the point cloud (default the selection\'s)'), class: num('class code 0–255'), lock: bool('lock (true) or unlock (false)'), delete: bool('delete the points (class 7, hidden)') }), (a) => {
+    if (!pointSel) throw new Error('No points selected: select_points first.');
+    const e = cloudOf(a.id || pointSel.id);
+    if (e.id !== pointSel.id) throw new Error(`The point selection is on another cloud.`);
+    if (a.class === undefined && a.lock === undefined && !a.delete) throw new Error('Give class, lock or delete.');
+    if (a.class !== undefined && !(Number.isInteger(a.class) && a.class >= 0 && a.class <= 255)) throw new Error('class is a code 0–255.');
+    const ed = CSel.editOf(pointSel.sel, { cls: a.class ?? null, lock: a.lock, deleted: !!a.delete });
+    if (!ed.delta.size) throw new Error('The point selection is empty.');
+    pushEdit(e, ed.delta, `${e.name} hand edit`);
+    addCounts(e, ed.counts);
+    CSel.afterEdit(pointSel.sel, ed.delta);
+    if (a.delete) {
+      const hide = new Set(CS.filterOf(e).hide || []);
+      if (!hide.has(7)) e.pointcloud = { ...e.pointcloud, filter: CS.merge(e.pointcloud.filter, { hide: [...hide, 7].sort((x, y) => x - y) }) };
+    }
+    showSel();
+    return { id: e.id, changed: ed.changed, points: CSel.countOf(pointSel.sel), class: a.delete ? 7 : a.class, class_name: a.delete ? nameOf(7) : a.class !== undefined ? nameOf(a.class) : undefined, locked: a.lock, deleted: !!a.delete };
+  }, true);
+
+  def('file', 'export_point_cloud', 'Write a point cloud with its edited classes: LAS 1.4 (ASPRS point format 6, or 7 with colour; the CRS as WKT when the project or the source has one) or binary PLY. what: all (default), selection (the point selection) or a clip volume name; classes: only these codes; coordinates world (default: east, north, elevation as in the source) or project (minus the base point). Deleted points are left out. LAZ and COPC cannot be written yet (the bundled laz-perf only decompresses): write LAS and compress it with PDAL or LAStools. An octree cloud is written in the background at full detail (a job; point_cloud_job reports it); a cloud without an octree writes its preview points.', obj({ id: str('the point cloud (default the first one)'), path: str('absolute .las or .ply path'), format: str('', ['las', 'laz', 'copc', 'ply']), what: str('all | selection | a clip volume name'), classes: { type: 'array', items: { type: 'number' }, description: 'only these classes' }, coordinates: str('', ['world', 'project']) }, ['path']), async (a) => {
+    const e = cloudOf(a.id);
+    const format = a.format || (/\.ply$/i.test(a.path) ? 'ply' : /\.copc\.laz$/i.test(a.path) ? 'copc' : /\.laz$/i.test(a.path) ? 'laz' : 'las');
+    if (format === 'laz' || format === 'copc') throw new Error(`${format.toUpperCase()} cannot be written yet: the laz-perf library bundled here only decompresses. Export LAS (format "las") and compress it with PDAL (pdal translate in.las out.${format === 'copc' ? 'copc.laz' : 'laz'}) or LAStools.`);
+    if (!new RegExp(`\\.${format}$`, 'i').test(a.path)) throw new Error(`The path should end in .${format}.`);
+    const what = a.what || 'all';
+    if (what === 'selection' && pointSel?.id !== e.id) throw new Error(`No points of ${e.name} are selected: select_points first.`);
+    const scope = what !== 'all' && what !== 'selection' ? clipScope(e, what) : null;
+    const base = e.pointcloud.base || [0, 0, 0];
+    const crs = S.geo(ctx.doc).crs;
+    const oc = e.pointcloud.octree;
+    if (oc?.status === 'ready' && ctx.io?.cloudTask) {
+      const job = await ctx.io.cloudTask('export', { kind: oc.kind || 'potree', folder: oc.folder, file: oc.kind === 'copc' ? oc.source : null, deltas: editsOf(e).map((x) => Assets.bytes(x)), path: a.path, format, selection: what === 'selection' ? [...pointSel.sel.nodes].filter(([, s]) => !s.shadow).map(([name, s]) => [name, s.idx]) : null, scope: scope?.scope || null, classes: a.classes || null, coordinates: a.coordinates || 'world', base, wkt: PC.wktOf(crs) });
+      return { id: e.id, job: job.id, path: a.path, format: format === 'ply' ? 'PLY' : 'LAS 1.4', note: 'Writing in the background: point_cloud_job reports it.' };
+    }
+    const v = previewNode(e, false).v;
+    const sel = what === 'selection' ? pointSel.sel.nodes.get('preview')?.idx || [] : null;
+    const keep = new Set(a.classes || []);
+    const idx = [];
+    const n = sel ? sel.length : v.count;
+    for (let t = 0; t < n; t++) {
+      const i = sel ? sel[t] : t;
+      if (v.flags[i] & CSel.DELETED || (keep.size && !keep.has(v.classification[i]))) continue;
+      if (scope && !scope.test(v.exact[i * 3], v.exact[i * 3 + 1], v.exact[i * 3 + 2])) continue;
+      idx.push(i);
+    }
+    if (!idx.length) throw new Error('No points to write.');
+    const shift = a.coordinates === 'project' ? base : [0, 0, 0];
+    const d = cloudData(e);
+    const b = { count: v.count, x: Float64Array.from({ length: v.count }, (_, i) => v.exact[i * 3] - shift[0]), y: Float64Array.from({ length: v.count }, (_, i) => v.exact[i * 3 + 1] - shift[1]), z: Float64Array.from({ length: v.count }, (_, i) => v.exact[i * 3 + 2] - shift[2]), classification: v.classification, intensity: v.intensity, returnNumber: v.returnNumber, numberOfReturns: v.numberOfReturns, pointSourceId: d.pointSource, gpsTime: d.gpsTime && Float64Array.from(d.gpsTime, (t) => t + (e.pointcloud.attributes?.time0 || 0)), r: d.rgb && Uint8Array.from({ length: v.count }, (_, i) => d.rgb[i * 3]), g: d.rgb && Uint8Array.from({ length: v.count }, (_, i) => d.rgb[i * 3 + 1]), b: d.rgb && Uint8Array.from({ length: v.count }, (_, i) => d.rgb[i * 3 + 2]) };
+    const bytes = PC.writePoints(b, idx, { format, shift, wkt: a.coordinates === 'project' ? '' : PC.wktOf(crs) });
+    if (!ctx.io?.writeBinary) return { id: e.id, points: idx.length, bytes };
+    await ctx.io.writeBinary(a.path, bytes);
+    return { id: e.id, path: a.path, points: idx.length, format: format === 'ply' ? 'PLY' : 'LAS 1.4', note: 'The preview points (this cloud has no octree).' };
+  });
 
   def('drawings', 'vectorise_underlay', 'Scanned drawing to linework: the image (or PDF page) thresholded, thinned and traced into curves on the drawing, simplified; by window. min_length and simplify in pixels of the scan.', obj({ id, window: WINDOW, threshold: num('0–255, darker is ink (default 128)'), min_length: num('pixels (default 12)'), simplify: num('pixels (default 1.5)'), resolution: num('longest side traced, pixels (default 2000)'), layer: str('layer (default "Scan")') }, ['id']), async (a) => {
     const doc = ctx.doc;

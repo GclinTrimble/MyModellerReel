@@ -9,7 +9,7 @@ const CHANNELS = new Set([
   'ai:setup-status', 'ai:ollama-start', 'ai:ollama-install', 'ai:ollama-pull', 'ai:ollama-pull-cancel', 'ai:builtin-download', 'ai:builtin-delete', 'ref:watch',
   'mytools:list', 'mytools:write', 'mytools:delete', 'codelib:call', 'feedback:save', 'feedback:list', 'feedback:share', 'feedback:export',
   'ogc:get', 'ogc:cache', 'ogc:cache-info', 'ogc:cache-clear', 'ogc:cache-limit', 'map:services', 'gpkg:write', 'gpkg:read',
-  'cloud:convert', 'cloud:job', 'cloud:jobs', 'cloud:cancel', 'cloud:open', 'cloud:read-node', 'cloud:cache-folder',
+  'cloud:convert', 'cloud:job', 'cloud:jobs', 'cloud:cancel', 'cloud:open', 'cloud:read-node', 'cloud:cache-folder', 'cloud:task', 'cloud:task-result', 'cloud:parts',
 ]);
 
 contextBridge.exposeInMainWorld('native', {
